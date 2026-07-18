@@ -139,7 +139,7 @@ const logout = () => {
 }
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
 .header {
   height: 60px;
   display: flex;
@@ -199,14 +199,16 @@ const logout = () => {
   min-height: calc(100vh - 60px);
   background: linear-gradient(180deg, #1d2b4a 0%, #2c3e6b 100%);
 }
+</style>
 
-:deep(.sidebar-menu) {
+<style lang="scss">
+.sidebar-menu {
   border: none;
   background: transparent;
 }
 
-:deep(.sidebar-menu .el-menu-item),
-:deep(.sidebar-menu .el-sub-menu__title) {
+.sidebar-menu .el-menu-item,
+.sidebar-menu .el-sub-menu__title {
   height: 44px;
   line-height: 44px;
   margin: 4px 8px;
@@ -216,27 +218,27 @@ const logout = () => {
   transition: all 0.2s ease;
 }
 
-:deep(.sidebar-menu .el-menu-item:hover),
-:deep(.sidebar-menu .el-sub-menu__title:hover) {
+.sidebar-menu .el-menu-item:hover,
+.sidebar-menu .el-sub-menu__title:hover {
   background: rgba(255, 255, 255, 0.08);
   color: #ffffff;
 }
 
-:deep(.sidebar-menu .el-menu-item.is-active) {
+.sidebar-menu .el-menu-item.is-active {
   background: linear-gradient(90deg, #1a73e8, #00c6ff);
   color: #ffffff;
   font-weight: 600;
 }
 
-:deep(.sidebar-menu .el-sub-menu .el-menu-item) {
+.sidebar-menu .el-sub-menu .el-menu-item {
   padding-left: 52px !important;
 }
 
-:deep(.sidebar-menu .el-sub-menu .el-menu) {
+.sidebar-menu .el-sub-menu .el-menu {
   background: transparent;
 }
 
-:deep(th) {
+.sidebar th {
   color: #333;
 }
 </style>
