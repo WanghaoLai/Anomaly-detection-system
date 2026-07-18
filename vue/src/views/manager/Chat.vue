@@ -430,16 +430,18 @@ onMounted(() => {
 .input-container .el-input {
   flex: 1;
 }
+</style>
 
-:deep(.el-textarea__inner) {
+<style>
+.el-textarea__inner {
   resize: none;
 }
 
-:deep(.message-text p) {
+.message-text p {
   margin: 0;
 }
 
-:deep(.message-text pre) {
+.message-text pre {
   background: #1e1e1e;
   color: #d4d4d4;
   padding: 12px;
@@ -447,37 +449,37 @@ onMounted(() => {
   overflow-x: auto;
 }
 
-:deep(.message-text code) {
+.message-text code {
   background: #e6e8ea;
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 14px;
 }
 
-:deep(.message-text pre code) {
+.message-text pre code {
   background: none;
   padding: 0;
 }
 
-:deep(.message-text ul),
-:deep(.message-text ol) {
+.message-text ul,
+.message-text ol {
   padding-left: 20px;
   margin: 8px 0;
 }
 
-:deep(.message-text table) {
+.message-text table {
   border-collapse: collapse;
   margin: 8px 0;
 }
 
-:deep(.message-text th),
-:deep(.message-text td) {
+.message-text th,
+.message-text td {
   border: 1px solid #dcdfe6;
   padding: 8px 12px;
   text-align: left;
 }
 
-:deep(.message-text th) {
+.message-text th {
   background: #f5f7fa;
 }
 </style>
