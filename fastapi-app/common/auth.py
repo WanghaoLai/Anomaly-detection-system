@@ -11,6 +11,10 @@ from settings import JWT_SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRE_HOURS
 oauth2_scheme = HTTPBearer()
 
 
+def is_bcrypt_hash(value: str | None) -> bool:
+    return isinstance(value, str) and value.startswith(("$2a$", "$2b$", "$2y$"))
+
+
 def hash_password(plaintext: str) -> str:
     data = plaintext.encode("utf-8")[:72]
     return bcrypt.hashpw(data, bcrypt.gensalt()).decode()
@@ -20,6 +24,9 @@ def verify_password(plaintext: str, stored: str) -> tuple:
     """校验密码，返回 (is_valid, needs_upgrade)。
     needs_upgrade 为 True 表示密码是明文匹配的，需要升级为 bcrypt。
     """
+    if plaintext is None or stored is None:
+        return False, False
+
     data = plaintext.encode("utf-8")[:72]
 
     # 先尝试 bcrypt 验证
@@ -28,6 +35,9 @@ def verify_password(plaintext: str, stored: str) -> tuple:
             return True, False
     except (ValueError, TypeError):
         pass
+
+    if is_bcrypt_hash(stored):
+        return False, False
 
     # 明文比对（兼容未迁移的旧密码）
     if plaintext == stored:

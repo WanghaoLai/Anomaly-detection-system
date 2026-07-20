@@ -11,6 +11,7 @@ from models import Admin
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(get_current_user)])
 AdminPydantic = pydantic_model_creator(Admin)
+AdminReadPydantic = pydantic_model_creator(Admin, exclude=("password",))
 AdminCreatePydantic = create_model(
     "AdminPydantic",
     **{
@@ -39,7 +40,12 @@ async def add(admin_create_pydantic: AdminCreatePydantic):
 @router.put("/update")
 async def update(admin_create_pydantic: AdminCreatePydantic):
     update_data = admin_create_pydantic.model_dump(exclude_unset=True, exclude={'id'})
-    if 'password' in update_data:
+    admin = await Admin.get_or_none(id=admin_create_pydantic.id)
+    if admin is None:
+        raise CustomException("未找到管理员")
+    if not update_data.get('password') or update_data.get('password') == admin.password:
+        update_data.pop('password', None)
+    elif 'password' in update_data:
         update_data['password'] = hash_password(update_data['password'])
     await Admin.filter(id=admin_create_pydantic.id).update(**update_data)
     return Result.success()
@@ -60,12 +66,16 @@ async def delete_batch(ids: List[int]):
 @router.get("/selectById/{admin_id}")
 async def select_one(admin_id: int):
     admin = await Admin.get(id=admin_id)
-    return Result.success(admin)
+    return Result.success(AdminReadPydantic.model_validate(admin).model_dump())
 
 
 @router.get("/selectAll")
 async def select_all(name: str = ""):
     admin_list = await Admin.filter(name__contains=name)
+    admin_list = [
+        AdminReadPydantic.model_validate(admin).model_dump()
+        for admin in admin_list
+    ]
     return Result.success(admin_list)
 
 
@@ -74,7 +84,7 @@ async def select_page(name: str = "", pageNum: int = 1, pageSize: int = 10):
     query = Admin.filter(name__contains=name)
     admin_list = await query.offset((pageNum - 1) * pageSize).limit(pageSize)
     admin_list = [
-        AdminPydantic.model_validate(admin).model_dump()
+        AdminReadPydantic.model_validate(admin).model_dump()
         for admin in admin_list
     ]
     total = await query.count()
