@@ -41,8 +41,16 @@
         <el-form-item label="名称" prop="name">
           <el-input v-model="data.form.name" autocomplete="off" />
         </el-form-item>
+        <el-form-item label="密码" prop="password">
+          <el-input
+              v-model="data.form.password"
+              show-password
+              autocomplete="new-password"
+              :placeholder="data.form.id ? '不填则不修改密码' : '请输入密码'"
+          />
+        </el-form-item>
         <el-form-item label="头像" prop="avatar">
-          <el-upload :action="uploadUrl" list-type="picture" :on-success="handleImgSuccess">
+          <el-upload :action="uploadUrl" :headers="uploadHeaders" list-type="picture" :on-success="handleImgSuccess">
             <el-button type="primary">上传图片</el-button>
           </el-upload>
         </el-form-item>
@@ -65,8 +73,17 @@ import {ElMessageBox, ElMessage} from "element-plus";
 
 // 文件上传的接口地址
 const uploadUrl = import.meta.env.VITE_BASE_URL + '/files/upload'
+const uploadHeaders = { Authorization: `Bearer ${localStorage.getItem('token')}` }
 
 const formRef = ref()
+const validatePassword = (rule, value, callback) => {
+  if (!data.form.id && !value) {
+    callback(new Error('请输入密码'))
+  } else {
+    callback()
+  }
+}
+
 const data = reactive({
   user: JSON.parse(localStorage.getItem('system-user') || '{}'),
   pageNum: 1,
@@ -85,6 +102,9 @@ const data = reactive({
     ],
     avatar: [
       { required: true, message: '请上传头像', trigger: 'blur' }
+    ],
+    password: [
+      { validator: validatePassword, trigger: 'blur' }
     ],
   }
 })
@@ -112,6 +132,7 @@ const handleAdd = () => {
 // 编辑
 const handleEdit = (row) => {
   data.form = JSON.parse(JSON.stringify(row))
+  delete data.form.password
   data.formVisible = true
 }
 

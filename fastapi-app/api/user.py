@@ -11,6 +11,7 @@ from models import User
 
 router = APIRouter(prefix="/user", dependencies=[Depends(get_current_user)])
 UserPydantic = pydantic_model_creator(User)
+UserReadPydantic = pydantic_model_creator(User, exclude=("password",))
 UserCreatePydantic = create_model(
     "UserPydantic",
     **{
@@ -39,7 +40,12 @@ async def add(user_pydantic: UserCreatePydantic):
 @router.put("/update")
 async def update(user_pydantic: UserCreatePydantic):
     update_data = user_pydantic.model_dump(exclude_unset=True, exclude={'id'})
-    if 'password' in update_data:
+    user = await User.get_or_none(id=user_pydantic.id)
+    if user is None:
+        raise CustomException("未找到用户")
+    if not update_data.get('password') or update_data.get('password') == user.password:
+        update_data.pop('password', None)
+    elif 'password' in update_data:
         update_data['password'] = hash_password(update_data['password'])
     await User.filter(id=user_pydantic.id).update(**update_data)
     return Result.success()
@@ -56,7 +62,7 @@ async def select(name: str = "", pageNum: int = 1, pageSize: int = 5):
     query = User.filter(name__contains=name)
     user_list = await query.offset((pageNum - 1) * pageSize).limit(pageSize)
     user_list = [
-        UserPydantic.model_validate(user).model_dump()
+        UserReadPydantic.model_validate(user).model_dump()
         for user in user_list
     ]
     total = await query.count()
