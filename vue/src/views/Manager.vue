@@ -7,6 +7,10 @@
           <div class="header-title">机器人与智能系统实验室 · 异常检测系统</div>
         </div>
       </div>
+      <div class="time-display">
+        <el-icon><Clock /></el-icon>
+        <span class="time-text">{{ currentTime }}</span>
+      </div>
       <div class="user-panel">
         <img class="user-avatar" :src="data.user.avatar || 'https://cube.elemecdn.com/3/7c/3ea6beec64369c2642b92c6726f1epng.png'" alt="">
         <div style="display: flex; flex-direction: column; margin-left: 10px">
@@ -78,6 +82,10 @@
             <el-icon><Cpu /></el-icon>
             <span>算法信息</span>
           </el-menu-item>
+          <el-menu-item index="/manager/serverInfo">
+            <el-icon><Monitor /></el-icon>
+            <span>服务器信息</span>
+          </el-menu-item>
           <el-menu-item index="/manager/notice" v-if="data.user.role === '管理员'">
             <el-icon><Bell /></el-icon>
             <span>公告管理</span>
@@ -88,7 +96,7 @@
           </el-menu-item>
           <el-menu-item index="/manager/chat">
             <el-icon><ChatDotRound /></el-icon>
-            <span>智能客服</span>
+            <span>智能助手</span>
           </el-menu-item>
           <el-menu-item index="/manager/person">
             <el-icon><User /></el-icon>
@@ -105,7 +113,7 @@
         </el-menu>
       </div>
 
-      <div style="flex: 1; width: 0; background-color: #f0f2f5; padding: 10px">
+      <div class="manager-main">
         <router-view @updateUser="updateUser" />
       </div>
     </div>
@@ -114,9 +122,33 @@
 </template>
 
 <script setup>
-import { reactive } from "vue";
+import { reactive, ref, onMounted, onUnmounted } from "vue";
 import router from "@/router";
 import {ElMessage} from "element-plus";
+
+const currentTime = ref('')
+let timer = null
+
+const updateTime = () => {
+  const now = new Date()
+  const y = now.getFullYear()
+  const m = String(now.getMonth() + 1).padStart(2, '0')
+  const d = String(now.getDate()).padStart(2, '0')
+  const week = ['日', '一', '二', '三', '四', '五', '六'][now.getDay()]
+  const h = String(now.getHours()).padStart(2, '0')
+  const min = String(now.getMinutes()).padStart(2, '0')
+  const s = String(now.getSeconds()).padStart(2, '0')
+  currentTime.value = `${y}-${m}-${d} 星期${week} ${h}:${min}:${s}`
+}
+
+onMounted(() => {
+  updateTime()
+  timer = setInterval(updateTime, 1000)
+})
+
+onUnmounted(() => {
+  clearInterval(timer)
+})
 
 const data = reactive({
   user: JSON.parse(localStorage.getItem('system-user') || '{}')
@@ -155,7 +187,21 @@ const logout = () => {
   background: linear-gradient(90deg, #ffffff 0%, #90caf9 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-  letter-spacing: 2px;
+  letter-spacing: 0;
+}
+
+.time-display {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  margin-right: 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #90caf9;
+  font-size: 16px;
+  font-family: 'Courier New', monospace;
+  letter-spacing: 0.5px;
 }
 
 .user-panel {
@@ -199,6 +245,45 @@ const logout = () => {
   min-height: calc(100vh - 60px);
   background: linear-gradient(180deg, #1d2b4a 0%, #2c3e6b 100%);
 }
+
+.manager-main {
+  flex: 1;
+  width: 0;
+  padding: 10px;
+  background-color: #f0f2f5;
+}
+
+@media (max-width: 720px) {
+  .header-title {
+    max-width: 210px;
+    font-size: 15px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .user-panel {
+    padding: 4px 6px;
+    margin-right: 6px;
+  }
+
+  .user-panel > div {
+    display: none !important;
+  }
+
+  .user-avatar {
+    width: 30px;
+    height: 30px;
+  }
+
+  .sidebar {
+    width: 64px;
+  }
+
+  .manager-main {
+    padding: 6px;
+  }
+}
 </style>
 
 <style lang="scss">
@@ -240,5 +325,29 @@ const logout = () => {
 
 .sidebar th {
   color: #333;
+}
+
+@media (max-width: 720px) {
+  .sidebar-menu .el-menu-item,
+  .sidebar-menu .el-sub-menu__title {
+    justify-content: center;
+    margin: 4px 8px;
+    padding: 0 !important;
+  }
+
+  .sidebar-menu .el-menu-item span,
+  .sidebar-menu .el-sub-menu__title span,
+  .sidebar-menu .el-sub-menu__icon-arrow {
+    display: none;
+  }
+
+  .sidebar-menu .el-menu-item .el-icon,
+  .sidebar-menu .el-sub-menu__title .el-icon {
+    margin-right: 0;
+  }
+
+  .sidebar-menu .el-sub-menu .el-menu-item {
+    padding-left: 0 !important;
+  }
 }
 </style>
