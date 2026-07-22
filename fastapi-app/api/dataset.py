@@ -55,6 +55,7 @@ async def select_page(name: str = "", userId: int = 0, pageNum: int = 1, pageSiz
             "updated_at": ds.updated_at.strftime('%Y-%m-%d %H:%M:%S') if ds.updated_at else None,
             "created_by_name": ds.created_by.username if ds.created_by else None,
             "root_directory": info.root_directory if info else None,
+            "info_id": info.id if info else None,
             "class_count": info.class_count if info else 0,
             "train_sample_count": info.train_sample_count if info else 0,
             "test_sample_count": info.test_sample_count if info else 0,
@@ -70,8 +71,8 @@ async def select_page(name: str = "", userId: int = 0, pageNum: int = 1, pageSiz
 @router.post("/add")
 async def add(dataset_pydantic: DatasetCreatePydantic):
     create_data = dataset_pydantic.model_dump(exclude_unset=True, exclude={'id'})
-    await Dataset.create(**create_data)
-    return Result.success()
+    dataset = await Dataset.create(**create_data)
+    return Result.success(dataset.id)
 
 
 @router.put("/update")

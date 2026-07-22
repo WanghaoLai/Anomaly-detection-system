@@ -29,6 +29,8 @@ const router = createRouter({
         { path: 'algorithmInfo', component: () => import('@/views/manager/AlgorithmInfo.vue')},
         { path: 'algorithmInfoAdmin', component: () => import('@/views/manager/AlgorithmInfoAdmin.vue')},
         { path: 'serverInfo', component: () => import('@/views/manager/ServerInfo.vue')},
+        { path: 'datasetAdmin', component: () => import('@/views/manager/DatasetAdmin.vue')},
+        { path: 'algorithmAdmin', component: () => import('@/views/manager/AlgorithmAdmin.vue')},
         { path: 'upload', component: () => import('@/views/manager/Upload.vue')},
       ]
     },

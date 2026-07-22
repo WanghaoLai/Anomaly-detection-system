@@ -49,11 +49,11 @@
           <el-sub-menu index="dataset" v-if="data.user.role === '管理员'">
             <template #title>
               <el-icon><FolderOpened /></el-icon>
-              <span>数据集管理</span>
+              <span>数据集</span>
             </template>
-            <el-menu-item index="/manager/upload">
+            <el-menu-item index="/manager/datasetAdmin">
               <el-icon><UploadFilled /></el-icon>
-              <span>上传数据集</span>
+              <span>数据集管理</span>
             </el-menu-item>
             <el-menu-item index="/manager/datasetInfoAdmin">
               <el-icon><Coin /></el-icon>
@@ -63,11 +63,11 @@
           <el-sub-menu index="algorithm" v-if="data.user.role === '管理员'">
             <template #title>
               <el-icon><SetUp /></el-icon>
-              <span>算法管理</span>
+              <span>算法</span>
             </template>
-            <el-menu-item index="/manager/upload">
-              <el-icon><Upload /></el-icon>
-              <span>上传算法</span>
+            <el-menu-item index="/manager/algorithmAdmin">
+              <el-icon><SetUp /></el-icon>
+              <span>算法管理</span>
             </el-menu-item>
             <el-menu-item index="/manager/algorithmInfoAdmin">
               <el-icon><Cpu /></el-icon>
