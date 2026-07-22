@@ -1,5 +1,5 @@
 import json
-from typing import Optional
+from typing import Optional, Any
 
 from fastapi import APIRouter, Depends
 from pydantic import create_model, Field
@@ -26,10 +26,12 @@ AlgorithmCreatePydantic = create_model(
     created_by=(Optional[int], Field(None, alias="createdBy")),
 )
 
+JSON_FIELD_NAMES = {'parameter_schema_json', 'output_schema_json', 'resource_spec_json', 'dataset_requirement_json'}
+
 AlgorithmInfoCreatePydantic = create_model(
     "AlgorithmInfoCreatePydantic",
     **{
-        name: (Optional[field.annotation], None)
+        name: (Optional[Any], None) if name in JSON_FIELD_NAMES else (Optional[field.annotation], None)
         for name, field in AlgorithmInfoPydantic.model_fields.items()
     },
     algorithm_id=(Optional[int], Field(None, alias="algorithmId")),
@@ -61,6 +63,7 @@ async def select_page(name: str = "", userId: int = 0, pageNum: int = 1, pageSiz
             "created_at": algo.created_at.strftime('%Y-%m-%d %H:%M:%S') if algo.created_at else None,
             "updated_at": algo.updated_at.strftime('%Y-%m-%d %H:%M:%S') if algo.updated_at else None,
             "framework": info.framework if info else None,
+            "info_id": info.id if info else None,
             "framework_version": info.framework_version if info else None,
             "python_version": info.python_version if info else None,
             "cuda_requirement": info.cuda_requirement if info else None,
@@ -83,8 +86,8 @@ async def select_page(name: str = "", userId: int = 0, pageNum: int = 1, pageSiz
 @router.post("/add")
 async def add(algorithm_pydantic: AlgorithmCreatePydantic):
     create_data = algorithm_pydantic.model_dump(exclude_unset=True, exclude={'id'})
-    await Algorithm.create(**create_data)
-    return Result.success()
+    algorithm = await Algorithm.create(**create_data)
+    return Result.success(algorithm.id)
 
 
 @router.put("/update")
