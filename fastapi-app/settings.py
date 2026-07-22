@@ -15,6 +15,11 @@ def _env_int(name: str, default: int) -> int:
     return int(value) if value else default
 
 
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    return float(value) if value else default
+
+
 TORTOISE_ORM = {
     "connections": {
         "default": {
@@ -55,4 +60,26 @@ AI_CONFIG = {
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-in-env")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_HOURS = _env_int("JWT_EXPIRE_HOURS", 24)
+
+# 远程 GPU 服务器配置（凭据仅在后端使用）
+GPU_SERVER_CONFIG = {
+    "host": os.getenv("GPU_SERVER_HOST", ""),
+    "port": _env_int("GPU_SERVER_PORT", 22),
+    "ssh_user": os.getenv("GPU_SERVER_SSH_USER", ""),
+    "ssh_password": os.getenv("GPU_SERVER_SSH_PASSWORD", ""),
+    "private_key_path": os.getenv("GPU_SERVER_PRIVATE_KEY_PATH", ""),
+    "known_hosts_path": os.getenv("GPU_SERVER_KNOWN_HOSTS_PATH", ""),
+    "connect_timeout": _env_float("GPU_SERVER_CONNECT_TIMEOUT", 5.0),
+    "command_timeout": _env_float("GPU_SERVER_COMMAND_TIMEOUT", 8.0),
+    "status_cache_seconds": _env_float("GPU_STATUS_CACHE_SECONDS", 5.0),
+    "expected_gpu_count": _env_int("GPU_EXPECTED_COUNT", 4),
+    "account_root_template": os.getenv(
+        "GPU_ACCOUNT_ROOT_TEMPLATE", "/home/{username}"
+    ),
+    "account_map_json": os.getenv("GPU_ACCOUNT_MAP_JSON", "{}"),
+    "allowed_directories_json": os.getenv(
+        "GPU_ACCOUNT_ALLOWED_DIRECTORIES_JSON", ""
+    ),
+    "file_max_entries": _env_int("GPU_FILE_MAX_ENTRIES", 5000),
+}
 

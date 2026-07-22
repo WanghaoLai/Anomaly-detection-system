@@ -80,6 +80,12 @@ async def register(account: Account):
     return Result.success()
 
 
+# 验证token是否有效
+@api_router.get("/verify")
+async def verify_token(current_user: dict = Depends(get_current_user)):
+    return Result.success(current_user)
+
+
 # 修改密码
 @api_router.put("/updatePassword")
 async def update_password(account: Account, current_user: dict = Depends(get_current_user)):

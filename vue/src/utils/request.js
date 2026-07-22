@@ -41,7 +41,10 @@ request.interceptors.response.use(
     },
         error => {
             if (error.response && error.response.status === 401) {
-                ElMessage.error('登录已过期，请重新登录');
+                // /verify 由路由守卫处理，避免重复提示和跳转
+                if (error.config.url !== '/verify') {
+                    ElMessage.error('登录已过期，请重新登录');
+                }
                 localStorage.removeItem('token');
                 localStorage.removeItem('system-user');
                 router.push('/login');

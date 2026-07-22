@@ -1,80 +1,84 @@
 <template>
-  <div class="chat-container">
-    <!-- 左侧会话列表 -->
-    <div class="conversation-sidebar">
-      <div class="sidebar-header">
-        <el-button type="primary" @click="createConversation" style="width: 100%">
-          <el-icon><Plus /></el-icon>
-          新对话
-        </el-button>
-      </div>
-      <div class="conversation-list">
-        <div
-          v-for="conv in data.conversations"
-          :key="conv.id"
-          :class="['conversation-item', { active: data.currentConversation === conv.id }]"
-          @click="switchConversation(conv.id)"
-        >
-          <div class="conv-title">{{ conv.title }}</div>
-          <div class="conv-time">{{ conv.updated_at }}</div>
-          <el-button
-            class="delete-btn"
-            type="danger"
-            :icon="Delete"
-            circle
-            size="small"
-            @click.stop="deleteConversation(conv.id)"
-          />
+  <div class="chat-page">
+    <div class="chat-container">
+      <div class="conversation-sidebar">
+        <div class="sidebar-header">
+          <el-button class="new-chat-btn" @click="createConversation">
+            <el-icon><Plus /></el-icon>新对话
+          </el-button>
+        </div>
+        <div class="conversation-list">
+          <div
+            v-for="conv in data.conversations"
+            :key="conv.id"
+            :class="['conversation-item', { active: data.currentConversation === conv.id }]"
+            @click="switchConversation(conv.id)"
+          >
+            <div class="conv-icon"><el-icon><ChatDotRound /></el-icon></div>
+            <div class="conv-info">
+              <div class="conv-title">{{ conv.title }}</div>
+              <div class="conv-time">{{ formatTime(conv.updated_at) }}</div>
+            </div>
+            <el-button
+              class="delete-btn"
+              :icon="Delete"
+              circle
+              size="small"
+              @click.stop="deleteConversation(conv.id)"
+            />
+          </div>
+          <div v-if="data.conversations.length === 0" class="sidebar-empty">
+            <el-icon :size="28" color="#d6dce6"><ChatDotRound /></el-icon>
+            <span>暂无对话</span>
+          </div>
         </div>
       </div>
-    </div>
 
-    <!-- 右侧聊天区域 -->
-    <div class="chat-main">
-      <div class="messages-container" ref="messagesContainer">
-        <div v-if="data.messages.length === 0" class="empty-state">
-          <el-icon :size="64" color="#c0c4cc"><ChatDotRound /></el-icon>
-          <p>开始与智能客服对话吧！</p>
-        </div>
-        <div v-for="(msg, index) in data.messages" :key="index" :class="['message', msg.role]">
-          <div class="message-avatar">
-            <el-avatar v-if="msg.role === 'user'" :src="data.user.avatar || 'https://cube.elemecdn.com/3/7c/3ea6beec64369c2642b92c6726f1epng.png'" />
-            <el-avatar v-else style="background-color: #409eff">
-              <el-icon><Monitor /></el-icon>
-            </el-avatar>
+      <div class="chat-main">
+        <div class="messages-container" ref="messagesContainer">
+          <div v-if="data.messages.length === 0" class="empty-state">
+            <div class="empty-icon"><el-icon :size="40"><ChatDotRound /></el-icon></div>
+            <div class="empty-title">智能助手</div>
+            <div class="empty-desc">输入您的问题，我将为您提供帮助</div>
           </div>
-          <div class="message-content">
-            <div class="message-text" v-html="renderMarkdown(msg.content)"></div>
+
+          <div v-for="(msg, index) in data.messages" :key="index" :class="['message', msg.role]">
+            <div class="message-avatar">
+              <img v-if="msg.role === 'user'" :src="data.user.avatar || 'https://cube.elemecdn.com/3/7c/3ea6beec64369c2642b92c6726f1epng.png'" class="avatar-img" />
+              <div v-else class="avatar-ai"><el-icon><Monitor /></el-icon></div>
+            </div>
+            <div class="message-bubble">
+              <div class="message-text" v-html="renderMarkdown(msg.content)"></div>
+            </div>
           </div>
-        </div>
-        <div v-if="data.loading" class="message assistant">
-          <div class="message-avatar">
-            <el-avatar style="background-color: #409eff">
-              <el-icon><Monitor /></el-icon>
-            </el-avatar>
-          </div>
-          <div class="message-content">
-            <div class="message-text loading">
-              <span class="dot">.</span>
-              <span class="dot">.</span>
-              <span class="dot">.</span>
+
+          <div v-if="data.loading" class="message assistant">
+            <div class="message-avatar">
+              <div class="avatar-ai"><el-icon><Monitor /></el-icon></div>
+            </div>
+            <div class="message-bubble">
+              <div class="message-text loading">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
-      <div class="input-container">
-        <el-input
-          v-model="data.inputMessage"
-          type="textarea"
-          :rows="2"
-          placeholder="输入您的问题..."
-          @keydown.enter.ctrl="sendMessage"
-          @keydown.enter.exact.prevent="sendMessage"
-        />
-        <el-button type="primary" @click="sendMessage" :disabled="!data.inputMessage.trim() || data.loading">
-          发送
-        </el-button>
+        <div class="input-container">
+          <el-input
+            v-model="data.inputMessage"
+            type="textarea"
+            :rows="2"
+            placeholder="输入您的问题... (Enter 发送，Ctrl+Enter 换行)"
+            @keydown.enter.ctrl="sendMessage"
+            @keydown.enter.exact.prevent="sendMessage"
+          />
+          <el-button class="send-btn" type="primary" :disabled="!data.inputMessage.trim() || data.loading" @click="sendMessage">
+            <el-icon><Promotion /></el-icon>发送
+          </el-button>
+        </div>
       </div>
     </div>
   </div>
@@ -82,7 +86,7 @@
 
 <script setup>
 import { reactive, ref, nextTick, onMounted } from 'vue'
-import { Plus, Delete, ChatDotRound, Monitor } from '@element-plus/icons-vue'
+import { Plus, Delete, ChatDotRound, Monitor, Promotion } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/utils/request'
 import { marked } from 'marked'
@@ -98,8 +102,20 @@ const data = reactive({
   loading: false
 })
 
-const renderMarkdown = (text) => {
-  return marked(text || '')
+const renderMarkdown = (text) => marked(text || '')
+
+const formatTime = (value) => {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const now = new Date()
+  const isToday = date.toDateString() === now.toDateString()
+  const h = String(date.getHours()).padStart(2, '0')
+  const min = String(date.getMinutes()).padStart(2, '0')
+  if (isToday) return `${h}:${min}`
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${m}-${d} ${h}:${min}`
 }
 
 const scrollToBottom = () => {
@@ -123,9 +139,7 @@ const loadConversations = async () => {
 
 const createConversation = async () => {
   try {
-    const res = await request.post('/chat/conversation', {
-      title: '新对话'
-    })
+    const res = await request.post('/chat/conversation', { title: '新对话' })
     if (res.code === '200') {
       await loadConversations()
       data.currentConversation = res.data.id
@@ -162,33 +176,21 @@ const deleteConversation = async (conversationId) => {
       await loadConversations()
     }
   } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error('删除失败')
-    }
+    if (error !== 'cancel') ElMessage.error('删除失败')
   }
 }
 
 const sendMessage = async () => {
   if (!data.inputMessage.trim() || data.loading) return
-
-  if (!data.currentConversation) {
-    await createConversation()
-  }
+  if (!data.currentConversation) await createConversation()
 
   const userMessage = data.inputMessage.trim()
   data.inputMessage = ''
-
-  data.messages.push({
-    role: 'user',
-    content: userMessage
-  })
+  data.messages.push({ role: 'user', content: userMessage })
   scrollToBottom()
 
   data.loading = true
-  data.messages.push({
-    role: 'assistant',
-    content: ''
-  })
+  data.messages.push({ role: 'assistant', content: '' })
 
   try {
     const response = await fetch(`${import.meta.env.VITE_BASE_URL}/chat/send`, {
@@ -197,10 +199,7 @@ const sendMessage = async () => {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${localStorage.getItem('token')}`
       },
-      body: JSON.stringify({
-        conversation_id: data.currentConversation,
-        message: userMessage
-      })
+      body: JSON.stringify({ conversation_id: data.currentConversation, message: userMessage })
     })
 
     const reader = response.body.getReader()
@@ -210,11 +209,8 @@ const sendMessage = async () => {
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-
       const text = decoder.decode(value)
-      const lines = text.split('\n')
-
-      for (const line of lines) {
+      for (const line of text.split('\n')) {
         if (line.startsWith('data: ')) {
           try {
             const jsonStr = line.slice(6)
@@ -223,14 +219,10 @@ const sendMessage = async () => {
               if (sseData.content) {
                 assistantMessage += sseData.content
                 const lastMsg = data.messages[data.messages.length - 1]
-                if (lastMsg && lastMsg.role === 'assistant') {
-                  lastMsg.content = assistantMessage
-                }
+                if (lastMsg?.role === 'assistant') lastMsg.content = assistantMessage
                 scrollToBottom()
               }
-              if (sseData.done) {
-                break
-              }
+              if (sseData.done) break
             }
           } catch (e) {
             console.error('解析 SSE 数据失败:', e)
@@ -238,42 +230,60 @@ const sendMessage = async () => {
         }
       }
     }
-
     await loadConversations()
   } catch (error) {
     ElMessage.error('发送消息失败')
-    console.error('发送消息失败:', error)
   } finally {
     data.loading = false
     scrollToBottom()
   }
 }
 
-onMounted(() => {
-  loadConversations()
-})
+onMounted(() => loadConversations())
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
+.chat-page {
+  height: calc(100vh - 80px);
+  overflow: hidden;
+}
+
 .chat-container {
   display: flex;
-  height: calc(100vh - 100px);
-  background: #fff;
-  border-radius: 8px;
+  height: 100%;
+  background: #ffffff;
+  border-radius: 5px;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.06);
   overflow: hidden;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
 }
 
 .conversation-sidebar {
-  width: 280px;
-  border-right: 1px solid #e4e7ed;
+  width: 260px;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  background: #f7f9fc;
+  border-right: 1px solid #eef0f4;
 }
 
 .sidebar-header {
-  padding: 16px;
-  border-bottom: 1px solid #e4e7ed;
+  padding: 12px;
+  border-bottom: 1px solid #eef0f4;
+}
+
+.new-chat-btn {
+  width: 100%;
+  background: linear-gradient(135deg, #1a73e8 0%, #00c6ff 100%);
+  border: none;
+  color: #ffffff;
+  font-weight: 600;
+  border-radius: 6px;
+  height: 38px;
+  transition: box-shadow 0.2s ease;
+}
+
+.new-chat-btn:hover {
+  box-shadow: 0 3px 10px rgba(26, 115, 232, 0.35);
 }
 
 .conversation-list {
@@ -283,36 +293,63 @@ onMounted(() => {
 }
 
 .conversation-item {
-  padding: 12px;
-  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 6px;
   cursor: pointer;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   position: relative;
-  transition: background-color 0.2s;
+  transition: all 0.2s ease;
+  border: 1px solid transparent;
 }
 
 .conversation-item:hover {
-  background-color: #f5f7fa;
+  background: #eef3fb;
 }
 
 .conversation-item.active {
-  background-color: #ecf5ff;
-  border: 1px solid #b3d8ff;
+  background: #eaf3ff;
+  border-color: #c6d8f2;
+}
+
+.conv-icon {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: #eaf3ff;
+  color: #1a73e8;
+  font-size: 15px;
+}
+
+.conversation-item.active .conv-icon {
+  background: #1a73e8;
+  color: #ffffff;
+}
+
+.conv-info {
+  flex: 1;
+  min-width: 0;
 }
 
 .conv-title {
-  font-size: 14px;
-  color: #303133;
+  font-size: 13px;
+  color: #263247;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding-right: 30px;
+  padding-right: 24px;
 }
 
 .conv-time {
-  font-size: 12px;
-  color: #909399;
-  margin-top: 4px;
+  font-size: 11px;
+  color: #9097a5;
+  margin-top: 2px;
 }
 
 .delete-btn {
@@ -328,16 +365,27 @@ onMounted(() => {
   opacity: 1;
 }
 
+.sidebar-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 16px;
+  color: #b0b7c3;
+  font-size: 13px;
+}
+
 .chat-main {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .messages-container {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
+  padding: 24px;
 }
 
 .empty-state {
@@ -346,18 +394,35 @@ onMounted(() => {
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  color: #909399;
 }
 
-.empty-state p {
-  margin-top: 16px;
-  font-size: 16px;
+.empty-icon {
+  width: 72px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #eaf3ff;
+  color: #1a73e8;
+  margin-bottom: 16px;
+}
+
+.empty-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #263247;
+  margin-bottom: 6px;
+}
+
+.empty-desc {
+  font-size: 13px;
+  color: #9097a5;
 }
 
 .message {
   display: flex;
-  margin-bottom: 20px;
   gap: 12px;
+  margin-bottom: 20px;
 }
 
 .message.user {
@@ -368,78 +433,105 @@ onMounted(() => {
   flex-shrink: 0;
 }
 
-.message-content {
+.avatar-img {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 2px solid #eaf3ff;
+  object-fit: cover;
+}
+
+.avatar-ai {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #1a73e8 0%, #00c6ff 100%);
+  color: #ffffff;
+  font-size: 18px;
+}
+
+.message-bubble {
   max-width: 70%;
 }
 
 .message-text {
   padding: 12px 16px;
   border-radius: 12px;
-  line-height: 1.6;
+  line-height: 1.7;
   word-break: break-word;
+  font-size: 14px;
 }
 
 .message.user .message-text {
-  background-color: #409eff;
-  color: white;
+  background: linear-gradient(135deg, #1a73e8 0%, #2b8af7 100%);
+  color: #ffffff;
   border-top-right-radius: 4px;
 }
 
 .message.assistant .message-text {
-  background-color: #f4f4f5;
-  color: #303133;
+  background: #f5f7fa;
+  color: #263247;
   border-top-left-radius: 4px;
+  border: 1px solid #eef0f4;
 }
 
 .message-text.loading {
   display: flex;
-  gap: 4px;
+  gap: 5px;
+  align-items: center;
+  padding: 14px 20px;
 }
 
 .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #1a73e8;
   animation: bounce 1.4s infinite ease-in-out both;
-  font-size: 24px;
-  line-height: 1;
 }
 
-.dot:nth-child(1) {
-  animation-delay: -0.32s;
-}
-
-.dot:nth-child(2) {
-  animation-delay: -0.16s;
-}
+.dot:nth-child(2) { animation-delay: 0.16s; }
+.dot:nth-child(3) { animation-delay: 0.32s; }
 
 @keyframes bounce {
-  0%, 80%, 100% {
-    transform: scale(0);
-  }
-  40% {
-    transform: scale(1);
-  }
+  0%, 80%, 100% { transform: scale(0.3); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
 }
 
 .input-container {
-  padding: 16px;
-  border-top: 1px solid #e4e7ed;
+  padding: 12px 16px;
+  border-top: 1px solid #eef0f4;
   display: flex;
-  gap: 12px;
+  gap: 10px;
   align-items: flex-end;
+  background: #fafbfc;
 }
 
-.input-container .el-input {
-  flex: 1;
+.input-container :deep(.el-textarea__inner) {
+  resize: none;
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.send-btn {
+  height: 42px;
+  min-width: 80px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #1a73e8 0%, #00c6ff 100%);
+  border: none;
+  font-weight: 600;
+}
+
+.send-btn:disabled {
+  background: #c0c4cc;
 }
 </style>
 
-<style>
-.el-textarea__inner {
-  resize: none;
-}
-
-.message-text p {
-  margin: 0;
-}
+<style lang="scss">
+.message-text p { margin: 0; }
+.message-text p + p { margin-top: 8px; }
 
 .message-text pre {
   background: #1e1e1e;
@@ -447,22 +539,24 @@ onMounted(() => {
   padding: 12px;
   border-radius: 6px;
   overflow-x: auto;
+  margin: 8px 0;
 }
 
 .message-text code {
-  background: #e6e8ea;
+  background: rgba(26, 115, 232, 0.08);
+  color: #1a73e8;
   padding: 2px 6px;
   border-radius: 4px;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .message-text pre code {
   background: none;
+  color: inherit;
   padding: 0;
 }
 
-.message-text ul,
-.message-text ol {
+.message-text ul, .message-text ol {
   padding-left: 20px;
   margin: 8px 0;
 }
@@ -470,16 +564,17 @@ onMounted(() => {
 .message-text table {
   border-collapse: collapse;
   margin: 8px 0;
+  width: 100%;
 }
 
-.message-text th,
-.message-text td {
-  border: 1px solid #dcdfe6;
+.message-text th, .message-text td {
+  border: 1px solid #eef0f4;
   padding: 8px 12px;
   text-align: left;
 }
 
 .message-text th {
   background: #f5f7fa;
+  font-weight: 600;
 }
 </style>
