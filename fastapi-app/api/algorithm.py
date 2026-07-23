@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends
 from pydantic import create_model, Field
 from tortoise.contrib.pydantic import pydantic_model_creator
 
-from common.auth import get_current_user
+from common.auth import get_current_admin, get_current_user
 from common.result import Result, PageInfo
 from models import Algorithm, AlgorithmInfo
 
@@ -83,14 +83,14 @@ async def select_page(name: str = "", userId: int = 0, pageNum: int = 1, pageSiz
     return Result.success(pageinfo)
 
 
-@router.post("/add")
+@router.post("/add", dependencies=[Depends(get_current_admin)])
 async def add(algorithm_pydantic: AlgorithmCreatePydantic):
     create_data = algorithm_pydantic.model_dump(exclude_unset=True, exclude={'id'})
     algorithm = await Algorithm.create(**create_data)
     return Result.success(algorithm.id)
 
 
-@router.put("/update")
+@router.put("/update", dependencies=[Depends(get_current_admin)])
 async def update(algorithm_pydantic: AlgorithmCreatePydantic):
     if not algorithm_pydantic.id:
         return Result.error("缺少 id")
@@ -99,20 +99,20 @@ async def update(algorithm_pydantic: AlgorithmCreatePydantic):
     return Result.success()
 
 
-@router.delete("/delete/{id}")
+@router.delete("/delete/{id}", dependencies=[Depends(get_current_admin)])
 async def delete(id: int):
     await Algorithm.filter(id=id).delete()
     return Result.success()
 
 
-@router.post("/info/add")
+@router.post("/info/add", dependencies=[Depends(get_current_admin)])
 async def add_info(info_pydantic: AlgorithmInfoCreatePydantic):
     create_data = info_pydantic.model_dump(exclude_unset=True, exclude={'id'})
     await AlgorithmInfo.create(**create_data)
     return Result.success()
 
 
-@router.put("/info/update")
+@router.put("/info/update", dependencies=[Depends(get_current_admin)])
 async def update_info(info_pydantic: AlgorithmInfoCreatePydantic):
     if not info_pydantic.id:
         return Result.error("缺少 id")
@@ -121,7 +121,7 @@ async def update_info(info_pydantic: AlgorithmInfoCreatePydantic):
     return Result.success()
 
 
-@router.delete("/info/delete/{id}")
+@router.delete("/info/delete/{id}", dependencies=[Depends(get_current_admin)])
 async def delete_info(id: int):
     await AlgorithmInfo.filter(id=id).delete()
     return Result.success()

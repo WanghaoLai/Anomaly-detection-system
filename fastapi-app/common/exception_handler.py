@@ -15,7 +15,8 @@ def setup_exceptions(app: FastAPI):
     async def http_exception_handler(request: Request, exc: HTTPException):
         return JSONResponse(
             status_code=exc.status_code,
-            content={"code": str(exc.status_code), "msg": exc.detail}
+            content={"code": str(exc.status_code), "msg": exc.detail},
+            headers=exc.headers,
         )
 
     @app.exception_handler(CustomException)
@@ -44,8 +45,4 @@ def setup_exceptions(app: FastAPI):
             status_code=status.HTTP_200_OK,  # http总是返回200
             content={"code": "500", "msg": "系统错误"}
         )
-        # 允许所有源（与你的 CORS 配置一致）
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "*"
-        response.headers["Access-Control-Allow-Headers"] = "*"
         return response

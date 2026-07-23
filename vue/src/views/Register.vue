@@ -20,6 +20,9 @@
       <div style="text-align: right; color: #999; font-size: 14px;">
         已有账号？请 <a href="/login">登录</a>
       </div>
+      <div class="login-copyright">
+        Copyright &copy; 2026 机器人与智能系统实验室 All Rights Reserved
+      </div>
     </div>
   </div>
 </template>
@@ -129,5 +132,13 @@ a {
 
 a:hover {
   text-decoration: underline;
+}
+
+.login-copyright {
+  margin-top: 24px;
+  text-align: center;
+  font-size: 12px;
+  color: #b0b0b0;
+  letter-spacing: 0.5px;
 }
 </style>

@@ -17,6 +17,7 @@
             :action="uploadUrl"
             :on-success="handleFileUpload"
             :headers="uploadHeaders"
+            :with-credentials="true"
           >
             <img v-if="data.user.avatar" :src="data.user.avatar" class="avatar-img" />
             <div v-else class="avatar-placeholder">
@@ -71,9 +72,10 @@ import { reactive, ref } from "vue"
 import { User, Plus, Camera, Edit, Check, Key } from "@element-plus/icons-vue"
 import request from "@/utils/request"
 import { ElMessage } from "element-plus"
+import { API_BASE_URL, getCsrfToken } from "@/utils/auth"
 
-const uploadUrl = import.meta.env.VITE_BASE_URL + '/files/upload'
-const uploadHeaders = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+const uploadUrl = API_BASE_URL + '/files/upload'
+const uploadHeaders = { 'X-CSRF-Token': getCsrfToken() }
 
 const formRef = ref()
 const data = reactive({

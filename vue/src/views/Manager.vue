@@ -94,7 +94,7 @@
             <el-icon><Collection /></el-icon>
             <span>知识库管理</span>
           </el-menu-item>
-          <el-menu-item index="/manager/chat">
+          <el-menu-item index="/manager/chat" v-if="data.user.role === '用户'">
             <el-icon><ChatDotRound /></el-icon>
             <span>智能助手</span>
           </el-menu-item>
@@ -111,6 +111,11 @@
             <span>退出系统</span>
           </el-menu-item>
         </el-menu>
+        <div class="sidebar-copyright">
+          <div>Copyright &copy; 2026</div>
+          <div>机器人与智能系统实验室</div>
+          <div>All Rights Reserved</div>
+        </div>
       </div>
 
       <div class="manager-main">
@@ -125,6 +130,8 @@
 import { reactive, ref, onMounted, onUnmounted } from "vue";
 import router from "@/router";
 import {ElMessage} from "element-plus";
+import request from "@/utils/request";
+import { clearAuthState } from "@/utils/auth";
 
 const currentTime = ref('')
 let timer = null
@@ -163,11 +170,15 @@ const updateUser = () => {
   data.user = JSON.parse(localStorage.getItem('system-user') || '{}')
 }
 
-const logout = () => {
-  ElMessage.success('退出成功')
-  localStorage.removeItem('token')
-  localStorage.removeItem('system-user')
-  router.push('/login')
+const logout = async () => {
+  // 先标记为主动退出，避免尚未完成的接口请求把 401 误报为登录过期。
+  clearAuthState()
+  try {
+    await request.post('/logout')
+  } finally {
+    ElMessage.success('退出成功')
+    router.push('/login')
+  }
 }
 </script>
 
@@ -244,6 +255,18 @@ const logout = () => {
   width: 210px;
   min-height: calc(100vh - 60px);
   background: linear-gradient(180deg, #1d2b4a 0%, #2c3e6b 100%);
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-copyright {
+  margin-top: auto;
+  padding: 16px 12px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.25);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .manager-main {

@@ -51,13 +51,11 @@ import { Lock, Check } from "@element-plus/icons-vue"
 import request from "@/utils/request"
 import { ElMessage } from "element-plus"
 import router from "@/router"
+import { clearAuthState } from "@/utils/auth"
 
 const formRef = ref()
 const data = reactive({
-  user: JSON.parse(localStorage.getItem('system-user') || '{}'),
   form: {
-    id: null,
-    role: '',
     password: '',
     newPassword: '',
     confirmPasword: '',
@@ -68,8 +66,6 @@ const data = reactive({
     confirmPasword: [{ required: true, message: '请确认新密码', trigger: 'blur' }],
   }
 })
-data.form.id = data.user.id
-data.form.role = data.user.role
 
 const save = () => {
   formRef.value.validate(valid => {
@@ -82,11 +78,13 @@ const save = () => {
         ElMessage.error('确认新密码错误')
         return
       }
-      request.put('/updatePassword', data.form).then(res => {
+      request.put('/updatePassword', {
+        password: data.form.password,
+        newPassword: data.form.newPassword,
+      }).then(res => {
         if (res.code === '200') {
           ElMessage.success('修改密码成功，请重新登录')
-          localStorage.removeItem('token')
-          localStorage.removeItem('system-user')
+          clearAuthState()
           router.push('/login')
         } else {
           ElMessage.error(res.msg)

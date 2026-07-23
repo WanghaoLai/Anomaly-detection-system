@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import create_model, Field
 from tortoise.contrib.pydantic import pydantic_model_creator
 
-from common.auth import get_current_user
+from common.auth import get_current_admin, get_current_user
 from common.result import Result, PageInfo
 from models import Dataset, DatasetInfo
 
@@ -68,14 +68,14 @@ async def select_page(name: str = "", userId: int = 0, pageNum: int = 1, pageSiz
     return Result.success(pageinfo)
 
 
-@router.post("/add")
+@router.post("/add", dependencies=[Depends(get_current_admin)])
 async def add(dataset_pydantic: DatasetCreatePydantic):
     create_data = dataset_pydantic.model_dump(exclude_unset=True, exclude={'id'})
     dataset = await Dataset.create(**create_data)
     return Result.success(dataset.id)
 
 
-@router.put("/update")
+@router.put("/update", dependencies=[Depends(get_current_admin)])
 async def update(dataset_pydantic: DatasetCreatePydantic):
     if not dataset_pydantic.id:
         return Result.error("缺少 id")
@@ -84,20 +84,20 @@ async def update(dataset_pydantic: DatasetCreatePydantic):
     return Result.success()
 
 
-@router.delete("/delete/{id}")
+@router.delete("/delete/{id}", dependencies=[Depends(get_current_admin)])
 async def delete(id: int):
     await Dataset.filter(id=id).delete()
     return Result.success()
 
 
-@router.post("/info/add")
+@router.post("/info/add", dependencies=[Depends(get_current_admin)])
 async def add_info(info_pydantic: DatasetInfoCreatePydantic):
     create_data = info_pydantic.model_dump(exclude_unset=True, exclude={'id'})
     await DatasetInfo.create(**create_data)
     return Result.success()
 
 
-@router.put("/info/update")
+@router.put("/info/update", dependencies=[Depends(get_current_admin)])
 async def update_info(info_pydantic: DatasetInfoCreatePydantic):
     if not info_pydantic.id:
         return Result.error("缺少 id")
@@ -106,7 +106,7 @@ async def update_info(info_pydantic: DatasetInfoCreatePydantic):
     return Result.success()
 
 
-@router.delete("/info/delete/{id}")
+@router.delete("/info/delete/{id}", dependencies=[Depends(get_current_admin)])
 async def delete_info(id: int):
     await DatasetInfo.filter(id=id).delete()
     return Result.success()

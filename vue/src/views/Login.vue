@@ -23,6 +23,9 @@
       <div style="text-align: right; color: #999; font-size: 14px;">
         还没有账号？请 <a href="/register">注册</a>
       </div>
+      <div class="login-copyright">
+        Copyright &copy; 2026 机器人与智能系统实验室 All Rights Reserved
+      </div>
     </div>
   </div>
 </template>
@@ -56,12 +59,14 @@
         request.post('/login', data.form).then(res => {
           if (res.code === '200') {
             ElMessage.success("登录成功")
-            localStorage.setItem('token', res.data.token)
+            localStorage.removeItem('token')
             localStorage.setItem('system-user', JSON.stringify(res.data.user))
             router.push('/manager/home')
           } else {
             ElMessage.error(res.msg)
           }
+        }).catch(error => {
+          ElMessage.error(error.response?.data?.msg || '登录失败，请稍后重试')
         })
       }
     })).catch(error => {
@@ -120,5 +125,13 @@ a {
 
 a:hover {
   text-decoration: underline;
+}
+
+.login-copyright {
+  margin-top: 24px;
+  text-align: center;
+  font-size: 12px;
+  color: #b0b0b0;
+  letter-spacing: 0.5px;
 }
 </style>

@@ -20,6 +20,42 @@ def _env_float(name: str, default: float) -> float:
     return float(value) if value else default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_list(name: str, default: list[str]) -> list[str]:
+    value = os.getenv(name)
+    if not value:
+        return default
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _validate_jwt_secret(value: str | None) -> str:
+    """校验 JWT 对称签名密钥，并在配置不安全时阻止应用启动。"""
+    if value is None or not value.strip():
+        raise RuntimeError(
+            "JWT_SECRET_KEY 未配置；请使用密码学安全随机数生成器创建密钥"
+        )
+
+    secret = value.strip()
+    insecure_values = {
+        "change-me",
+        "change-me-in-env",
+        "changeme",
+        "replace_with_a_long_random_secret",
+        "secret",
+    }
+    if secret.lower() in insecure_values:
+        raise RuntimeError("JWT_SECRET_KEY 仍为不安全的默认值或占位值")
+    if len(secret.encode("utf-8")) < 32:
+        raise RuntimeError("JWT_SECRET_KEY 至少需要 32 字节")
+    return secret
+
+
 TORTOISE_ORM = {
     "connections": {
         "default": {
@@ -57,9 +93,31 @@ AI_CONFIG = {
 }
 
 # JWT 配置
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-in-env")
+JWT_SECRET_KEY = _validate_jwt_secret(os.getenv("JWT_SECRET_KEY"))
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-JWT_EXPIRE_HOURS = _env_int("JWT_EXPIRE_HOURS", 24)
+JWT_ACCESS_EXPIRE_MINUTES = _env_int("JWT_ACCESS_EXPIRE_MINUTES", 15)
+JWT_REFRESH_EXPIRE_DAYS = _env_int("JWT_REFRESH_EXPIRE_DAYS", 7)
+JWT_COOKIE_SECURE = _env_bool("JWT_COOKIE_SECURE", False)
+JWT_COOKIE_SAMESITE = os.getenv("JWT_COOKIE_SAMESITE", "lax").lower()
+if JWT_COOKIE_SAMESITE not in {"lax", "strict", "none"}:
+    raise RuntimeError("JWT_COOKIE_SAMESITE 必须为 lax、strict 或 none")
+if JWT_COOKIE_SAMESITE == "none" and not JWT_COOKIE_SECURE:
+    raise RuntimeError("SameSite=None 的认证 Cookie 必须启用 Secure")
+
+ACCESS_COOKIE_NAME = "access_token"
+REFRESH_COOKIE_NAME = "refresh_token"
+CSRF_COOKIE_NAME = "csrf_token"
+
+# 登录限流
+LOGIN_RATE_LIMIT_ATTEMPTS = _env_int("LOGIN_RATE_LIMIT_ATTEMPTS", 5)
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = _env_int("LOGIN_RATE_LIMIT_WINDOW_SECONDS", 300)
+LOGIN_RATE_LIMIT_LOCK_SECONDS = _env_int("LOGIN_RATE_LIMIT_LOCK_SECONDS", 900)
+
+# 带凭据的 CORS 不能使用 "*"，生产环境应显式配置真实前端域名。
+CORS_ALLOWED_ORIGINS = _env_list(
+    "CORS_ALLOWED_ORIGINS",
+    ["http://localhost:5173", "http://127.0.0.1:5173"],
+)
 
 # 远程 GPU 服务器配置（凭据仅在后端使用）
 GPU_SERVER_CONFIG = {

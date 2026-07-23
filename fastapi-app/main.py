@@ -7,14 +7,15 @@ from api import api_router
 from common.exception_handler import setup_exceptions
 
 from common.result import Result
-from settings import TORTOISE_ORM
+from settings import CORS_ALLOWED_ORIGINS, TORTOISE_ORM
 
 app = FastAPI()
 
 # 跨域配置 CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 允许所有源
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],  # 允许所有 HTTP 方法
     allow_headers=["*"],  # 允许所有请求头
 )
