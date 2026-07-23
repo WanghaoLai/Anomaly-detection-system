@@ -9,6 +9,7 @@ class Admin(Model):
     name = fields.CharField(max_length=255, null=True)
     avatar = fields.CharField(max_length=255, null=True)
     role = fields.CharField(max_length=255, null=True)
+    token_version = fields.IntField(default=0, null=False)
 
     class Meta:
         table = 'admin'
@@ -22,9 +23,35 @@ class User(Model):
     name = fields.CharField(max_length=255, null=True)
     avatar = fields.CharField(max_length=255, null=True)
     role = fields.CharField(max_length=255, null=True)
+    token_version = fields.IntField(default=0, null=False)
 
     class Meta:
         table = 'user'
+
+
+class AuthSession(Model):
+    id = fields.CharField(max_length=36, pk=True)
+    user_id = fields.IntField(index=True)
+    role = fields.CharField(max_length=20, index=True)
+    refresh_jti = fields.CharField(max_length=64, unique=True)
+    expires_at = fields.DatetimeField(index=True)
+    revoked_at = fields.DatetimeField(null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = 'auth_session'
+
+
+class LoginThrottle(Model):
+    key = fields.CharField(max_length=64, pk=True)
+    failures = fields.IntField(default=0)
+    window_started = fields.DatetimeField()
+    locked_until = fields.DatetimeField(null=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = 'login_throttle'
 
 
 class Address(Model):

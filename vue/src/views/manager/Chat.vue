@@ -89,6 +89,7 @@ import { reactive, ref, nextTick, onMounted } from 'vue'
 import { Plus, Delete, ChatDotRound, Monitor, Promotion } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/utils/request'
+import { API_BASE_URL, getCsrfToken } from '@/utils/auth'
 import { marked } from 'marked'
 
 const messagesContainer = ref(null)
@@ -193,14 +194,20 @@ const sendMessage = async () => {
   data.messages.push({ role: 'assistant', content: '' })
 
   try {
-    const response = await fetch(`${import.meta.env.VITE_BASE_URL}/chat/send`, {
+    const response = await fetch(`${API_BASE_URL}/chat/send`, {
       method: 'POST',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('token')}`
+        'X-CSRF-Token': getCsrfToken()
       },
       body: JSON.stringify({ conversation_id: data.currentConversation, message: userMessage })
     })
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      throw new Error(errorData.msg || '发送消息失败')
+    }
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()

@@ -1,57 +1,98 @@
+import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '../router'
-import axios from "axios";
+import {
+  API_BASE_URL,
+  clearAuthState,
+  getCsrfToken,
+  saveAuthenticatedUser,
+} from './auth'
+
 
 const request = axios.create({
-    baseURL: import.meta.env.VITE_BASE_URL,
-    timeout: 30000  // 后台接口超时时间设置
+  baseURL: API_BASE_URL,
+  timeout: 30000,
+  withCredentials: true,
 })
 
-// request 拦截器
-// 可以自请求发送前对请求做一些处理
-request.interceptors.request.use(config => {
-    const token = localStorage.getItem('token');
-    if (token) {
-        config.headers['Authorization'] = `Bearer ${token}`;
-    }
-    return config
-}, error => {
-    return Promise.reject(error)
-});
+const refreshClient = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 30000,
+  withCredentials: true,
+})
 
-// response 拦截器
-// 可以在接口响应后统一处理结果
+let refreshPromise = null
+
+const refreshSession = () => {
+  if (!refreshPromise) {
+    refreshPromise = refreshClient.post('/refresh', {}, {
+      headers: { 'X-CSRF-Token': getCsrfToken() },
+    }).then(response => {
+      saveAuthenticatedUser(response.data)
+      return response
+    }).finally(() => {
+      refreshPromise = null
+    })
+  }
+  return refreshPromise
+}
+
+request.interceptors.request.use(config => {
+  const method = String(config.method || 'get').toUpperCase()
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    config.headers['X-CSRF-Token'] = getCsrfToken()
+  }
+  return config
+})
+
 request.interceptors.response.use(
-    response => {
-        let res = response.data;
-        // 如果是返回的文件
-        if (response.config.responseType === 'blob') {
-            return res
-        }
-        // 兼容服务端返回的字符串数据
-        if (typeof res === 'string') {
-            res = res ? JSON.parse(res) : res
-        }
-        // 当权限验证不通过的时候给出提示
-        if (res.code === '401') {
-            ElMessage.error(res.msg);
-            router.push("/login")
-        }
-        return res;
-    },
-        error => {
-            if (error.response && error.response.status === 401) {
-                // /verify 由路由守卫处理，避免重复提示和跳转
-                if (error.config.url !== '/verify') {
-                    ElMessage.error('登录已过期，请重新登录');
-                }
-                localStorage.removeItem('token');
-                localStorage.removeItem('system-user');
-                router.push('/login');
-            }
-            console.log('err' + error)
-            return Promise.reject(error)
-        }
+  response => {
+    let res = response.data
+    if (response.config.responseType === 'blob') {
+      return res
+    }
+    if (typeof res === 'string') {
+      res = res ? JSON.parse(res) : res
+    }
+    return res
+  },
+  async error => {
+    const original = error.config || {}
+    const url = String(original.url || '')
+    const canRefresh = (
+      error.response?.status === 401
+      && !original._retry
+      && !['/login', '/refresh', '/logout'].some(path => url.endsWith(path))
+    )
+
+    if (canRefresh) {
+      original._retry = true
+      try {
+        await refreshSession()
+        return request(original)
+      } catch {
+        // 统一进入下面的会话清理流程。
+      }
+    }
+
+    if (error.response?.status === 401) {
+      const hadAuthenticatedUser = Boolean(localStorage.getItem('system-user'))
+      const isAuthEndpoint = ['/login', '/refresh', '/logout', '/verify']
+        .some(path => url.endsWith(path))
+      clearAuthState()
+      if (
+        hadAuthenticatedUser
+        && !isAuthEndpoint
+        && router.currentRoute.value.path !== '/login'
+      ) {
+        ElMessage.error('登录已过期，请重新登录')
+      }
+      if (router.currentRoute.value.path !== '/login') {
+        router.push('/login')
+      }
+    }
+    return Promise.reject(error)
+  },
 )
 
 

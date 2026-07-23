@@ -68,7 +68,7 @@
                   round
                   @click="handleEdit(scope.row)"
                 >
-                  <el-icon><Edit /></el-icon>编辑
+                  <el-icon><Edit /></el-icon>
                 </el-button>
                 <el-button
                   class="action-btn action-btn--delete"
@@ -76,7 +76,7 @@
                   round
                   @click="handleDelete(scope.row.id)"
                 >
-                  <el-icon><Delete /></el-icon>删除
+                  <el-icon><Delete /></el-icon>
                 </el-button>
               </div>
             </template>
@@ -113,7 +113,7 @@
           />
         </el-form-item>
         <el-form-item label="头像" prop="avatar">
-          <el-upload :action="uploadUrl" :headers="uploadHeaders" list-type="picture" :on-success="handleImgSuccess">
+          <el-upload :action="uploadUrl" :headers="uploadHeaders" :with-credentials="true" list-type="picture" :on-success="handleImgSuccess">
             <el-button type="primary">上传图片</el-button>
           </el-upload>
         </el-form-item>
@@ -133,9 +133,10 @@ import { reactive, ref, computed } from "vue"
 import { Key, Plus, Edit, Delete } from "@element-plus/icons-vue"
 import request from "@/utils/request"
 import { ElMessageBox, ElMessage } from "element-plus"
+import { API_BASE_URL, getCsrfToken } from "@/utils/auth"
 
-const uploadUrl = import.meta.env.VITE_BASE_URL + '/files/upload'
-const uploadHeaders = { Authorization: `Bearer ${localStorage.getItem('token')}` }
+const uploadUrl = API_BASE_URL + '/files/upload'
+const uploadHeaders = { 'X-CSRF-Token': getCsrfToken() }
 
 const formRef = ref()
 const validatePassword = (rule, value, callback) => {

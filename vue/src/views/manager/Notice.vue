@@ -40,10 +40,10 @@
             <template #default="scope">
               <div class="action-group">
                 <el-button class="action-btn action-btn--edit" size="small" round @click="handleEdit(scope.row)">
-                  <el-icon><Edit /></el-icon>编辑
+                  <el-icon><Edit /></el-icon>
                 </el-button>
                 <el-button class="action-btn action-btn--delete" size="small" round @click="handleDelete(scope.row.id)">
-                  <el-icon><Delete /></el-icon>删除
+                  <el-icon><Delete /></el-icon>
                 </el-button>
               </div>
             </template>

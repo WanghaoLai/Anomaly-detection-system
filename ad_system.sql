@@ -50,6 +50,7 @@ CREATE TABLE `admin` (
   `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '名称',
   `avatar` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '头像',
   `role` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '角色',
+  `token_version` int NOT NULL DEFAULT '0' COMMENT '令牌版本',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE KEY `username` (`username`) USING BTREE
 ) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC COMMENT='管理员信息';
@@ -62,6 +63,38 @@ INSERT INTO `admin` (`id`, `username`, `password`, `name`, `avatar`, `role`) VAL
 INSERT INTO `admin` (`id`, `username`, `password`, `name`, `avatar`, `role`) VALUES (2, '222', '222', '222', 'http://127.0.0.1:9090/files/download/head.jpg', '管理员');
 INSERT INTO `admin` (`id`, `username`, `password`, `name`, `avatar`, `role`) VALUES (3, '111', '$2b$12$j62UQt7k0BvjYrBdVBkW9ugLlSkUic7qOCwSNBXLLaGuLnTdSG/tK', '111', 'http://127.0.0.1:9090/files/download/head.jpg', '管理员');
 COMMIT;
+
+-- ----------------------------
+-- Table structure for auth_session
+-- ----------------------------
+DROP TABLE IF EXISTS `auth_session`;
+CREATE TABLE `auth_session` (
+  `id` varchar(36) NOT NULL,
+  `user_id` int NOT NULL,
+  `role` varchar(20) NOT NULL,
+  `refresh_jti` varchar(64) NOT NULL,
+  `expires_at` datetime(6) NOT NULL,
+  `revoked_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_auth_session_refresh_jti` (`refresh_jti`),
+  KEY `idx_auth_session_principal` (`role`, `user_id`),
+  KEY `idx_auth_session_expires_at` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='认证会话';
+
+-- ----------------------------
+-- Table structure for login_throttle
+-- ----------------------------
+DROP TABLE IF EXISTS `login_throttle`;
+CREATE TABLE `login_throttle` (
+  `key` varchar(64) NOT NULL,
+  `failures` int NOT NULL DEFAULT '0',
+  `window_started` datetime(6) NOT NULL,
+  `locked_until` datetime(6) DEFAULT NULL,
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='登录限流';
 
 -- ----------------------------
 -- Table structure for algorithm
@@ -308,6 +341,7 @@ CREATE TABLE `user` (
   `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '名称',
   `avatar` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '头像',
   `role` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '角色',
+  `token_version` int NOT NULL DEFAULT '0' COMMENT '令牌版本',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户信息';
 
