@@ -86,6 +86,18 @@
             <el-icon><Monitor /></el-icon>
             <span>服务器信息</span>
           </el-menu-item>
+          <el-menu-item index="/manager/upload" v-if="data.user.role === '用户'">
+            <el-icon><DataLine /></el-icon>
+            <span>算法训练</span>
+          </el-menu-item>
+          <el-menu-item index="/manager/upload" v-if="data.user.role === '用户'">
+            <el-icon><TrendCharts /></el-icon>
+            <span>算法推理</span>
+          </el-menu-item>
+          <el-menu-item index="/manager/upload" v-if="data.user.role === '用户'">
+            <el-icon><Histogram /></el-icon>
+            <span>实验结果可视化</span>
+          </el-menu-item>
           <el-menu-item index="/manager/notice" v-if="data.user.role === '管理员'">
             <el-icon><Bell /></el-icon>
             <span>公告管理</span>
