@@ -1,6 +1,2 @@
-[project]
-name = "anomaly-detection-system"
-version = "0.1.0"
-
 [tool.vercel]
 entrypoint = "fastapi-app.main:app"
