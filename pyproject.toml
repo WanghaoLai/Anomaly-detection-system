@@ -1,2 +1,2 @@
 [tool.vercel]
-entrypoint = "fastapi-app.main:app"
+entrypoint = "app:app"
