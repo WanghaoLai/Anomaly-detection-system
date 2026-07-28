@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 
-from common.auth import get_current_user
+from common.auth import get_current_admin, get_current_user
 from common.result import Result
 from services.gpu_server_service import GpuServerError, gpu_server_service
 
@@ -40,5 +40,13 @@ async def get_account_file_roots(current_user: dict = Depends(get_current_user))
         return Result.success(
             gpu_server_service.get_file_roots(current_user["username"])
         )
+    except GpuServerError as exc:
+        return Result.error(str(exc))
+
+
+@router.get("/conda-environments", dependencies=[Depends(get_current_admin)])
+async def get_conda_environments():
+    try:
+        return Result.success(await gpu_server_service.get_conda_environments())
     except GpuServerError as exc:
         return Result.error(str(exc))

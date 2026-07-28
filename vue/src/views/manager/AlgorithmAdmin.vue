@@ -41,8 +41,13 @@
               {{ scope.row.framework || '--' }}{{ scope.row.framework_version ? ` ${scope.row.framework_version}` : '' }}
             </template>
           </el-table-column>
-          <el-table-column label="Docker 镜像" width="120" align="center" show-overflow-tooltip>
-            <template #default="scope">{{ scope.row.docker_image || '--' }}</template>
+          <el-table-column label="Conda 环境" width="120" align="center" show-overflow-tooltip>
+            <template #default="scope">{{ scope.row.conda_env_name || '--' }}</template>
+          </el-table-column>
+          <el-table-column label="执行配置" width="125" align="center">
+            <template #default="scope">
+              {{ scope.row.executor_type || '--' }} / {{ scope.row.process_manager || '--' }}
+            </template>
           </el-table-column>
           <el-table-column label="创建者" prop="created_by_name" width="80" align="center" />
           <el-table-column label="操作" align="center" width="160" fixed="right">
@@ -107,7 +112,7 @@
         <div class="form-section-title">环境信息</div>
         <el-row :gutter="16">
           <el-col :span="12">
-            <el-form-item label="框架">
+            <el-form-item label="框架" prop="framework">
               <el-input v-model="data.form.framework" placeholder="如：PyTorch" />
             </el-form-item>
           </el-col>
@@ -129,12 +134,27 @@
             </el-form-item>
           </el-col>
         </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="Conda 环境" prop="conda_env_name">
+              <el-input v-model="data.form.conda_env_name" placeholder="如：pbas-prod" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="Conda 路径">
+              <el-input v-model="data.form.conda_env_path" placeholder="如：/opt/conda/envs/pbas-prod" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="工作目录" prop="working_directory">
+          <el-input v-model="data.form.working_directory" placeholder="算法代码所在的服务器绝对路径" />
+        </el-form-item>
 
         <el-divider />
         <div class="form-section-title">运行信息</div>
         <el-row :gutter="16">
           <el-col :span="12">
-            <el-form-item label="训练入口">
+            <el-form-item label="训练入口" prop="train_entrypoint">
               <el-input v-model="data.form.train_entrypoint" placeholder="训练入口脚本路径" />
             </el-form-item>
           </el-col>
@@ -146,13 +166,36 @@
         </el-row>
         <el-row :gutter="16">
           <el-col :span="12">
-            <el-form-item label="Docker 镜像">
-              <el-input v-model="data.form.docker_image" placeholder="Docker 镜像地址" />
+            <el-form-item label="执行器">
+              <el-select v-model="data.form.executor_type" style="width: 100%">
+                <el-option label="GPU 训练执行器" value="GPU" />
+                <el-option label="CPU 执行器" value="CPU" />
+              </el-select>
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="镜像摘要">
-              <el-input v-model="data.form.docker_image_digest" placeholder="Docker 镜像摘要" />
+            <el-form-item label="进程管理">
+              <el-select v-model="data.form.process_manager" style="width: 100%">
+                <el-option label="systemd 任务" value="SYSTEMD" />
+                <el-option label="独立进程组" value="PROCESS_GROUP" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="JSONL 协议">
+              <el-input v-model="data.form.protocol_version" placeholder="如：1.0" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="SSE 推送">
+              <el-switch
+                v-model="data.form.sse_enabled"
+                inline-prompt
+                active-text="启用"
+                inactive-text="停用"
+              />
             </el-form-item>
           </el-col>
         </el-row>
@@ -222,6 +265,10 @@ const data = reactive({
   rules: {
     algorithm_no: [{ required: true, message: '请输入算法编号', trigger: 'blur' }],
     name: [{ required: true, message: '请输入算法名称', trigger: 'blur' }],
+    framework: [{ required: true, message: '请输入算法框架', trigger: 'blur' }],
+    conda_env_name: [{ required: true, message: '请输入 Conda 环境名称', trigger: 'blur' }],
+    working_directory: [{ required: true, message: '请输入算法工作目录', trigger: 'blur' }],
+    train_entrypoint: [{ required: true, message: '请输入训练入口脚本', trigger: 'blur' }],
   }
 })
 
@@ -251,7 +298,13 @@ const load = () => {
 load()
 
 const handleAdd = () => {
-  data.form = {}
+  data.form = {
+    task_category: 'ANOMALY_DETECTION',
+    executor_type: 'GPU',
+    process_manager: 'SYSTEMD',
+    protocol_version: '1.0',
+    sse_enabled: true,
+  }
   data.formVisible = true
 }
 
@@ -284,10 +337,15 @@ const add = () => {
         framework_version: data.form.framework_version,
         python_version: data.form.python_version,
         cuda_requirement: data.form.cuda_requirement,
+        conda_env_name: data.form.conda_env_name,
+        conda_env_path: data.form.conda_env_path,
+        working_directory: data.form.working_directory,
         train_entrypoint: data.form.train_entrypoint,
         inference_entrypoint: data.form.inference_entrypoint,
-        docker_image: data.form.docker_image,
-        docker_image_digest: data.form.docker_image_digest,
+        executor_type: data.form.executor_type,
+        process_manager: data.form.process_manager,
+        protocol_version: data.form.protocol_version,
+        sse_enabled: data.form.sse_enabled,
         parameter_schema_json: data.form.parameter_schema_json,
         output_schema_json: data.form.output_schema_json,
         resource_spec_json: data.form.resource_spec_json,
@@ -325,10 +383,15 @@ const update = () => {
         framework_version: data.form.framework_version,
         python_version: data.form.python_version,
         cuda_requirement: data.form.cuda_requirement,
+        conda_env_name: data.form.conda_env_name,
+        conda_env_path: data.form.conda_env_path,
+        working_directory: data.form.working_directory,
         train_entrypoint: data.form.train_entrypoint,
         inference_entrypoint: data.form.inference_entrypoint,
-        docker_image: data.form.docker_image,
-        docker_image_digest: data.form.docker_image_digest,
+        executor_type: data.form.executor_type,
+        process_manager: data.form.process_manager,
+        protocol_version: data.form.protocol_version,
+        sse_enabled: data.form.sse_enabled,
         parameter_schema_json: data.form.parameter_schema_json,
         output_schema_json: data.form.output_schema_json,
         resource_spec_json: data.form.resource_spec_json,
@@ -364,9 +427,19 @@ const update = () => {
 
 const save = () => {
   formRef.value.validate(valid => {
-    if (valid) {
-      data.form.id ? update() : add()
+    if (!valid) return
+    for (const key of JSON_FIELDS) {
+      const value = data.form[key]
+      if (typeof value === 'string' && value.trim()) {
+        try {
+          JSON.parse(value)
+        } catch {
+          ElMessage.error(`字段 "${key}" 必须是有效的 JSON`)
+          return
+        }
+      }
     }
+    data.form.id ? update() : add()
   })
 }
 

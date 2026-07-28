@@ -139,5 +139,10 @@ GPU_SERVER_CONFIG = {
         "GPU_ACCOUNT_ALLOWED_DIRECTORIES_JSON", ""
     ),
     "file_max_entries": _env_int("GPU_FILE_MAX_ENTRIES", 5000),
+    "conda_env_roots_json": os.getenv(
+        "GPU_CONDA_ENV_ROOTS_JSON",
+        '{"系统 Conda 环境":"/opt/conda/envs"}',
+    ),
+    "conda_env_max_entries": _env_int("GPU_CONDA_ENV_MAX_ENTRIES", 500),
 }
 
