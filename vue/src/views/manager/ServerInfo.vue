@@ -191,6 +191,17 @@
                 <button class="breadcrumb-button" @click="navigateToBreadcrumb(index)">{{ part }}</button>
               </el-breadcrumb-item>
             </el-breadcrumb>
+            <el-tooltip content="复制当前文件夹绝对路径" placement="top">
+              <el-button
+                class="copy-path-button"
+                :icon="CopyDocument"
+                size="small"
+                :disabled="!data.files.absolutePath"
+                @click="copyCurrentPath"
+              >
+                复制路径
+              </el-button>
+            </el-tooltip>
           </div>
 
           <el-table
@@ -237,6 +248,82 @@
             />
           </div>
         </el-tab-pane>
+
+        <el-tab-pane v-if="data.user.role === '管理员'" name="conda">
+          <template #label>
+            <span class="tab-label"><el-icon><SetUp /></el-icon>Conda 环境列表</span>
+          </template>
+
+          <div class="conda-toolbar">
+            <div>
+              <div class="section-title">Conda 环境列表</div>
+              <div class="section-subtitle">扫描配置的环境总目录，仅展示包含 conda-meta 的有效环境</div>
+            </div>
+            <el-tooltip content="刷新 Conda 环境列表" placement="top">
+              <el-button
+                :icon="Refresh"
+                circle
+                :loading="data.condaLoading"
+                @click="loadCondaEnvironments"
+              />
+            </el-tooltip>
+          </div>
+
+          <el-alert
+            v-if="data.condaError"
+            class="file-alert"
+            :title="data.condaError"
+            type="warning"
+            :closable="false"
+            show-icon
+          />
+
+          <div v-if="data.conda.roots.length" class="conda-roots">
+            <span class="conda-roots-label">扫描目录</span>
+            <el-tooltip
+              v-for="root in data.conda.roots"
+              :key="root.id"
+              :content="root.path"
+              placement="top"
+            >
+              <el-tag :type="root.available ? 'info' : 'danger'" effect="plain">
+                {{ root.name }}{{ root.available ? '' : '（不可访问）' }}
+              </el-tag>
+            </el-tooltip>
+          </div>
+
+          <el-table
+            v-loading="data.condaLoading"
+            :data="data.conda.environments"
+            stripe
+            empty-text="没有发现可展示的 Conda 环境"
+          >
+            <el-table-column label="环境名称" prop="name" min-width="180" />
+            <el-table-column label="绝对路径" prop="path" min-width="420" show-overflow-tooltip />
+            <el-table-column label="来源目录" prop="sourceName" width="180" />
+            <el-table-column label="修改时间" width="190">
+              <template #default="scope">{{ formatDate(scope.row.modifiedAt) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="110" align="center" fixed="right">
+              <template #default="scope">
+                <el-button
+                  type="primary"
+                  link
+                  :icon="CopyDocument"
+                  @click="copyText(scope.row.path, `环境 ${scope.row.name} 的绝对路径已复制`)"
+                >
+                  复制路径
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <div class="conda-footer">
+            <span>共 {{ data.conda.total }} 个环境</span>
+            <span v-if="data.conda.scannedAt">扫描于 {{ formatDate(data.conda.scannedAt) }}</span>
+            <span v-if="data.conda.truncated" class="truncated-tip">环境数量过多，已按安全上限截断</span>
+          </div>
+        </el-tab-pane>
       </el-tabs>
     </div>
   </div>
@@ -244,7 +331,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, reactive } from 'vue'
-import { Cpu, Document, Files, FolderOpened, Link, Monitor, Refresh, User } from '@element-plus/icons-vue'
+import { CopyDocument, Cpu, Document, Files, FolderOpened, Link, Monitor, Refresh, SetUp, User } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import request from '@/utils/request'
 
@@ -265,12 +352,22 @@ const emptyFiles = () => ({
   rootId: '',
   rootName: '',
   path: '',
+  absolutePath: '',
   parent: null,
   page: 1,
   pageSize: 20,
   total: 0,
   truncated: false,
   items: [],
+})
+
+const emptyConda = () => ({
+  source: 'DIRECTORY',
+  roots: [],
+  environments: [],
+  total: 0,
+  truncated: false,
+  scannedAt: null,
 })
 
 const data = reactive({
@@ -285,6 +382,10 @@ const data = reactive({
   filesError: '',
   fileRoots: [],
   selectedRootId: '',
+  conda: emptyConda(),
+  condaLoading: false,
+  condaLoaded: false,
+  condaError: '',
 })
 
 let refreshTimer = null
@@ -390,11 +491,15 @@ const refreshAll = async () => {
     if (data.fileRoots.length) await loadFiles()
     else await loadFileRoots()
   }
+  if (data.activeTab === 'conda' && data.summary.online) {
+    await loadCondaEnvironments()
+  }
   ElMessage.success('服务器信息已刷新')
 }
 
 const handleTabChange = (tabName) => {
   if (tabName === 'files' && !data.filesLoaded) loadFileRoots()
+  if (tabName === 'conda' && !data.condaLoaded) loadCondaEnvironments()
 }
 
 const changeFileRoot = () => {
@@ -419,6 +524,70 @@ const navigateToBreadcrumb = (index) => {
   data.files.page = 1
   loadFiles()
 }
+
+const loadCondaEnvironments = async () => {
+  if (data.condaLoading) return
+  if (!data.summary.configured || !data.summary.online) {
+    data.condaError = data.summary.error || 'GPU 服务器当前不可用'
+    return
+  }
+  data.condaLoading = true
+  data.condaError = ''
+  try {
+    const res = await request.get('/server/conda-environments')
+    if (res.code === '200') {
+      data.conda = { ...emptyConda(), ...res.data }
+      data.condaLoaded = true
+      const unavailable = data.conda.roots.filter((root) => !root.available)
+      if (unavailable.length) {
+        data.condaError = `${unavailable.map((root) => root.name).join('、')}不可访问`
+      }
+    } else {
+      data.condaError = res.msg || 'Conda 环境列表获取失败'
+    }
+  } catch {
+    data.condaError = '无法读取 Conda 环境列表'
+  } finally {
+    data.condaLoading = false
+  }
+}
+
+const copyText = async (text, successMessage = '绝对路径已复制') => {
+  if (!text) {
+    ElMessage.warning('当前绝对路径不可用')
+    return
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text)
+        ElMessage.success(successMessage)
+        return
+      } catch {
+        // 浏览器拒绝 Clipboard API 时继续使用兼容复制方式。
+      }
+    }
+
+    const textarea = document.createElement('textarea')
+    try {
+      textarea.value = text
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const copied = document.execCommand('copy')
+      if (!copied) throw new Error('copy failed')
+    } finally {
+      textarea.remove()
+    }
+    ElMessage.success(successMessage)
+  } catch {
+    ElMessage.error('路径复制失败，请检查浏览器剪贴板权限')
+  }
+}
+
+const copyCurrentPath = () => copyText(data.files.absolutePath)
 
 const progressColor = (value = 0) => {
   if (value >= 90) return '#e45656'
@@ -705,6 +874,12 @@ onUnmounted(() => {
   font-weight: 700;
 }
 
+.section-subtitle {
+  margin-top: 3px;
+  color: #8a93a2;
+  font-size: 12px;
+}
+
 .account-cell {
   gap: 6px;
   color: #44516a;
@@ -764,6 +939,16 @@ onUnmounted(() => {
   overflow-x: auto;
 }
 
+.path-bar .el-breadcrumb {
+  min-width: 0;
+  flex: 1;
+}
+
+.copy-path-button {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
 .breadcrumb-button,
 .file-name.directory-name {
   padding: 0;
@@ -806,6 +991,45 @@ onUnmounted(() => {
   justify-content: flex-end;
   gap: 16px;
   padding-top: 12px;
+}
+
+.conda-toolbar {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 0 10px;
+}
+
+.conda-roots {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 12px;
+  margin-bottom: 10px;
+  border: 1px solid #e4e8ef;
+  border-radius: 5px;
+  background: #f7f9fc;
+}
+
+.conda-roots-label {
+  margin-right: 4px;
+  color: #65738a;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.conda-footer {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 18px;
+  color: #8a93a2;
+  font-size: 12px;
 }
 
 .truncated-tip {

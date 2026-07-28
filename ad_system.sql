@@ -107,10 +107,15 @@ CREATE TABLE `algorithm` (
   `framework_version` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '框架版本号',
   `python_version` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Python 版本要求',
   `cuda_requirement` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'CUDA 版本要求',
+  `conda_env_name` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Conda 独立环境名称',
+  `conda_env_path` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Conda 环境绝对路径',
+  `working_directory` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '算法运行工作目录',
   `train_entrypoint` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '训练入口脚本路径',
   `inference_entrypoint` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '推理入口脚本路径',
-  `docker_image` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Docker 镜像地址',
-  `docker_image_digest` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Docker 镜像摘要值',
+  `executor_type` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'GPU' COMMENT '执行器类型',
+  `process_manager` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'SYSTEMD' COMMENT '任务进程管理方式',
+  `protocol_version` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '1.0' COMMENT 'JSONL 训练协议版本',
+  `sse_enabled` tinyint(1) NOT NULL DEFAULT '1' COMMENT '是否支持 SSE 实时推送',
   `parameter_schema_json` json DEFAULT NULL COMMENT '参数结构定义',
   `output_schema_json` json DEFAULT NULL COMMENT '输出结构定义',
   `resource_spec_json` json DEFAULT NULL COMMENT '资源需求规格',
@@ -124,7 +129,7 @@ CREATE TABLE `algorithm` (
 -- Records of algorithm
 -- ----------------------------
 BEGIN;
-INSERT INTO `algorithm` (`id`, `algorithm_id`, `framework`, `framework_version`, `python_version`, `cuda_requirement`, `train_entrypoint`, `inference_entrypoint`, `docker_image`, `docker_image_digest`, `parameter_schema_json`, `output_schema_json`, `resource_spec_json`, `dataset_requirement_json`) VALUES (1, 1, 'Pytorch', '111', '3.10', 'RTX 4090', 'pbas\\train.py', 'pbas\\test.py', '\\pbas\\docker', '1234567890', '111', '111', '111', '111');
+INSERT INTO `algorithm` (`id`, `algorithm_id`, `framework`, `framework_version`, `python_version`, `cuda_requirement`, `conda_env_name`, `conda_env_path`, `working_directory`, `train_entrypoint`, `inference_entrypoint`, `executor_type`, `process_manager`, `protocol_version`, `sse_enabled`, `parameter_schema_json`, `output_schema_json`, `resource_spec_json`, `dataset_requirement_json`) VALUES (1, 1, 'PyTorch', '2.1.0', '3.10', 'CUDA 11.8', 'pbas', '/opt/conda/envs/pbas', '/srv/algorithms/pbas', 'train.py', 'test.py', 'GPU', 'SYSTEMD', '1.0', 1, JSON_OBJECT(), JSON_OBJECT(), JSON_OBJECT('gpu_count', 1), JSON_OBJECT());
 COMMIT;
 
 -- ----------------------------

@@ -3,7 +3,7 @@
     <div class="page-header">
       <div class="page-icon"><el-icon><Cpu /></el-icon></div>
       <div>
-        <div class="page-title">算法管理</div>
+        <div class="page-title">算法信息</div>
         <div class="page-subtitle">共 {{ data.total }} 个算法</div>
       </div>
     </div>
@@ -30,58 +30,45 @@
           :max-height="tableHeight"
           empty-text="暂无算法信息"
         >
-          <el-table-column label="编号" prop="algorithm_no" width="60" align="center" />
-          <el-table-column label="名称" prop="name" width="80" show-overflow-tooltip />
-          <el-table-column label="简称" prop="abbreviation" width="70" align="center" show-overflow-tooltip />
-          <el-table-column label="描述" prop="description" min-width="100" show-overflow-tooltip />
-          <el-table-column label="任务类别" prop="task_category" width="80" align="center" show-overflow-tooltip />
+          <el-table-column label="编号" prop="algorithm_no" width="70" align="center" />
+          <el-table-column label="名称" prop="name" min-width="170" show-overflow-tooltip />
+          <el-table-column label="简称" prop="abbreviation" width="80" align="center" show-overflow-tooltip />
+          <el-table-column label="描述" prop="description" min-width="180" show-overflow-tooltip />
+          <el-table-column label="任务类别" prop="task_category" width="150" align="center" show-overflow-tooltip />
           <el-table-column label="框架" width="110" align="center">
             <template #default="scope">
               {{ scope.row.framework }}{{ scope.row.framework_version ? ` ${scope.row.framework_version}` : '' }}
             </template>
           </el-table-column>
-          <el-table-column label="Python / CUDA" width="110" align="center">
+          <el-table-column label="Conda 环境" width="140" align="center">
             <template #default="scope">
               <div class="cell-stack">
-                <span>{{ scope.row.python_version || '--' }}</span>
-                <span class="cell-sub">{{ scope.row.cuda_requirement || '--' }}</span>
+                <span>{{ scope.row.conda_env_name || '--' }}</span>
+                <span class="cell-sub" :title="scope.row.conda_env_path">{{ scope.row.conda_env_path || '--' }}</span>
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="入口脚本" width="120" align="center">
+          <el-table-column label="执行方式" width="130" align="center">
             <template #default="scope">
               <div class="cell-stack">
-                <span :title="scope.row.train_entrypoint">{{ scope.row.train_entrypoint || '--' }}</span>
-                <span class="cell-sub" :title="scope.row.inference_entrypoint">{{ scope.row.inference_entrypoint || '--' }}</span>
+                <span>{{ scope.row.executor_type || '--' }}</span>
+                <span class="cell-sub">{{ processManagerLabel(scope.row.process_manager) }}</span>
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="Docker 镜像" width="110" align="center" show-overflow-tooltip>
+          <el-table-column label="训练协议" width="120" align="center">
             <template #default="scope">
               <div class="cell-stack">
-                <span>{{ scope.row.docker_image || '--' }}</span>
-                <span v-if="scope.row.docker_image_digest" class="cell-sub" :title="scope.row.docker_image_digest">{{ scope.row.docker_image_digest }}</span>
+                <span>JSONL {{ scope.row.protocol_version || '--' }}</span>
+                <span class="cell-sub">SSE {{ scope.row.sse_enabled ? '已启用' : '未启用' }}</span>
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="参数结构" width="100" align="center" show-overflow-tooltip>
-            <template #default="scope">{{ formatJson(scope.row.parameter_schema_json) }}</template>
-          </el-table-column>
-          <el-table-column label="输出结构" width="100" align="center" show-overflow-tooltip>
-            <template #default="scope">{{ formatJson(scope.row.output_schema_json) }}</template>
-          </el-table-column>
-          <el-table-column label="资源需求" width="100" align="center" show-overflow-tooltip>
-            <template #default="scope">{{ formatJson(scope.row.resource_spec_json) }}</template>
-          </el-table-column>
-          <el-table-column label="数据集要求" width="100" align="center" show-overflow-tooltip>
-            <template #default="scope">{{ formatJson(scope.row.dataset_requirement_json) }}</template>
-          </el-table-column>
-          <el-table-column label="创建者" prop="created_by_name" width="70" align="center" />
-          <el-table-column label="创建时间" width="100" align="center">
-            <template #default="scope">{{ formatCompactDate(scope.row.created_at) }}</template>
-          </el-table-column>
-          <el-table-column label="更新时间" width="100" align="center">
-            <template #default="scope">{{ formatCompactDate(scope.row.updated_at) }}</template>
+          <el-table-column label="创建者" prop="created_by_name" width="90" align="center" />
+          <el-table-column label="详情" width="90" align="center" fixed="right">
+            <template #default="scope">
+              <el-button type="primary" link @click="showDetail(scope.row)">查看</el-button>
+            </template>
           </el-table-column>
         </el-table>
       </div>
@@ -97,6 +84,36 @@
         />
       </div>
     </div>
+
+    <el-dialog v-model="data.detailVisible" title="算法详细信息" width="760px">
+      <el-descriptions :column="2" border>
+        <el-descriptions-item label="算法编号">{{ detailValue('algorithm_no') }}</el-descriptions-item>
+        <el-descriptions-item label="算法名称">{{ detailValue('name') }}</el-descriptions-item>
+        <el-descriptions-item label="算法简称">{{ detailValue('abbreviation') }}</el-descriptions-item>
+        <el-descriptions-item label="任务类别">{{ detailValue('task_category') }}</el-descriptions-item>
+        <el-descriptions-item label="算法描述" :span="2">{{ detailValue('description') }}</el-descriptions-item>
+        <el-descriptions-item label="算法框架">{{ frameworkLabel(data.detailRow) }}</el-descriptions-item>
+        <el-descriptions-item label="Python / CUDA">
+          {{ detailValue('python_version') }} / {{ detailValue('cuda_requirement') }}
+        </el-descriptions-item>
+        <el-descriptions-item label="Conda 环境">{{ detailValue('conda_env_name') }}</el-descriptions-item>
+        <el-descriptions-item label="Conda 路径">{{ detailValue('conda_env_path') }}</el-descriptions-item>
+        <el-descriptions-item label="工作目录" :span="2">{{ detailValue('working_directory') }}</el-descriptions-item>
+        <el-descriptions-item label="训练入口">{{ detailValue('train_entrypoint') }}</el-descriptions-item>
+        <el-descriptions-item label="推理入口">{{ detailValue('inference_entrypoint') }}</el-descriptions-item>
+        <el-descriptions-item label="执行器">{{ detailValue('executor_type') }}</el-descriptions-item>
+        <el-descriptions-item label="进程管理">{{ processManagerLabel(data.detailRow.process_manager) }}</el-descriptions-item>
+        <el-descriptions-item label="JSONL 协议">{{ detailValue('protocol_version') }}</el-descriptions-item>
+        <el-descriptions-item label="SSE 推送">{{ data.detailRow.sse_enabled ? '已启用' : '未启用' }}</el-descriptions-item>
+        <el-descriptions-item label="参数结构" :span="2"><pre class="json-value">{{ formatJson(data.detailRow.parameter_schema_json) }}</pre></el-descriptions-item>
+        <el-descriptions-item label="输出结构" :span="2"><pre class="json-value">{{ formatJson(data.detailRow.output_schema_json) }}</pre></el-descriptions-item>
+        <el-descriptions-item label="资源需求" :span="2"><pre class="json-value">{{ formatJson(data.detailRow.resource_spec_json) }}</pre></el-descriptions-item>
+        <el-descriptions-item label="数据集要求" :span="2"><pre class="json-value">{{ formatJson(data.detailRow.dataset_requirement_json) }}</pre></el-descriptions-item>
+        <el-descriptions-item label="创建者">{{ detailValue('created_by_name') }}</el-descriptions-item>
+        <el-descriptions-item label="创建时间">{{ formatCompactDate(data.detailRow.created_at) }}</el-descriptions-item>
+        <el-descriptions-item label="更新时间" :span="2">{{ formatCompactDate(data.detailRow.updated_at) }}</el-descriptions-item>
+      </el-descriptions>
+    </el-dialog>
   </div>
 </template>
 
@@ -113,6 +130,8 @@ const data = reactive({
   pageSize: 8,
   total: 0,
   tableData: [],
+  detailVisible: false,
+  detailRow: {},
 })
 
 const PAGE_HEADER_H = 54
@@ -128,7 +147,30 @@ const tableHeight = computed(() =>
 
 const formatJson = (val) => {
   if (!val) return '--'
-  return typeof val === 'string' ? val : JSON.stringify(val)
+  if (typeof val !== 'string') return JSON.stringify(val, null, 2)
+  try {
+    return JSON.stringify(JSON.parse(val), null, 2)
+  } catch {
+    return val
+  }
+}
+
+const detailValue = (key) => data.detailRow[key] ?? '--'
+
+const frameworkLabel = (row) => {
+  if (!row?.framework) return '--'
+  return `${row.framework}${row.framework_version ? ` ${row.framework_version}` : ''}`
+}
+
+const showDetail = (row) => {
+  data.detailRow = { ...row }
+  data.detailVisible = true
+}
+
+const processManagerLabel = (value) => {
+  if (value === 'SYSTEMD') return 'systemd'
+  if (value === 'PROCESS_GROUP') return '独立进程组'
+  return value || '--'
 }
 
 const formatCompactDate = (value) => {
@@ -291,6 +333,19 @@ const reset = () => {
 .cell-sub {
   color: #9aa1ad;
   font-size: 11px;
+}
+
+.json-value {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1.5;
+}
+
+:deep(.el-dialog__body) {
+  max-height: 68vh;
+  overflow-y: auto;
 }
 
 .pagination-bar {

@@ -289,6 +289,126 @@ class GpuServerService:
             ],
         }
 
+    def resolve_conda_env_roots(self) -> list[dict[str, str]]:
+        raw = self.config.get("conda_env_roots_json", "")
+        try:
+            configured = json.loads(raw or "{}")
+        except json.JSONDecodeError as exc:
+            raise GpuServerError("Conda 环境总目录配置格式错误") from exc
+
+        if isinstance(configured, dict):
+            entries = list(configured.items())
+        elif isinstance(configured, list):
+            entries = [
+                (
+                    posixpath.basename(posixpath.normpath(str(path)))
+                    or f"Conda 目录 {index + 1}",
+                    path,
+                )
+                for index, path in enumerate(configured)
+            ]
+        else:
+            raise GpuServerError("Conda 环境总目录配置必须是 JSON 对象或数组")
+
+        roots = []
+        for index, (name, path) in enumerate(entries):
+            if not isinstance(name, str) or not name.strip() or not isinstance(path, str):
+                raise GpuServerError("Conda 环境总目录配置无效")
+            normalized = posixpath.normpath(path.strip())
+            if not posixpath.isabs(normalized):
+                raise GpuServerError("Conda 环境总目录必须使用绝对路径")
+            roots.append({"id": str(index), "name": name.strip(), "path": normalized})
+        if not roots:
+            raise GpuServerError("尚未配置 Conda 环境总目录")
+        return roots
+
+    async def get_conda_environments(self) -> dict[str, Any]:
+        roots = self.resolve_conda_env_roots()
+        connection = await self._connect()
+        environments: list[dict[str, Any]] = []
+        root_results = []
+        truncated = False
+        max_entries = self.config["conda_env_max_entries"]
+        try:
+            sftp = await connection.start_sftp_client()
+            for root in roots:
+                root_result = {**root, "available": True, "error": None}
+                try:
+                    root_real = posixpath.normpath(str(await sftp.realpath(root["path"])))
+                    root_result["path"] = root_real
+                    async for entry in sftp.scandir(root_real):
+                        if entry.filename in {".", ".."}:
+                            continue
+                        environment_path = posixpath.join(root_real, entry.filename)
+                        try:
+                            environment_real = posixpath.normpath(
+                                str(await sftp.realpath(environment_path))
+                            )
+                            if posixpath.commonpath([root_real, environment_real]) != root_real:
+                                continue
+                            environment_attrs = await sftp.stat(environment_real)
+                            if (
+                                environment_attrs.permissions
+                                and not stat.S_ISDIR(environment_attrs.permissions)
+                            ):
+                                continue
+                            conda_meta = await sftp.stat(
+                                posixpath.join(environment_real, "conda-meta")
+                            )
+                            if conda_meta.permissions and not stat.S_ISDIR(
+                                conda_meta.permissions
+                            ):
+                                continue
+                        except Exception:
+                            continue
+
+                        environments.append({
+                            "name": entry.filename,
+                            "path": environment_real,
+                            "sourceId": root["id"],
+                            "sourceName": root["name"],
+                            "modifiedAt": (
+                                datetime.fromtimestamp(
+                                    environment_attrs.mtime, timezone.utc
+                                ).isoformat()
+                                if environment_attrs.mtime else None
+                            ),
+                        })
+                        if len(environments) >= max_entries:
+                            truncated = True
+                            break
+                except Exception as exc:
+                    logger.warning(
+                        "Conda environment root scan failed for %s: %s",
+                        root["path"],
+                        exc,
+                    )
+                    root_result["available"] = False
+                    root_result["error"] = "目录不可访问"
+                root_results.append(root_result)
+                if truncated:
+                    break
+
+            environments.sort(
+                key=lambda item: (item["sourceName"].lower(), item["name"].lower())
+            )
+            return {
+                "source": "DIRECTORY",
+                "roots": root_results,
+                "environments": environments,
+                "total": len(environments),
+                "truncated": truncated,
+                "scannedAt": datetime.now(timezone.utc).isoformat(),
+            }
+        except GpuServerError:
+            raise
+        except Exception as exc:
+            logger.warning("Conda environment listing failed: %s", exc)
+            raise GpuServerError("无法读取 Conda 环境列表") from exc
+        finally:
+            connection.close()
+            await connection.wait_closed()
+
     def _requested_directory(
         self,
         linux_username: str,
@@ -383,6 +503,7 @@ class GpuServerService:
                 "rootId": selected["id"],
                 "rootName": selected["name"],
                 "path": current_relative,
+                "absolutePath": candidate_real,
                 "parent": parent,
                 "page": page,
                 "pageSize": page_size,

@@ -31,14 +31,20 @@
           empty-text="暂无数据集信息"
         >
           <el-table-column label="编号" prop="dataset_no" width="70" align="center" />
-          <el-table-column label="名称" prop="name" width="100" show-overflow-tooltip />
-          <el-table-column label="描述" prop="description" min-width="160" show-overflow-tooltip />
-          <el-table-column label="领域类型" prop="domain_type" width="100" align="center" />
+          <el-table-column label="名称" prop="name" min-width="170" show-overflow-tooltip />
+          <el-table-column label="描述" prop="description" min-width="220" show-overflow-tooltip />
+          <el-table-column label="领域类型" prop="domain_type" width="120" align="center" />
           <el-table-column label="类别数量" prop="class_count" width="100" align="center" />
-          <el-table-column label="训练样本" prop="train_sample_count" width="100" align="center" />
-          <el-table-column label="测试样本" prop="test_sample_count" width="100" align="center" />
-          <el-table-column label="异常样本" prop="anomaly_sample_count" width="100" align="center" />
-          <el-table-column label="掩码数量" prop="mask_count" width="100" align="center" />
+          <el-table-column label="训练 / 测试样本" width="150" align="center">
+            <template #default="scope">
+              {{ scope.row.train_sample_count ?? 0 }} / {{ scope.row.test_sample_count ?? 0 }}
+            </template>
+          </el-table-column>
+          <el-table-column label="详情" width="90" align="center" fixed="right">
+            <template #default="scope">
+              <el-button type="primary" link @click="showDetail(scope.row)">查看</el-button>
+            </template>
+          </el-table-column>
         </el-table>
       </div>
 
@@ -53,6 +59,21 @@
         />
       </div>
     </div>
+
+    <el-dialog v-model="data.detailVisible" title="数据集详细信息" width="720px">
+      <el-descriptions :column="2" border>
+        <el-descriptions-item label="数据集编号">{{ detailValue('dataset_no') }}</el-descriptions-item>
+        <el-descriptions-item label="数据集名称">{{ detailValue('name') }}</el-descriptions-item>
+        <el-descriptions-item label="领域类型">{{ detailValue('domain_type') }}</el-descriptions-item>
+        <el-descriptions-item label="类别数量">{{ countValue('class_count') }}</el-descriptions-item>
+        <el-descriptions-item label="数据集描述" :span="2">{{ detailValue('description') }}</el-descriptions-item>
+        <el-descriptions-item label="数据源目录" :span="2">{{ detailValue('root_directory') }}</el-descriptions-item>
+        <el-descriptions-item label="训练集样本">{{ countValue('train_sample_count') }}</el-descriptions-item>
+        <el-descriptions-item label="测试集样本">{{ countValue('test_sample_count') }}</el-descriptions-item>
+        <el-descriptions-item label="异常样本">{{ countValue('anomaly_sample_count') }}</el-descriptions-item>
+        <el-descriptions-item label="掩码（标注）">{{ countValue('mask_count') }}</el-descriptions-item>
+      </el-descriptions>
+    </el-dialog>
   </div>
 </template>
 
@@ -69,6 +90,8 @@ const data = reactive({
   pageSize: 8,
   total: 0,
   tableData: [],
+  detailVisible: false,
+  detailRow: {},
 })
 
 const PAGE_HEADER_H = 54
@@ -81,6 +104,14 @@ const TABLE_BODY_H = computed(() => Math.min(data.tableData.length, data.pageSiz
 const tableHeight = computed(() =>
   PAGE_HEADER_H + TOOLBAR_H + PAGE_PADDING + TABLE_HEADER_H + TABLE_BODY_H.value + PAGINATION_H + 2
 )
+
+const detailValue = (key) => data.detailRow[key] ?? '--'
+const countValue = (key) => data.detailRow[key] ?? 0
+
+const showDetail = (row) => {
+  data.detailRow = { ...row }
+  data.detailVisible = true
+}
 
 const load = () => {
   request.get('/dataset/selectPage', {
@@ -213,6 +244,11 @@ const reset = () => {
 
 .table-area :deep(.el-table .el-table__empty-block) {
   min-height: 120px;
+}
+
+:deep(.el-dialog__body) {
+  max-height: 68vh;
+  overflow-y: auto;
 }
 
 .pagination-bar {
