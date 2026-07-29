@@ -60,7 +60,7 @@
       </div>
     </div>
 
-    <el-dialog v-model="data.detailVisible" title="数据集详细信息" width="720px">
+    <el-dialog v-model="data.detailVisible" title="数据集详细信息" width="720px" align="center">
       <el-descriptions :column="2" border>
         <el-descriptions-item label="数据集编号">{{ detailValue('dataset_no') }}</el-descriptions-item>
         <el-descriptions-item label="数据集名称">{{ detailValue('name') }}</el-descriptions-item>
@@ -68,10 +68,9 @@
         <el-descriptions-item label="类别数量">{{ countValue('class_count') }}</el-descriptions-item>
         <el-descriptions-item label="数据集描述" :span="2">{{ detailValue('description') }}</el-descriptions-item>
         <el-descriptions-item label="数据源目录" :span="2">{{ detailValue('root_directory') }}</el-descriptions-item>
-        <el-descriptions-item label="训练集样本">{{ countValue('train_sample_count') }}</el-descriptions-item>
-        <el-descriptions-item label="测试集样本">{{ countValue('test_sample_count') }}</el-descriptions-item>
+        <el-descriptions-item label="训练样本">{{ countValue('train_sample_count') }}</el-descriptions-item>
+        <el-descriptions-item label="测试样本">{{ countValue('test_sample_count') }}</el-descriptions-item>
         <el-descriptions-item label="异常样本">{{ countValue('anomaly_sample_count') }}</el-descriptions-item>
-        <el-descriptions-item label="掩码（标注）">{{ countValue('mask_count') }}</el-descriptions-item>
       </el-descriptions>
     </el-dialog>
   </div>

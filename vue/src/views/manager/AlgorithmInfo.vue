@@ -84,7 +84,7 @@
       </div>
     </div>
 
-    <el-dialog v-model="data.detailVisible" title="算法详细信息" width="760px">
+    <el-dialog v-model="data.detailVisible" title="算法详细信息" width="760px" align="center">
       <el-descriptions :column="2" border>
         <el-descriptions-item label="算法编号">{{ detailValue('algorithm_no') }}</el-descriptions-item>
         <el-descriptions-item label="算法名称">{{ detailValue('name') }}</el-descriptions-item>

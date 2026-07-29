@@ -78,12 +78,15 @@
     </div>
 
     <el-dialog title="算法信息" width="55%" v-model="data.formVisible" :close-on-click-modal="false" destroy-on-close>
-      <el-form ref="formRef" :model="data.form" :rules="data.rules" label-width="110px" style="padding-right: 50px">
+      <el-form ref="formRef" :model="data.form" :rules="data.rules" label-width="110px" scroll-to-error style="padding-right: 50px">
         <div class="form-section-title">基本信息</div>
         <el-row :gutter="16">
           <el-col :span="12">
-            <el-form-item label="算法编号" prop="algorithm_no">
-              <el-input v-model="data.form.algorithm_no" placeholder="请输入算法编号" />
+            <el-form-item label="算法编号">
+              <el-input
+                :model-value="data.form.id ? data.form.algorithm_no : '保存后由系统自动生成'"
+                disabled
+              />
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -217,8 +220,8 @@
       </el-form>
       <template #footer>
         <span class="dialog-footer">
-          <el-button @click="data.formVisible = false">取 消</el-button>
-          <el-button type="primary" @click="save">保 存</el-button>
+          <el-button :disabled="data.saving" @click="data.formVisible = false">取 消</el-button>
+          <el-button type="primary" :loading="data.saving" @click="save">保 存</el-button>
         </span>
       </template>
     </el-dialog>
@@ -257,13 +260,13 @@ const data = reactive({
   user: JSON.parse(localStorage.getItem('system-user') || '{}'),
   form: {},
   formVisible: false,
+  saving: false,
   name: null,
   pageNum: 1,
   pageSize: 8,
   total: 0,
   tableData: [],
   rules: {
-    algorithm_no: [{ required: true, message: '请输入算法编号', trigger: 'blur' }],
     name: [{ required: true, message: '请输入算法名称', trigger: 'blur' }],
     framework: [{ required: true, message: '请输入算法框架', trigger: 'blur' }],
     conda_env_name: [{ required: true, message: '请输入 Conda 环境名称', trigger: 'blur' }],
@@ -319,128 +322,112 @@ const handleEdit = (row) => {
   data.formVisible = true
 }
 
-const add = () => {
+const ensureSuccess = (res, fallback) => {
+  if (res.code !== '200') throw new Error(res.msg || fallback)
+  return res
+}
+
+const buildInfoData = () => parseJsonFields({
+  framework: data.form.framework,
+  framework_version: data.form.framework_version,
+  python_version: data.form.python_version,
+  cuda_requirement: data.form.cuda_requirement,
+  conda_env_name: data.form.conda_env_name,
+  conda_env_path: data.form.conda_env_path,
+  working_directory: data.form.working_directory,
+  train_entrypoint: data.form.train_entrypoint,
+  inference_entrypoint: data.form.inference_entrypoint,
+  executor_type: data.form.executor_type,
+  process_manager: data.form.process_manager,
+  protocol_version: data.form.protocol_version,
+  sse_enabled: data.form.sse_enabled,
+  parameter_schema_json: data.form.parameter_schema_json,
+  output_schema_json: data.form.output_schema_json,
+  resource_spec_json: data.form.resource_spec_json,
+  dataset_requirement_json: data.form.dataset_requirement_json,
+})
+
+const add = async () => {
   const algoData = {
-    algorithm_no: data.form.algorithm_no,
     name: data.form.name,
     abbreviation: data.form.abbreviation,
     description: data.form.description,
     task_category: data.form.task_category,
     createdBy: data.user.id,
   }
-  request.post('/algorithm/add', algoData).then(res => {
-    if (res.code === '200') {
-      const algorithmId = res.data
-      const infoData = parseJsonFields({
-        algorithmId: algorithmId,
-        framework: data.form.framework,
-        framework_version: data.form.framework_version,
-        python_version: data.form.python_version,
-        cuda_requirement: data.form.cuda_requirement,
-        conda_env_name: data.form.conda_env_name,
-        conda_env_path: data.form.conda_env_path,
-        working_directory: data.form.working_directory,
-        train_entrypoint: data.form.train_entrypoint,
-        inference_entrypoint: data.form.inference_entrypoint,
-        executor_type: data.form.executor_type,
-        process_manager: data.form.process_manager,
-        protocol_version: data.form.protocol_version,
-        sse_enabled: data.form.sse_enabled,
-        parameter_schema_json: data.form.parameter_schema_json,
-        output_schema_json: data.form.output_schema_json,
-        resource_spec_json: data.form.resource_spec_json,
-        dataset_requirement_json: data.form.dataset_requirement_json,
-      })
-      request.post('/algorithm/info/add', infoData).then(infoRes => {
-        if (infoRes.code === '200') {
-          ElMessage.success('操作成功')
-          data.formVisible = false
-          load()
-        } else {
-          ElMessage.error(infoRes.msg)
-        }
-      })
-    } else {
-      ElMessage.error(res.msg)
-    }
-  })
+  const res = ensureSuccess(
+    await request.post('/algorithm/add', algoData),
+    '算法基本信息保存失败',
+  )
+  const infoData = buildInfoData()
+  infoData.algorithmId = res.data
+  ensureSuccess(
+    await request.post('/algorithm/info/add', infoData),
+    '算法运行信息保存失败',
+  )
 }
 
-const update = () => {
+const update = async () => {
   const algoData = {
     id: data.form.id,
-    algorithm_no: data.form.algorithm_no,
     name: data.form.name,
     abbreviation: data.form.abbreviation,
     description: data.form.description,
     task_category: data.form.task_category,
   }
-  request.put('/algorithm/update', algoData).then(res => {
-    if (res.code === '200') {
-      const infoData = parseJsonFields({
-        id: data.form.info_id,
-        framework: data.form.framework,
-        framework_version: data.form.framework_version,
-        python_version: data.form.python_version,
-        cuda_requirement: data.form.cuda_requirement,
-        conda_env_name: data.form.conda_env_name,
-        conda_env_path: data.form.conda_env_path,
-        working_directory: data.form.working_directory,
-        train_entrypoint: data.form.train_entrypoint,
-        inference_entrypoint: data.form.inference_entrypoint,
-        executor_type: data.form.executor_type,
-        process_manager: data.form.process_manager,
-        protocol_version: data.form.protocol_version,
-        sse_enabled: data.form.sse_enabled,
-        parameter_schema_json: data.form.parameter_schema_json,
-        output_schema_json: data.form.output_schema_json,
-        resource_spec_json: data.form.resource_spec_json,
-        dataset_requirement_json: data.form.dataset_requirement_json,
-      })
-      if (data.form.info_id) {
-        request.put('/algorithm/info/update', infoData).then(infoRes => {
-          if (infoRes.code === '200') {
-            ElMessage.success('操作成功')
-            data.formVisible = false
-            load()
-          } else {
-            ElMessage.error(infoRes.msg)
-          }
-        })
-      } else {
-        infoData.algorithmId = data.form.id
-        request.post('/algorithm/info/add', infoData).then(infoRes => {
-          if (infoRes.code === '200') {
-            ElMessage.success('操作成功')
-            data.formVisible = false
-            load()
-          } else {
-            ElMessage.error(infoRes.msg)
-          }
-        })
-      }
-    } else {
-      ElMessage.error(res.msg)
-    }
-  })
+  ensureSuccess(
+    await request.put('/algorithm/update', algoData),
+    '算法基本信息更新失败',
+  )
+  const infoData = buildInfoData()
+  if (data.form.info_id) {
+    infoData.id = data.form.info_id
+    ensureSuccess(
+      await request.put('/algorithm/info/update', infoData),
+      '算法运行信息更新失败',
+    )
+  } else {
+    infoData.algorithmId = data.form.id
+    ensureSuccess(
+      await request.post('/algorithm/info/add', infoData),
+      '算法运行信息保存失败',
+    )
+  }
 }
 
-const save = () => {
-  formRef.value.validate(valid => {
-    if (!valid) return
-    for (const key of JSON_FIELDS) {
-      const value = data.form[key]
-      if (typeof value === 'string' && value.trim()) {
-        try {
-          JSON.parse(value)
-        } catch {
-          ElMessage.error(`字段 "${key}" 必须是有效的 JSON`)
-          return
-        }
+const save = async () => {
+  if (data.saving) return
+  try {
+    await formRef.value.validate()
+  } catch {
+    ElMessage.warning('请完善所有必填的算法信息')
+    return
+  }
+
+  for (const key of JSON_FIELDS) {
+    const value = data.form[key]
+    if (typeof value === 'string' && value.trim()) {
+      try {
+        JSON.parse(value)
+      } catch {
+        ElMessage.error(`字段 "${key}" 必须是有效的 JSON`)
+        return
       }
     }
-    data.form.id ? update() : add()
-  })
+  }
+
+  data.saving = true
+  try {
+    if (data.form.id) await update()
+    else await add()
+    ElMessage.success('保存成功')
+    data.formVisible = false
+    load()
+  } catch (error) {
+    ElMessage.error(error?.message || '保存失败，请稍后重试')
+  } finally {
+    data.saving = false
+  }
 }
 
 const handleDelete = (id) => {

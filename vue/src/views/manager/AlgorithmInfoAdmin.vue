@@ -85,7 +85,7 @@
       </div>
     </div>
 
-    <el-dialog v-model="data.detailVisible" title="算法详细信息" width="760px">
+    <el-dialog v-model="data.detailVisible" title="算法详细信息" width="760px" align="center">
       <el-descriptions :column="2" border>
         <el-descriptions-item label="算法编号">{{ detailValue('algorithm_no') }}</el-descriptions-item>
         <el-descriptions-item label="算法名称">{{ detailValue('name') }}</el-descriptions-item>
@@ -109,7 +109,7 @@
         <el-descriptions-item label="输出结构" :span="2"><pre class="json-value">{{ formatJson(data.detailRow.output_schema_json) }}</pre></el-descriptions-item>
         <el-descriptions-item label="资源需求" :span="2"><pre class="json-value">{{ formatJson(data.detailRow.resource_spec_json) }}</pre></el-descriptions-item>
         <el-descriptions-item label="数据集要求" :span="2"><pre class="json-value">{{ formatJson(data.detailRow.dataset_requirement_json) }}</pre></el-descriptions-item>
-        <el-descriptions-item label="创建者">{{ detailValue('created_by_name') }}</el-descriptions-item>
+        <el-descriptions-item label="创建账号">{{ detailValue('created_by_name') }}</el-descriptions-item>
         <el-descriptions-item label="创建时间">{{ formatCompactDate(data.detailRow.created_at) }}</el-descriptions-item>
         <el-descriptions-item label="更新时间" :span="2">{{ formatCompactDate(data.detailRow.updated_at) }}</el-descriptions-item>
       </el-descriptions>

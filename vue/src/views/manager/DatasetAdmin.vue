@@ -68,10 +68,13 @@
     </div>
 
     <el-dialog title="数据集信息" width="50%" v-model="data.formVisible" :close-on-click-modal="false" destroy-on-close>
-      <el-form ref="formRef" :model="data.form" :rules="data.rules" label-width="100px" style="padding-right: 50px">
+      <el-form ref="formRef" :model="data.form" :rules="data.rules" label-width="100px" scroll-to-error style="padding-right: 50px">
         <div class="form-section-title">基本信息</div>
-        <el-form-item label="数据集编号" prop="dataset_no">
-          <el-input v-model="data.form.dataset_no" autocomplete="off" placeholder="请输入数据集编号" />
+        <el-form-item label="数据集编号">
+          <el-input
+            :model-value="data.form.id ? data.form.dataset_no : '保存后由系统自动生成'"
+            disabled
+          />
         </el-form-item>
         <el-form-item label="名称" prop="name">
           <el-input v-model="data.form.name" autocomplete="off" placeholder="请输入数据集名称" />
@@ -89,36 +92,33 @@
         </el-form-item>
         <el-row :gutter="16">
           <el-col :span="12">
-            <el-form-item label="类别数">
+            <el-form-item label="类别数量">
               <el-input-number v-model="data.form.class_count" :min="0" style="width: 100%" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
-            <el-form-item label="掩码数">
-              <el-input-number v-model="data.form.mask_count" :min="0" style="width: 100%" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="训练样本">
               <el-input-number v-model="data.form.train_sample_count" :min="0" style="width: 100%" />
             </el-form-item>
           </el-col>
+        </el-row>
+        <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="测试样本">
               <el-input-number v-model="data.form.test_sample_count" :min="0" style="width: 100%" />
             </el-form-item>
           </el-col>
+          <el-col :span="12">
+            <el-form-item label="异常样本">
+              <el-input-number v-model="data.form.anomaly_sample_count" :min="0" style="width: 100%" />
+            </el-form-item>
+          </el-col>
         </el-row>
-        <el-form-item label="异常样本">
-          <el-input-number v-model="data.form.anomaly_sample_count" :min="0" style="width: 100%" />
-        </el-form-item>
       </el-form>
       <template #footer>
         <span class="dialog-footer">
-          <el-button @click="data.formVisible = false">取 消</el-button>
-          <el-button type="primary" @click="save">保 存</el-button>
+          <el-button :disabled="data.saving" @click="data.formVisible = false">取 消</el-button>
+          <el-button type="primary" :loading="data.saving" @click="save">保 存</el-button>
         </span>
       </template>
     </el-dialog>
@@ -137,13 +137,13 @@ const data = reactive({
   user: JSON.parse(localStorage.getItem('system-user') || '{}'),
   form: {},
   formVisible: false,
+  saving: false,
   name: null,
   pageNum: 1,
   pageSize: 8,
   total: 0,
   tableData: [],
   rules: {
-    dataset_no: [{ required: true, message: '请输入数据集编号', trigger: 'blur' }],
     name: [{ required: true, message: '请输入数据集名称', trigger: 'blur' }],
   }
 })
@@ -174,7 +174,7 @@ const load = () => {
 load()
 
 const handleAdd = () => {
-  data.form = { class_count: 0, train_sample_count: 0, test_sample_count: 0, anomaly_sample_count: 0, mask_count: 0 }
+  data.form = { class_count: 0, train_sample_count: 0, test_sample_count: 0, anomaly_sample_count: 0 }
   data.formVisible = true
 }
 
@@ -183,103 +183,91 @@ const handleEdit = (row) => {
   data.formVisible = true
 }
 
-const add = () => {
+const ensureSuccess = (res, fallback) => {
+  if (res.code !== '200') throw new Error(res.msg || fallback)
+  return res
+}
+
+const add = async () => {
   const datasetData = {
-    dataset_no: data.form.dataset_no,
     name: data.form.name,
     description: data.form.description,
     domain_type: data.form.domain_type,
     createdBy: data.user.id,
   }
-  request.post('/dataset/add', datasetData).then(res => {
-    if (res.code === '200') {
-      const datasetId = res.data
-      const infoData = {
-        datasetId: datasetId,
-        root_directory: data.form.root_directory,
-        class_count: data.form.class_count,
-        train_sample_count: data.form.train_sample_count,
-        test_sample_count: data.form.test_sample_count,
-        anomaly_sample_count: data.form.anomaly_sample_count,
-        mask_count: data.form.mask_count,
-      }
-      request.post('/dataset/info/add', infoData).then(infoRes => {
-        if (infoRes.code === '200') {
-          ElMessage.success('操作成功')
-          data.formVisible = false
-          load()
-        } else {
-          ElMessage.error(infoRes.msg)
-        }
-      })
-    } else {
-      ElMessage.error(res.msg)
-    }
-  })
+  const res = ensureSuccess(
+    await request.post('/dataset/add', datasetData),
+    '数据集基本信息保存失败',
+  )
+  const infoData = {
+    datasetId: res.data,
+    root_directory: data.form.root_directory,
+    class_count: data.form.class_count,
+    train_sample_count: data.form.train_sample_count,
+    test_sample_count: data.form.test_sample_count,
+    anomaly_sample_count: data.form.anomaly_sample_count,
+  }
+  ensureSuccess(
+    await request.post('/dataset/info/add', infoData),
+    '数据集统计信息保存失败',
+  )
 }
 
-const update = () => {
+const update = async () => {
   const datasetData = {
     id: data.form.id,
-    dataset_no: data.form.dataset_no,
     name: data.form.name,
     description: data.form.description,
     domain_type: data.form.domain_type,
   }
-  request.put('/dataset/update', datasetData).then(res => {
-    if (res.code === '200') {
-      if (data.form.info_id) {
-        const infoData = {
-          id: data.form.info_id,
-          root_directory: data.form.root_directory,
-          class_count: data.form.class_count,
-          train_sample_count: data.form.train_sample_count,
-          test_sample_count: data.form.test_sample_count,
-          anomaly_sample_count: data.form.anomaly_sample_count,
-          mask_count: data.form.mask_count,
-        }
-        request.put('/dataset/info/update', infoData).then(infoRes => {
-          if (infoRes.code === '200') {
-            ElMessage.success('操作成功')
-            data.formVisible = false
-            load()
-          } else {
-            ElMessage.error(infoRes.msg)
-          }
-        })
-      } else {
-        // 没有关联的 DatasetInfo，新建一条
-        const infoData = {
-          datasetId: data.form.id,
-          root_directory: data.form.root_directory,
-          class_count: data.form.class_count,
-          train_sample_count: data.form.train_sample_count,
-          test_sample_count: data.form.test_sample_count,
-          anomaly_sample_count: data.form.anomaly_sample_count,
-          mask_count: data.form.mask_count,
-        }
-        request.post('/dataset/info/add', infoData).then(infoRes => {
-          if (infoRes.code === '200') {
-            ElMessage.success('操作成功')
-            data.formVisible = false
-            load()
-          } else {
-            ElMessage.error(infoRes.msg)
-          }
-        })
-      }
-    } else {
-      ElMessage.error(res.msg)
-    }
-  })
+  ensureSuccess(
+    await request.put('/dataset/update', datasetData),
+    '数据集基本信息更新失败',
+  )
+  const infoData = {
+    id: data.form.info_id,
+    root_directory: data.form.root_directory,
+    class_count: data.form.class_count,
+    train_sample_count: data.form.train_sample_count,
+    test_sample_count: data.form.test_sample_count,
+    anomaly_sample_count: data.form.anomaly_sample_count,
+  }
+  if (data.form.info_id) {
+    ensureSuccess(
+      await request.put('/dataset/info/update', infoData),
+      '数据集统计信息更新失败',
+    )
+  } else {
+    delete infoData.id
+    infoData.datasetId = data.form.id
+    ensureSuccess(
+      await request.post('/dataset/info/add', infoData),
+      '数据集统计信息保存失败',
+    )
+  }
 }
 
-const save = () => {
-  formRef.value.validate(valid => {
-    if (valid) {
-      data.form.id ? update() : add()
-    }
-  })
+const save = async () => {
+  if (data.saving) return
+  try {
+    await formRef.value.validate()
+  } catch {
+    ElMessage.warning('请填写数据集名称')
+    return
+  }
+
+  data.saving = true
+  try {
+    if (data.form.id) await update()
+    else await add()
+    ElMessage.success('保存成功')
+    data.formVisible = false
+    load()
+  } catch (error) {
+    ElMessage.error(error?.message || '保存失败，请稍后重试')
+  } finally {
+    data.saving = false
+  }
 }
 
 const handleDelete = (id) => {

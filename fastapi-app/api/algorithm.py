@@ -3,10 +3,12 @@ from typing import Optional, Any
 
 from fastapi import APIRouter, Depends
 from pydantic import create_model, Field
+from tortoise.transactions import in_transaction
 from tortoise.contrib.pydantic import pydantic_model_creator
 
 from common.auth import get_current_admin, get_current_user
 from common.result import Result, PageInfo
+from common.sequential_number import ensure_sequential_numbers
 from models import Algorithm, AlgorithmInfo
 
 router = APIRouter(prefix="/algorithm", dependencies=[Depends(get_current_user)])
@@ -50,7 +52,7 @@ async def select_page(name: str = "", userId: int = 0, pageNum: int = 1, pageSiz
     if name and name != '':
         query = query.filter(name__contains=name)
 
-    query = query.prefetch_related('algorithm_infos', 'created_by').order_by('-created_at')
+    query = query.prefetch_related('algorithm_infos', 'created_by').order_by('id')
 
     total = await query.count()
     algorithms_list = await query.offset((pageNum - 1) * pageSize).limit(pageSize)
@@ -89,9 +91,24 @@ async def select_page(name: str = "", userId: int = 0, pageNum: int = 1, pageSiz
 
 
 @router.post("/add", dependencies=[Depends(get_current_admin)])
-async def add(algorithm_pydantic: AlgorithmCreatePydantic):
-    create_data = algorithm_pydantic.model_dump(exclude_unset=True, exclude={'id'})
-    algorithm = await Algorithm.create(**create_data)
+async def add(
+    algorithm_pydantic: AlgorithmCreatePydantic,
+    current_admin: dict = Depends(get_current_admin),
+):
+    create_data = algorithm_pydantic.model_dump(
+        exclude_unset=True,
+        exclude={
+            'id', 'algorithm_no', 'created_by', 'created_at', 'updated_at',
+            'deleted_at',
+        },
+    )
+    create_data['created_by_id'] = current_admin['user_id']
+    async with in_transaction() as connection:
+        count = await ensure_sequential_numbers(
+            Algorithm, 'algorithm_no', connection
+        )
+        create_data['algorithm_no'] = str(count + 1)
+        algorithm = await Algorithm.create(using_db=connection, **create_data)
     return Result.success(algorithm.id)
 
 
@@ -99,14 +116,24 @@ async def add(algorithm_pydantic: AlgorithmCreatePydantic):
 async def update(algorithm_pydantic: AlgorithmCreatePydantic):
     if not algorithm_pydantic.id:
         return Result.error("缺少 id")
-    update_data = algorithm_pydantic.model_dump(exclude_unset=True, exclude={'id'})
+    update_data = algorithm_pydantic.model_dump(
+        exclude_unset=True,
+        exclude={
+            'id', 'algorithm_no', 'created_by', 'created_at', 'updated_at',
+            'deleted_at',
+        },
+    )
     await Algorithm.filter(id=algorithm_pydantic.id).update(**update_data)
     return Result.success()
 
 
 @router.delete("/delete/{id}", dependencies=[Depends(get_current_admin)])
 async def delete(id: int):
-    await Algorithm.filter(id=id).delete()
+    async with in_transaction() as connection:
+        await Algorithm.all().using_db(connection).select_for_update()
+        await AlgorithmInfo.filter(algorithm_id=id).using_db(connection).delete()
+        await Algorithm.filter(id=id).using_db(connection).delete()
+        await ensure_sequential_numbers(Algorithm, 'algorithm_no', connection)
     return Result.success()
 
 
