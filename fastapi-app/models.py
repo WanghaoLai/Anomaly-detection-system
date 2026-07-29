@@ -131,7 +131,6 @@ class DatasetInfo(Model):
     train_sample_count = fields.IntField(default=0, null=False, description='训练集样本数')
     test_sample_count = fields.IntField(default=0, null=False, description='测试集样本数')
     anomaly_sample_count = fields.IntField(default=0, null=False, description='异常样本数')
-    mask_count = fields.IntField(default=0, null=False, description='掩码（标注）数量')
 
     class Meta:
         table = 'dataset'

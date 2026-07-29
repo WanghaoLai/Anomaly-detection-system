@@ -2,10 +2,12 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import create_model, Field
+from tortoise.transactions import in_transaction
 from tortoise.contrib.pydantic import pydantic_model_creator
 
 from common.auth import get_current_admin, get_current_user
 from common.result import Result, PageInfo
+from common.sequential_number import ensure_sequential_numbers
 from models import Dataset, DatasetInfo
 
 router = APIRouter(prefix="/dataset", dependencies=[Depends(get_current_user)])
@@ -41,7 +43,7 @@ async def select_page(name: str = "", userId: int = 0, pageNum: int = 1, pageSiz
     if name and name != '':
         query = query.filter(name__contains=name)
 
-    query = query.prefetch_related('dataset_infos', 'created_by').order_by('-created_at')
+    query = query.prefetch_related('dataset_infos', 'created_by').order_by('id')
 
     total = await query.count()
     datasets_list = await query.offset((pageNum - 1) * pageSize).limit(pageSize)
@@ -60,7 +62,6 @@ async def select_page(name: str = "", userId: int = 0, pageNum: int = 1, pageSiz
             "train_sample_count": info.train_sample_count if info else 0,
             "test_sample_count": info.test_sample_count if info else 0,
             "anomaly_sample_count": info.anomaly_sample_count if info else 0,
-            "mask_count": info.mask_count if info else 0,
         }
         result.append(item)
 
@@ -69,9 +70,24 @@ async def select_page(name: str = "", userId: int = 0, pageNum: int = 1, pageSiz
 
 
 @router.post("/add", dependencies=[Depends(get_current_admin)])
-async def add(dataset_pydantic: DatasetCreatePydantic):
-    create_data = dataset_pydantic.model_dump(exclude_unset=True, exclude={'id'})
-    dataset = await Dataset.create(**create_data)
+async def add(
+    dataset_pydantic: DatasetCreatePydantic,
+    current_admin: dict = Depends(get_current_admin),
+):
+    create_data = dataset_pydantic.model_dump(
+        exclude_unset=True,
+        exclude={
+            'id', 'dataset_no', 'created_by', 'created_at', 'updated_at',
+            'deleted_at',
+        },
+    )
+    create_data['created_by_id'] = current_admin['user_id']
+    async with in_transaction() as connection:
+        count = await ensure_sequential_numbers(
+            Dataset, 'dataset_no', connection
+        )
+        create_data['dataset_no'] = str(count + 1)
+        dataset = await Dataset.create(using_db=connection, **create_data)
     return Result.success(dataset.id)
 
 
@@ -79,14 +95,24 @@ async def add(dataset_pydantic: DatasetCreatePydantic):
 async def update(dataset_pydantic: DatasetCreatePydantic):
     if not dataset_pydantic.id:
         return Result.error("缺少 id")
-    update_data = dataset_pydantic.model_dump(exclude_unset=True, exclude={'id'})
+    update_data = dataset_pydantic.model_dump(
+        exclude_unset=True,
+        exclude={
+            'id', 'dataset_no', 'created_by', 'created_at', 'updated_at',
+            'deleted_at',
+        },
+    )
     await Dataset.filter(id=dataset_pydantic.id).update(**update_data)
     return Result.success()
 
 
 @router.delete("/delete/{id}", dependencies=[Depends(get_current_admin)])
 async def delete(id: int):
-    await Dataset.filter(id=id).delete()
+    async with in_transaction() as connection:
+        await Dataset.all().using_db(connection).select_for_update()
+        await DatasetInfo.filter(dataset_id=id).using_db(connection).delete()
+        await Dataset.filter(id=id).using_db(connection).delete()
+        await ensure_sequential_numbers(Dataset, 'dataset_no', connection)
     return Result.success()
 
 
