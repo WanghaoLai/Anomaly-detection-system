@@ -1,19 +1,17 @@
 <template>
   <div class="server-page">
-    <div class="card server-header">
-      <div class="server-identity">
-        <div class="server-icon">
-          <el-icon><Monitor /></el-icon>
-        </div>
-        <div>
-          <div class="page-title">服务器信息</div>
-          <div class="server-meta">
-            <span>{{ data.summary.host }}</span>
-            <span class="meta-divider"></span>
-            <span>{{ data.summary.gpuCount || 0 }} / {{ data.summary.expectedGpuCount }} 张 GPU</span>
-            <span class="meta-divider"></span>
-            <span>{{ data.summary.processes.length }} 个计算进程</span>
-          </div>
+    <div class="page-header">
+      <div class="page-icon">
+        <el-icon><Monitor /></el-icon>
+      </div>
+      <div class="page-info">
+        <div class="page-title">服务器信息</div>
+        <div class="page-subtitle">
+          <span>{{ data.summary.host }}</span>
+          <span class="meta-divider"></span>
+          <span>{{ data.summary.gpuCount || 0 }} / {{ data.summary.expectedGpuCount }} 张 GPU</span>
+          <span class="meta-divider"></span>
+          <span>{{ data.summary.processes.length }} 个计算进程</span>
         </div>
       </div>
       <div class="header-actions">
@@ -647,22 +645,25 @@ onUnmounted(() => {
 
 <style lang="scss" scoped>
 .server-page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   min-width: 0;
 }
 
-.server-header {
-  min-height: 72px;
+.page-header {
+  min-height: 54px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 14px 18px;
-  margin-bottom: 8px;
+  gap: 12px;
+  padding: 10px 16px;
+  background: #ffffff;
+  border-left: 4px solid #1a73e8;
+  border-radius: 5px;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.06);
 }
 
-.server-identity,
 .header-actions,
-.server-meta,
 .tab-label,
 .account-cell,
 .file-toolbar,
@@ -673,32 +674,39 @@ onUnmounted(() => {
   align-items: center;
 }
 
-.server-icon {
-  width: 42px;
-  height: 42px;
-  flex: 0 0 42px;
+.page-icon {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
   display: grid;
   place-items: center;
-  margin-right: 12px;
   border-radius: 5px;
   background: #eaf3ff;
   color: #1a73e8;
-  font-size: 23px;
+  font-size: 20px;
+}
+
+.page-info {
+  flex: 1;
+  min-width: 0;
 }
 
 .page-title {
-  font-size: 18px;
-  line-height: 24px;
+  font-size: 17px;
+  line-height: 22px;
   font-weight: 700;
   color: #263247;
 }
 
-.server-meta {
+.page-subtitle {
+  display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 9px;
-  margin-top: 5px;
-  color: #7b8494;
+  margin-top: 2px;
+  color: #9097a5;
   font-size: 12px;
+  line-height: 16px;
 }
 
 .meta-divider {
@@ -737,9 +745,36 @@ onUnmounted(() => {
 }
 
 .content-panel {
-  min-height: calc(100vh - 168px);
   padding: 6px 16px 16px;
   background: #ffffff;
+  border-radius: 5px;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.06);
+}
+
+.content-panel :deep(.el-table) {
+  --el-table-border-color: #eef0f4;
+  --el-table-header-bg-color: #f5f7fa;
+  --el-table-row-hover-bg-color: #f0f5ff;
+  font-size: 13px;
+  border-radius: 0;
+}
+
+.content-panel :deep(.el-table th.el-table__cell) {
+  padding: 6px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #38455b;
+  background-color: #f5f7fa;
+}
+
+.content-panel :deep(.el-table td.el-table__cell) {
+  padding: 5px 0;
+  color: #47556d;
+  font-size: 12px;
+}
+
+.content-panel :deep(.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell) {
+  background: #fafbfd;
 }
 
 .tab-label {
@@ -1045,7 +1080,7 @@ onUnmounted(() => {
 }
 
 @media (max-width: 720px) {
-  .server-header {
+  .page-header {
     align-items: flex-start;
     flex-direction: column;
   }

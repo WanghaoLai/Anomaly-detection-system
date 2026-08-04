@@ -90,7 +90,7 @@ async def login(
             account.username,
             account.role,
         )
-        raise CustomException("账号或密码错误")
+        raise HTTPException(status_code=401, detail="账号不存在")
 
     is_valid, needs_upgrade = verify_password(account.password, user.password)
     if not is_valid or user.role != account.role:
@@ -99,7 +99,7 @@ async def login(
             account.username,
             account.role,
         )
-        raise CustomException("账号或密码错误")
+        raise HTTPException(status_code=401, detail="密码错误")
 
     if needs_upgrade:
         hashed = hash_password(account.password)
@@ -198,17 +198,23 @@ async def logout(request: Request, response: Response):
 # 注册
 @api_router.post("/register")
 async def register(account: Account):
+    if (
+        not account.username
+        or not account.username.strip()
+        or not account.password
+        or not account.password.strip()
+    ):
+        raise CustomException("账号和密码不能为空")
     user = await User.get_or_none(username=account.username)
     if user is not None:
-        raise CustomException("账号重复")
-    if account.name is None:
-        account.name = account.username
-    if account.password is None:
-        account.password = "123"
-    create_data = account.model_dump(exclude_unset=True, exclude={'id'})
-    create_data['password'] = hash_password(create_data['password'])
-    create_data['role'] = '用户'
-    await User.create(**create_data)
+        raise CustomException("账号已存在")
+    await User.create(
+        username=account.username,
+        password=hash_password(account.password),
+        name=account.name or account.username,
+        avatar=account.avatar,
+        role='用户',
+    )
     return Result.success()
 
 

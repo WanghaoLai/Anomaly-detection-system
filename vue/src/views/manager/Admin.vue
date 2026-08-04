@@ -59,7 +59,7 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" align="center" width="160" fixed="right">
+          <el-table-column label="操作" align="center" width="210" fixed="right">
             <template #default="scope">
               <div class="action-group">
                 <el-button
@@ -69,6 +69,15 @@
                   @click="handleEdit(scope.row)"
                 >
                   <el-icon><Edit /></el-icon>
+                </el-button>
+                <el-button
+                  type="warning"
+                  size="small"
+                  round
+                  title="重置密码"
+                  @click="handleResetPassword(scope.row)"
+                >
+                  <el-icon><Key /></el-icon>
                 </el-button>
                 <el-button
                   class="action-btn action-btn--delete"
@@ -104,12 +113,12 @@
         <el-form-item label="名称" prop="name">
           <el-input v-model="data.form.name" autocomplete="off" />
         </el-form-item>
-        <el-form-item label="密码" prop="password">
+        <el-form-item v-if="!data.form.id" label="初始密码" prop="password">
           <el-input
             v-model="data.form.password"
             show-password
             autocomplete="new-password"
-            :placeholder="data.form.id ? '不填则不修改密码' : '请输入密码'"
+            placeholder="请输入初始密码"
           />
         </el-form-item>
         <el-form-item label="头像" prop="avatar">
@@ -140,7 +149,7 @@ const uploadHeaders = { 'X-CSRF-Token': getCsrfToken() }
 
 const formRef = ref()
 const validatePassword = (rule, value, callback) => {
-  if (!data.form.id && !value) {
+  if (!data.form.id && !value?.trim()) {
     callback(new Error('请输入密码'))
   } else {
     callback()
@@ -192,8 +201,31 @@ const handleAdd = () => {
 
 const handleEdit = (row) => {
   data.form = JSON.parse(JSON.stringify(row))
-  delete data.form.password
   data.formVisible = true
+}
+
+const handleResetPassword = (row) => {
+  ElMessageBox.prompt(
+    `请输入管理员 ${row.username} 的新密码`,
+    '重置密码',
+    {
+      confirmButtonText: '确认重置',
+      cancelButtonText: '取消',
+      inputType: 'password',
+      inputPlaceholder: '请输入新密码',
+      inputValidator: value => Boolean(value?.trim()) || '新密码不能为空',
+    },
+  ).then(({ value }) => {
+    request.put(`/admin/resetPassword/${row.id}`, {
+      newPassword: value,
+    }).then(res => {
+      if (res.code === '200') {
+        ElMessage.success('密码已重置，旧登录会话已撤销')
+      } else {
+        ElMessage.error(res.msg)
+      }
+    })
+  }).catch(() => {})
 }
 
 const add = () => {

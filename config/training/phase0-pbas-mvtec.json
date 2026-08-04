@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "algorithm": "PBAS",
+  "runtime": {
+    "python_executable": "/home/user/miniconda3/envs/pbas/bin/python",
+    "source_directory": "/home/user/Model-list/PBAS",
+    "entrypoint": "main.py"
+  },
+  "dataset": {
+    "name": "MVTec AD",
+    "root_directory": "/home/user/Model-list/Datasets/mvtec_ad",
+    "classes": [
+      "screw"
+    ]
+  },
+  "resources": {
+    "gpu_index": 2
+  },
+  "training": {
+    "epochs": 5,
+    "batch_size": 8,
+    "num_workers": 4,
+    "resize": 288,
+    "image_size": 288,
+    "seed": 0,
+    "eval_every": 1,
+    "learning_rate": 0.0001
+  },
+  "output": {
+    "root_directory": "/home/user/Model-list/training-runs/phase0"
+  }
+}

@@ -6,7 +6,6 @@ from message import Message
 from hello_agents import HelloAgentsLLM
 from config import Config
 
-
 class Agent(ABC):
     """Agent基类"""
 

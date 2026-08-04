@@ -62,6 +62,7 @@ request.interceptors.response.use(
     const canRefresh = (
       error.response?.status === 401
       && !original._retry
+      && Boolean(getCsrfToken())
       && !['/login', '/refresh', '/logout'].some(path => url.endsWith(path))
     )
 
