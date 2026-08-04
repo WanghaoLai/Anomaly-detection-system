@@ -42,7 +42,7 @@ python-pptx==1.0.2
 openpyxl==3.1.5
 beautifulsoup4==4.14.3
 mammoth==1.11.0
-markitdown==0.1.6
+markitdown[docx,pdf,pptx,xlsx,xls]==0.1.6
 
 # 数据处理
 pandas==3.0.3

@@ -59,3 +59,31 @@ node_modules/
 dist/
 build/
 *.egg-info/
+
+# 测试和 Linter 缓存
+.pytest_cache/
+.ruff_cache/
+
+# Claude MCP 配置
+.mcp.json
+
+# 数据库导出和备份
+*.sql
+!fastapi-app/migrations/*.sql
+
+# 生成的报告
+reports/
+
+# 本地上传文件
+files/
+fastapi-app/files/
+
+# 启动脚本（Windows/Mac）
+*.bat
+*.command
+
+# 临时开发文档
+docs/
+
+# Agent 模块
+fastapi-app/agent/

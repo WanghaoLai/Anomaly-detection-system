@@ -74,6 +74,8 @@
           } else {
             ElMessage.error(res.msg)
           }
+        }).catch(error => {
+          ElMessage.error(error.response?.data?.msg || '注册失败，请稍后重试')
         })
       }
     })).catch(error => {

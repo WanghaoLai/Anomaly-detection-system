@@ -17,13 +17,23 @@
             :show-file-list="false"
             :http-request="handleUpload"
             :before-upload="beforeUpload"
-            accept=".txt,.pdf,.docx"
+            accept=".txt,.md,.markdown,.pdf,.docx,.pptx,.xlsx,.xls,.csv,.html,.htm,.json,.xml,.ipynb,.epub"
           >
             <el-button type="primary" :loading="data.uploading">
               <el-icon><Upload /></el-icon>上传文档
             </el-button>
           </el-upload>
-          <span class="format-hint">支持 .txt .pdf .docx 格式，最大 20MB</span>
+          <el-button :loading="data.checkingHealth" @click="checkHealth(true)">
+            检查索引
+          </el-button>
+          <el-tag
+            v-if="data.health.status"
+            :type="data.health.healthy ? 'success' : 'danger'"
+            effect="plain"
+          >
+            {{ data.health.healthy ? '索引正常' : `发现 ${data.health.summary?.issue_count || 0} 项问题` }}
+          </el-tag>
+          <span class="format-hint">支持常见文本、PDF、Word、PPT、Excel 等格式，最大 20MB</span>
         </div>
       </div>
 
@@ -69,6 +79,69 @@
         </div>
       </div>
     </div>
+
+    <el-dialog
+      v-model="data.previewDialog"
+      title="PDF 入库预览"
+      width="760px"
+      :close-on-click-modal="false"
+      @closed="cancelPreview"
+    >
+      <template v-if="data.previewData.diagnostics">
+        <el-descriptions :column="3" border size="small">
+          <el-descriptions-item label="识别页数">
+            {{ data.previewData.diagnostics.page_count || '未识别' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="清理页眉/页脚">
+            {{ data.previewData.diagnostics.headers_removed || 0 }}/{{ data.previewData.diagnostics.footers_removed || 0 }}
+          </el-descriptions-item>
+          <el-descriptions-item label="识别标题">
+            {{ data.previewData.diagnostics.detected_title_count || 0 }} 个
+          </el-descriptions-item>
+          <el-descriptions-item label="预计分块">
+            {{ data.previewData.diagnostics.chunk_count || 0 }} 个
+          </el-descriptions-item>
+          <el-descriptions-item label="平均分块">
+            {{ data.previewData.diagnostics.average_chunk_tokens || 0 }} Token
+          </el-descriptions-item>
+          <el-descriptions-item label="清理后字符">
+            {{ data.previewData.diagnostics.cleaned_char_count || 0 }}
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <el-alert
+          v-for="warning in data.previewData.warnings || []"
+          :key="warning"
+          class="preview-warning"
+          type="warning"
+          :title="warning"
+          :closable="false"
+          show-icon
+        />
+
+        <div v-if="data.previewData.diagnostics.detected_titles?.length" class="detected-titles">
+          <span class="preview-label">识别到的标题：</span>
+          <el-tag
+            v-for="title in data.previewData.diagnostics.detected_titles.slice(0, 8)"
+            :key="title"
+            size="small"
+            effect="plain"
+          >{{ title.replace(/^#+\s*/, '') }}</el-tag>
+        </div>
+
+        <div class="preview-label">清理后的 Markdown 预览：</div>
+        <pre class="markdown-preview">{{ data.previewData.preview_markdown }}</pre>
+        <div v-if="data.previewData.preview_truncated" class="preview-truncated">
+          内容较长，此处仅展示前 8000 个字符。
+        </div>
+      </template>
+      <template #footer>
+        <el-button @click="cancelPreview">取消</el-button>
+        <el-button type="primary" :loading="data.uploading" @click="confirmPreview">
+          确认构建知识库
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -81,7 +154,12 @@ import { ElMessage, ElMessageBox } from "element-plus"
 const data = reactive({
   tableData: [],
   uploading: false,
+  checkingHealth: false,
   stats: {},
+  health: {},
+  previewDialog: false,
+  previewData: {},
+  pendingUpload: null,
 })
 
 const PAGE_HEADER_H = 54
@@ -105,7 +183,7 @@ const fileIconClass = (name) => {
   if (!name) return ''
   const ext = name.split('.').pop().toLowerCase()
   if (ext === 'pdf') return 'icon-pdf'
-  if (ext === 'docx') return 'icon-docx'
+  if (['docx', 'pptx', 'xlsx', 'xls'].includes(ext)) return 'icon-docx'
   return 'icon-txt'
 }
 
@@ -120,12 +198,40 @@ const load = () => {
       data.stats = res.data || {}
     }
   })
+  checkHealth(false)
+}
+
+const checkHealth = async (notify = true) => {
+  data.checkingHealth = true
+  try {
+    const res = await request.get('/knowledge/health')
+    if (res.code !== '200') {
+      if (notify) ElMessage.error(res.msg || '健康检查失败')
+      return
+    }
+    data.health = res.data || {}
+    if (notify) {
+      if (data.health.healthy) {
+        ElMessage.success('MySQL 元数据与 Chroma 索引一致')
+      } else {
+        ElMessage.warning(`检查完成，发现 ${data.health.summary?.issue_count || 0} 项问题`)
+      }
+    }
+  } catch (e) {
+    if (notify) ElMessage.error('健康检查失败')
+  } finally {
+    data.checkingHealth = false
+  }
 }
 
 const beforeUpload = (file) => {
   const ext = file.name.split('.').pop().toLowerCase()
-  if (!['txt', 'pdf', 'docx'].includes(ext)) {
-    ElMessage.error('仅支持 .txt .pdf .docx 格式')
+  const allowedExtensions = [
+    'txt', 'md', 'markdown', 'pdf', 'docx', 'pptx', 'xlsx', 'xls',
+    'csv', 'html', 'htm', 'json', 'xml', 'ipynb', 'epub'
+  ]
+  if (!allowedExtensions.includes(ext)) {
+    ElMessage.error('不支持该文件格式，请上传常见文本、PDF、Word、PPT 或 Excel 文档')
     return false
   }
   if (file.size > 20 * 1024 * 1024) {
@@ -135,7 +241,7 @@ const beforeUpload = (file) => {
   return true
 }
 
-const handleUpload = async (options) => {
+const uploadDocument = async (options) => {
   data.uploading = true
   const formData = new FormData()
   formData.append('file', options.file)
@@ -144,7 +250,13 @@ const handleUpload = async (options) => {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
     if (res.code === '200') {
-      ElMessage.success('文档上传成功，已构建知识库')
+      if (res.data?.unchanged) {
+        ElMessage.success('文档内容未变化，已复用现有索引')
+      } else if (res.data?.replaced_existing) {
+        ElMessage.success('文档已更新，旧索引已安全替换')
+      } else {
+        ElMessage.success('文档上传成功，已构建知识库')
+      }
       load()
     } else {
       ElMessage.error(res.msg)
@@ -154,6 +266,48 @@ const handleUpload = async (options) => {
   } finally {
     data.uploading = false
   }
+}
+
+const handleUpload = async (options) => {
+  const extension = options.file.name.split('.').pop().toLowerCase()
+  if (extension !== 'pdf') {
+    await uploadDocument(options)
+    return
+  }
+
+  data.uploading = true
+  const formData = new FormData()
+  formData.append('file', options.file)
+  try {
+    const res = await request.post('/knowledge/preview', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    if (res.code !== '200') {
+      ElMessage.error(res.msg || 'PDF 预览失败')
+      return
+    }
+    data.previewData = res.data || {}
+    data.pendingUpload = options
+    data.previewDialog = true
+  } catch (e) {
+    ElMessage.error('PDF 预览失败')
+  } finally {
+    data.uploading = false
+  }
+}
+
+const confirmPreview = async () => {
+  const options = data.pendingUpload
+  if (!options) return
+  data.previewDialog = false
+  data.pendingUpload = null
+  await uploadDocument(options)
+}
+
+const cancelPreview = () => {
+  data.previewDialog = false
+  data.pendingUpload = null
+  data.previewData = {}
 }
 
 const handleDelete = (id) => {
@@ -253,6 +407,45 @@ load()
 }
 
 .format-hint {
+  color: #9097a5;
+  font-size: 12px;
+}
+
+.preview-warning {
+  margin-top: 10px;
+}
+
+.detected-titles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.preview-label {
+  margin: 12px 0 6px;
+  color: #47556d;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.markdown-preview {
+  max-height: 360px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid #e4e7ed;
+  border-radius: 4px;
+  background: #f8f9fb;
+  color: #38455b;
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.preview-truncated {
+  margin-top: 6px;
   color: #9097a5;
   font-size: 12px;
 }

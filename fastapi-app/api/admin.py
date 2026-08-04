@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends
-from pydantic import create_model
+from pydantic import BaseModel, create_model
 from tortoise.contrib.pydantic import pydantic_model_creator
 
 from common.auth import get_current_admin, hash_password
@@ -25,6 +25,10 @@ AdminCreatePydantic = create_model(
 )
 
 
+class AdminPasswordResetRequest(BaseModel):
+    newPassword: str
+
+
 @router.post("/add")
 async def add(admin_create_pydantic: AdminCreatePydantic):
     admin = await Admin.get_or_none(username=admin_create_pydantic.username)
@@ -32,8 +36,11 @@ async def add(admin_create_pydantic: AdminCreatePydantic):
         raise CustomException("账号重复")
     if admin_create_pydantic.name is None:
         admin_create_pydantic.name = admin_create_pydantic.username
-    if admin_create_pydantic.password is None:
-        admin_create_pydantic.password = "admin"
+    if (
+        not admin_create_pydantic.password
+        or not admin_create_pydantic.password.strip()
+    ):
+        raise CustomException("请输入初始密码")
     create_data = admin_create_pydantic.model_dump(exclude_unset=True, exclude={'id'})
     create_data.pop('token_version', None)
     create_data['password'] = hash_password(create_data['password'])
@@ -47,32 +54,46 @@ async def update(admin_create_pydantic: AdminCreatePydantic):
     update_data = admin_create_pydantic.model_dump(exclude_unset=True, exclude={'id'})
     # Admin 表中的账号角色是服务端不变量，不能由请求体修改。
     update_data.pop('role', None)
+    # 密码只允许通过专用重置接口修改，避免通用资料更新误哈希或重复哈希。
+    update_data.pop('password', None)
     update_data.pop('token_version', None)
 
     admin = await Admin.get_or_none(id=admin_create_pydantic.id)
     if admin is None:
         raise CustomException("未找到管理员")
-    password_changed = bool(
-        update_data.get('password')
-        and update_data.get('password') != admin.password
-    )
-    if not password_changed:
-        update_data.pop('password', None)
-    else:
-        update_data['password'] = hash_password(update_data['password'])
-        update_data['token_version'] = admin.token_version + 1
-    query = Admin.filter(id=admin_create_pydantic.id)
-    if password_changed:
-        query = query.filter(token_version=admin.token_version)
-    updated = await query.update(**update_data)
+    updated = await Admin.filter(id=admin.id).update(**update_data)
     if updated != 1:
         raise CustomException("管理员状态已变化，请重试")
-    if password_changed:
-        await AuthSession.filter(
-            user_id=admin.id,
-            role="管理员",
-            revoked_at__isnull=True,
-        ).update(revoked_at=datetime.now(timezone.utc))
+    return Result.success()
+
+
+@router.put("/resetPassword/{admin_id}")
+async def reset_password(
+    admin_id: int,
+    password_reset: AdminPasswordResetRequest,
+):
+    if not password_reset.newPassword or not password_reset.newPassword.strip():
+        raise CustomException("新密码不能为空")
+
+    admin = await Admin.get_or_none(id=admin_id)
+    if admin is None:
+        raise CustomException("未找到管理员")
+
+    updated = await Admin.filter(
+        id=admin.id,
+        token_version=admin.token_version,
+    ).update(
+        password=hash_password(password_reset.newPassword),
+        token_version=admin.token_version + 1,
+    )
+    if updated != 1:
+        raise CustomException("管理员状态已变化，请重试")
+
+    await AuthSession.filter(
+        user_id=admin.id,
+        role="管理员",
+        revoked_at__isnull=True,
+    ).update(revoked_at=datetime.now(timezone.utc))
     return Result.success()
 
 

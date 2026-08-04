@@ -28,6 +28,7 @@ const router = createRouter({
         { path: 'address', component: () => import('@/views/manager/Address.vue') },
         { path: 'notice', component: () => import('@/views/manager/Notice.vue') },
         { path: 'chat', component: () => import('@/views/manager/Chat.vue') },
+        { path: 'adminChat', component: () => import('@/views/manager/AdminChat.vue') },
         { path: 'knowledge', component: () => import('@/views/manager/Knowledge.vue') },
         { path: 'datasetInfo', component: () => import('@/views/manager/DatasetInfo.vue') },
         { path: 'datasetInfoAdmin', component: () => import('@/views/manager/DatasetInfoAdmin.vue') },
@@ -36,6 +37,9 @@ const router = createRouter({
         { path: 'serverInfo', component: () => import('@/views/manager/ServerInfo.vue') },
         { path: 'datasetAdmin', component: () => import('@/views/manager/DatasetAdmin.vue') },
         { path: 'algorithmAdmin', component: () => import('@/views/manager/AlgorithmAdmin.vue') },
+        { path: 'trainingJobs', component: () => import('@/views/manager/TrainingJobs.vue') },
+        { path: 'inferenceJobs', component: () => import('@/views/manager/InferenceJobs.vue') },
+        { path: 'experimentResults', component: () => import('@/views/manager/ExperimentResults.vue') },
         { path: 'upload', component: () => import('@/views/manager/Upload.vue') },
       ],
     },
@@ -56,6 +60,9 @@ const verifySession = async () => {
     saveAuthenticatedUser(response.data)
   } catch (error) {
     if (error.response?.status !== 401) throw error
+    // Refresh Token 使用双提交 CSRF 防护；缺少可读 CSRF Cookie 时，
+    // 刷新请求必然失败，应直接按未登录处理。
+    if (!getCsrfToken()) throw error
     await sessionClient.post('/refresh', {}, {
       headers: { 'X-CSRF-Token': getCsrfToken() },
     })

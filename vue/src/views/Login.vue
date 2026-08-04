@@ -34,17 +34,22 @@
   import { reactive, ref } from "vue";
   import { User, Lock } from "@element-plus/icons-vue";
   import request from "@/utils/request";
+  import { saveAuthenticatedUser } from "@/utils/auth";
   import {ElMessage} from "element-plus";
   import router from "@/router";
 
   const data = reactive({
-    form: { role: '管理员' },
+    // 普通用户是系统的默认登录主体；管理员必须显式选择管理员身份。
+    form: { role: '用户' },
     rules: {
       username: [
         { required: true, message: '请输入账号', trigger: 'blur' },
       ],
       password: [
         { required: true, message: '请输入密码', trigger: 'blur' },
+      ],
+      role: [
+        { required: true, message: '请选择登录身份', trigger: 'change' },
       ],
     }
   })
@@ -59,8 +64,7 @@
         request.post('/login', data.form).then(res => {
           if (res.code === '200') {
             ElMessage.success("登录成功")
-            localStorage.removeItem('token')
-            localStorage.setItem('system-user', JSON.stringify(res.data.user))
+            saveAuthenticatedUser(res)
             router.push('/manager/home')
           } else {
             ElMessage.error(res.msg)

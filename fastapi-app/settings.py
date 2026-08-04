@@ -90,6 +90,23 @@ AI_CONFIG = {
     "embedding_model": os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v2"),
     "max_history": _env_int("AI_MAX_HISTORY", 20),
     "top_k": _env_int("AI_TOP_K", 3),
+    "rag_candidate_k": _env_int("AI_RAG_CANDIDATE_K", 8),
+    "rag_final_k": _env_int("AI_RAG_FINAL_K", 4),
+    "rag_score_threshold": _env_float("AI_RAG_SCORE_THRESHOLD", 0.20),
+    "rag_hybrid_enabled": _env_bool("AI_RAG_HYBRID_ENABLED", True),
+    "rag_lexical_min_score": _env_float("AI_RAG_LEXICAL_MIN_SCORE", 0.08),
+    "rag_context_tokens": _env_int("AI_RAG_CONTEXT_TOKENS", 1800),
+    "rag_query_history_turns": _env_int("AI_RAG_QUERY_HISTORY_TURNS", 2),
+    "rag_chunk_tokens": _env_int("AI_RAG_CHUNK_TOKENS", 500),
+    "rag_overlap_tokens": _env_int("AI_RAG_OVERLAP_TOKENS", 50),
+    "rag_max_upload_bytes": _env_int("AI_RAG_MAX_UPLOAD_BYTES", 20 * 1024 * 1024),
+    # DashScope 当前 text-embedding-v2 单批最多 25 条；v3/v4 会由服务层自动
+    # 收紧到接口上限。重试只覆盖网络、限流和 5xx 等临时错误。
+    "embedding_batch_size": _env_int("AI_EMBEDDING_BATCH_SIZE", 25),
+    "embedding_max_retries": _env_int("AI_EMBEDDING_MAX_RETRIES", 3),
+    "embedding_retry_backoff_seconds": _env_float(
+        "AI_EMBEDDING_RETRY_BACKOFF_SECONDS", 0.5
+    ),
 }
 
 # JWT 配置
@@ -146,3 +163,80 @@ GPU_SERVER_CONFIG = {
     "conda_env_max_entries": _env_int("GPU_CONDA_ENV_MAX_ENTRIES", 500),
 }
 
+# 训练执行器使用独立低权限账号；运行目标只能来自管理员白名单。
+TRAINING_EXECUTOR_CONFIG = {
+    "enabled": _env_bool("TRAINING_EXECUTOR_ENABLED", False),
+    "host": os.getenv("TRAINING_SERVER_HOST", os.getenv("GPU_SERVER_HOST", "")),
+    "port": _env_int(
+        "TRAINING_SERVER_PORT",
+        _env_int("GPU_SERVER_PORT", 22),
+    ),
+    "ssh_user": os.getenv("TRAINING_SERVER_SSH_USER", "adtrainer"),
+    "private_key_path": os.getenv(
+        "TRAINING_SERVER_PRIVATE_KEY_PATH",
+        os.getenv("GPU_SERVER_PRIVATE_KEY_PATH", ""),
+    ),
+    "known_hosts_path": os.getenv(
+        "TRAINING_SERVER_KNOWN_HOSTS_PATH",
+        os.getenv("GPU_SERVER_KNOWN_HOSTS_PATH", ""),
+    ),
+    "connect_timeout": _env_float("TRAINING_CONNECT_TIMEOUT", 8.0),
+    "command_timeout": _env_float("TRAINING_COMMAND_TIMEOUT", 20.0),
+    "monitor_interval": _env_float("TRAINING_MONITOR_INTERVAL_SECONDS", 5.0),
+    "max_pending_jobs_per_user": _env_int(
+        "TRAINING_MAX_PENDING_JOBS_PER_USER",
+        3,
+    ),
+    "max_concurrent_jobs": _env_int(
+        "TRAINING_MAX_CONCURRENT_JOBS",
+        4,
+    ),
+    "max_runtime_seconds": _env_int(
+        "TRAINING_MAX_RUNTIME_SECONDS",
+        21600,
+    ),
+    "artifact_retention_days": _env_int(
+        "TRAINING_ARTIFACT_RETENTION_DAYS",
+        30,
+    ),
+    "min_free_gpu_memory_mb": _env_int(
+        "TRAINING_MIN_FREE_GPU_MEMORY_MB",
+        8000,
+    ),
+    "control_root": os.getenv(
+        "TRAINING_REMOTE_CONTROL_ROOT",
+        "/home/adtrainer/training-control",
+    ),
+    "output_root": os.getenv(
+        "TRAINING_REMOTE_OUTPUT_ROOT",
+        "/home/adtrainer/training-runs",
+    ),
+    "runner_path": os.getenv(
+        "TRAINING_REMOTE_RUNNER_PATH",
+        "/home/adtrainer/bin/phase0_pbas_runner.py",
+    ),
+    "gpu_allowlist": [
+        int(item)
+        for item in _env_list("TRAINING_GPU_ALLOWLIST", ["0", "1", "2", "3"])
+    ],
+}
+
+# 推理复用训练服务器与低权限账号，但拥有独立 runner 和输出根目录。
+INFERENCE_EXECUTOR_CONFIG = {
+    **TRAINING_EXECUTOR_CONFIG,
+    "runner_path": os.getenv(
+        "INFERENCE_REMOTE_RUNNER_PATH",
+        "/home/adtrainer/bin/phase0_pbas_inference_runner.py",
+    ),
+    "control_root": os.getenv(
+        "INFERENCE_REMOTE_CONTROL_ROOT",
+        "/home/adtrainer/inference-control",
+    ),
+    "output_root": os.getenv(
+        "INFERENCE_REMOTE_OUTPUT_ROOT",
+        "/home/adtrainer/inference-runs",
+    ),
+    "max_concurrent_jobs": _env_int("INFERENCE_MAX_CONCURRENT_JOBS", 2),
+    "max_pending_jobs_per_user": _env_int("INFERENCE_MAX_PENDING_JOBS_PER_USER", 3),
+    "max_runtime_seconds": _env_int("INFERENCE_MAX_RUNTIME_SECONDS", 1800),
+}

@@ -86,15 +86,15 @@
             <el-icon><Monitor /></el-icon>
             <span>服务器信息</span>
           </el-menu-item>
-          <el-menu-item index="/manager/upload" v-if="data.user.role === '用户'">
+          <el-menu-item index="/manager/trainingJobs">
             <el-icon><DataLine /></el-icon>
             <span>算法训练</span>
           </el-menu-item>
-          <el-menu-item index="/manager/upload" v-if="data.user.role === '用户'">
+          <el-menu-item index="/manager/inferenceJobs">
             <el-icon><TrendCharts /></el-icon>
             <span>算法推理</span>
           </el-menu-item>
-          <el-menu-item index="/manager/upload" v-if="data.user.role === '用户'">
+          <el-menu-item index="/manager/experimentResults">
             <el-icon><Histogram /></el-icon>
             <span>实验结果可视化</span>
           </el-menu-item>
@@ -107,6 +107,10 @@
             <span>知识库管理</span>
           </el-menu-item>
           <el-menu-item index="/manager/chat" v-if="data.user.role === '用户'">
+            <el-icon><ChatDotRound /></el-icon>
+            <span>智能助手</span>
+          </el-menu-item>
+          <el-menu-item index="/manager/adminChat" v-if="data.user.role === '管理员'">
             <el-icon><ChatDotRound /></el-icon>
             <span>智能助手</span>
           </el-menu-item>
