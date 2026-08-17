@@ -16,6 +16,7 @@
             class="avatar-uploader"
             :action="uploadUrl"
             :on-success="handleFileUpload"
+            :on-error="handleUploadError"
             :headers="uploadHeaders"
             :with-credentials="true"
           >
@@ -73,6 +74,7 @@ import { User, Plus, Camera, Edit, Check, Key } from "@element-plus/icons-vue"
 import request from "@/utils/request"
 import { ElMessage } from "element-plus"
 import { API_BASE_URL, getCsrfToken } from "@/utils/auth"
+import { handleUploadError } from "@/utils/upload"
 
 const uploadUrl = API_BASE_URL + '/files/upload'
 const uploadHeaders = { 'X-CSRF-Token': getCsrfToken() }

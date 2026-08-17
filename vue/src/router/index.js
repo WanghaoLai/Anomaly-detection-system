@@ -25,7 +25,6 @@ const router = createRouter({
         { path: 'home', component: () => import('@/views/manager/Home.vue') },
         { path: 'admin', component: () => import('@/views/manager/Admin.vue') },
         { path: 'user', component: () => import('@/views/manager/User.vue') },
-        { path: 'address', component: () => import('@/views/manager/Address.vue') },
         { path: 'notice', component: () => import('@/views/manager/Notice.vue') },
         { path: 'chat', component: () => import('@/views/manager/Chat.vue') },
         { path: 'adminChat', component: () => import('@/views/manager/AdminChat.vue') },
