@@ -54,16 +54,6 @@ class LoginThrottle(Model):
         table = 'login_throttle'
 
 
-class Address(Model):
-    id = fields.IntField(pk=True, null=False)
-    user = fields.ForeignKeyField('models.User', null=True)
-    name = fields.CharField(max_length=255, null=True)
-    address = fields.CharField(max_length=255, null=True)
-    phone = fields.CharField(max_length=255, null=True)
-
-    class Meta:
-        table = 'address'
-
 class Notice(Model):
     id = fields.IntField(pk=True, null=False)
     name = fields.CharField(max_length=255, null=True)

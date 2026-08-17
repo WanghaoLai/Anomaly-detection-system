@@ -1,11 +1,9 @@
 """知识库服务 - 文档解析、分块、向量化、ChromaDB 存储与检索"""
-import io
 import hashlib
 import logging
 import math
 import os
 import re
-import time
 import uuid
 from collections import Counter
 from typing import Dict, List, Optional, Tuple
@@ -15,6 +13,21 @@ from chromadb.config import Settings as ChromaSettings
 from dashscope import TextEmbedding
 
 from settings import AI_CONFIG
+from .rag.contracts import Document
+from .rag.embeddings import DashScopeEmbeddingModel
+from .rag.loaders import (
+    DefaultDocumentPreprocessor,
+    MarkItDownDocumentLoader,
+    SUPPORTED_DOCUMENT_EXTENSIONS as RAG_SUPPORTED_DOCUMENT_EXTENSIONS,
+    preprocess_pdf_markdown as _rag_preprocess_pdf_markdown,
+)
+from .rag.splitters import (
+    MarkdownNodeParser,
+    approx_token_len as _rag_approx_token_len,
+    chunk_paragraphs as _rag_chunk_paragraphs,
+    split_paragraphs_with_headings as _rag_split_paragraphs_with_headings,
+)
+from .rag.vector_store import ChromaVectorStore
 
 try:
     from markitdown import MarkItDown, StreamInfo
@@ -47,6 +60,9 @@ SUPPORTED_DOCUMENT_EXTENSIONS = frozenset({
     ".ipynb",
     ".epub",
 })
+
+# 对外常量继续由本模块导出；实际加载器使用 RAG 包中的同一契约。
+assert SUPPORTED_DOCUMENT_EXTENSIONS == RAG_SUPPORTED_DOCUMENT_EXTENSIONS
 
 # text-embedding-v2 按余弦相似度训练，Chroma 默认 hnsw:space=L2，二者向量空间语义
 # 不对齐，召回质量会打折。这里显式指定 cosine，并把嵌入契约写入 collection，
@@ -531,6 +547,13 @@ def _chunk_paragraphs(
     return chunks
 
 
+# 旧模块路径仍对测试、评测脚本开放，但实现统一指向新的核心组件，避免两套逻辑漂移。
+_preprocess_pdf_markdown = _rag_preprocess_pdf_markdown
+_approx_token_len = _rag_approx_token_len
+_split_paragraphs_with_headings = _rag_split_paragraphs_with_headings
+_chunk_paragraphs = _rag_chunk_paragraphs
+
+
 class KnowledgeService:
     def __init__(
         self,
@@ -541,6 +564,11 @@ class KnowledgeService:
         embedding_batch_size: int = None,
         embedding_max_retries: int = None,
         embedding_retry_backoff_seconds: float = None,
+        document_loader=None,
+        document_preprocessor=None,
+        node_parser=None,
+        embedding=None,
+        vector_store=None,
     ):
         self.embedding_model = embedding_model or AI_CONFIG.get("embedding_model", "text-embedding-v2")
         self.dashscope_api_key = AI_CONFIG.get("dashscope_api_key", "")
@@ -586,6 +614,25 @@ class KnowledgeService:
             raise ValueError("embedding_max_retries 不能小于 0")
         if self.embedding_retry_backoff_seconds < 0:
             raise ValueError("embedding_retry_backoff_seconds 不能小于 0")
+
+        # RAG 各阶段均为可替换组件；KnowledgeService 只保留兼容门面和跨存储事务。
+        self.document_loader = document_loader or MarkItDownDocumentLoader(
+            lambda: self.markdown_converter,
+            StreamInfo,
+        )
+        self.document_preprocessor = document_preprocessor or DefaultDocumentPreprocessor()
+        self.node_parser = node_parser or MarkdownNodeParser(
+            self.chunk_tokens, self.overlap_tokens
+        )
+        self.embedding = embedding or DashScopeEmbeddingModel(
+            api=TextEmbedding,
+            model=self.embedding_model,
+            api_key=self.dashscope_api_key,
+            batch_size=self.embedding_batch_size,
+            max_retries=self.embedding_max_retries,
+            retry_backoff_seconds=self.embedding_retry_backoff_seconds,
+        )
+        self.vector_store = vector_store or ChromaVectorStore(lambda: self.collection)
 
     @property
     def client(self):
@@ -633,43 +680,7 @@ class KnowledgeService:
         使用 convert_stream 而不是 convert，确保用户提供的文件名不会被当作本地路径
         或 URL 访问。
         """
-        source_filename = self._safe_filename(filename)
-        extension = os.path.splitext(source_filename)[1].lower()
-        if extension not in SUPPORTED_DOCUMENT_EXTENSIONS:
-            raise ValueError(
-                f"不支持的文件格式: {extension or '[无扩展名]'}"
-            )
-        if not file_bytes:
-            raise ValueError("文件内容为空")
-
-        conversion_kwargs = {}
-        if StreamInfo is not None:
-            conversion_kwargs["stream_info"] = StreamInfo(
-                extension=extension,
-                filename=source_filename,
-            )
-        else:
-            # 仅允许注入测试替身在未安装可选依赖的本地环境中运行。
-            conversion_kwargs["file_extension"] = extension
-
-        converter = self.markdown_converter
-        try:
-            result = converter.convert_stream(
-                io.BytesIO(bytes(file_bytes)),
-                **conversion_kwargs,
-            )
-        except Exception as exc:
-            logger.warning("MarkItDown 转换失败: filename=%s error=%s", source_filename, exc)
-            raise ValueError(f"文档转换失败: {source_filename}") from exc
-
-        # v0.1.6 的正式字段是 markdown；兼容旧版本/测试替身的 text_content 字段，
-        # 但不再接受任何原始文件解析结果作为后续 RAG 输入。
-        markdown = getattr(result, "markdown", None)
-        if markdown is None:
-            markdown = getattr(result, "text_content", None)
-        if not isinstance(markdown, str) or not markdown.strip():
-            raise ValueError(f"文档转换后无有效 Markdown 内容: {source_filename}")
-        return markdown.strip()
+        return self.document_loader.load(file_bytes, filename).text
 
     def parse_file(self, file_bytes: bytes, filename: str) -> str:
         """兼容旧调用方；所有文件解析统一委托给 MarkItDown。"""
@@ -680,29 +691,11 @@ class KnowledgeService:
         source_filename = self._safe_filename(filename)
         extension = os.path.splitext(source_filename)[1].lower()
         raw_markdown = self.convert_to_markdown(file_bytes, source_filename)
-        if extension == ".pdf":
-            markdown, diagnostics = _preprocess_pdf_markdown(raw_markdown)
-        else:
-            markdown = raw_markdown.strip()
-            detected_titles = [
-                line.strip()
-                for line in markdown.splitlines()
-                if _MARKDOWN_HEADING_RE.match(line)
-            ]
-            diagnostics = {
-                "page_count": None,
-                "page_markers_removed": 0,
-                "headers_removed": 0,
-                "footers_removed": 0,
-                "removed_header_samples": [],
-                "removed_footer_samples": [],
-                "detected_title_count": len(detected_titles),
-                "detected_titles": detected_titles[:20],
-                "raw_char_count": len(raw_markdown),
-                "cleaned_char_count": len(markdown),
-            }
-        if not markdown.strip():
-            raise ValueError("文档清理后无有效内容")
+        document, diagnostics = self.document_preprocessor.process(Document(
+            text=raw_markdown,
+            metadata={"filename": source_filename, "extension": extension},
+        ))
+        markdown = document.text
         chunks = self.split_markdown(markdown)
         if not chunks:
             raise ValueError("文档分块后无有效内容")
@@ -751,156 +744,22 @@ class KnowledgeService:
 
     def split_markdown(self, markdown: str) -> List[Dict]:
         """执行 Markdown 标题分段和 Token 预算分块。"""
-        paragraphs = _split_paragraphs_with_headings(markdown)
-        return _chunk_paragraphs(
-            paragraphs,
-            chunk_tokens=self.chunk_tokens,
-            overlap_tokens=self.overlap_tokens,
-        )
+        nodes = self.node_parser.parse(Document(text=markdown))
+        return [{"content": node.text, **dict(node.metadata)} for node in nodes]
 
     def split_text(self, text: str) -> list:
         """兼容旧调用方，仅返回分块正文；正文仍来自 Markdown 分块器。"""
         return [chunk["content"] for chunk in self.split_markdown(text)]
 
-    def _embedding_batch_limit(self) -> int:
-        """返回当前 DashScope 模型允许的最大请求行数。"""
-        model = self.embedding_model.lower()
-        # DashScope v3/v4 当前接口最多 10 条；v2 最多 25 条。未知模型仍采用
-        # 更保守的 25 条上限，实际模型切换时可以通过 AI_EMBEDDING_BATCH_SIZE 再下调。
-        if "text-embedding-v3" in model or "text-embedding-v4" in model:
-            return 10
-        return 25
-
-    @staticmethod
-    def _response_value(response, key: str, default=None):
-        if isinstance(response, dict):
-            return response.get(key, default)
-        return getattr(response, key, default)
-
-    def _sleep_before_embedding_retry(self, attempt: int) -> None:
-        if self.embedding_retry_backoff_seconds <= 0:
-            return
-        # 指数退避只用于短暂网络/限流错误，默认总等待时间很短，不阻塞长期任务。
-        delay = self.embedding_retry_backoff_seconds * (2 ** attempt)
-        time.sleep(delay)
-
-    def _call_embedding_api(self, batch: list, text_type: str):
-        """调用 DashScope，并只对可重试失败做有限次数重试。"""
-        last_error = None
-        for attempt in range(self.embedding_max_retries + 1):
-            try:
-                response = TextEmbedding.call(
-                    model=self.embedding_model,
-                    input=batch,
-                    text_type=text_type,
-                    api_key=self.dashscope_api_key or None,
-                )
-            except Exception as exc:
-                last_error = exc
-                if attempt >= self.embedding_max_retries:
-                    raise RuntimeError(
-                        f"Embedding 网络调用失败（{text_type}，重试 {attempt} 次）"
-                    ) from exc
-                self._sleep_before_embedding_retry(attempt)
-                continue
-
-            status_code = self._response_value(response, "status_code")
-            try:
-                status_code = int(status_code)
-            except (TypeError, ValueError):
-                status_code = 0
-            if status_code == 200:
-                return response
-
-            message = self._response_value(response, "message", "未知错误")
-            request_id = self._response_value(response, "request_id", "")
-            last_error = RuntimeError(
-                f"Embedding 调用失败: status={status_code}, message={message}"
-                + (f", request_id={request_id}" if request_id else "")
-            )
-            retryable = status_code in {408, 409, 429} or status_code >= 500
-            if not retryable or attempt >= self.embedding_max_retries:
-                raise last_error
-            self._sleep_before_embedding_retry(attempt)
-
-        raise last_error or RuntimeError("Embedding 调用失败")
-
-    @staticmethod
-    def _normalize_embedding(vector) -> list:
-        """校验并归一化向量，使 cosine 距离成为唯一的存储/检索语义。"""
-        try:
-            values = [float(value) for value in vector]
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError("Embedding 返回了不可解析的向量") from exc
-        if not values:
-            raise RuntimeError("Embedding 返回了空向量")
-        if not all(math.isfinite(value) for value in values):
-            raise RuntimeError("Embedding 返回了包含 NaN/Infinity 的向量")
-
-        norm = math.sqrt(sum(value * value for value in values))
-        if norm <= 0 or not math.isfinite(norm):
-            raise RuntimeError("Embedding 返回了零范数向量")
-        return [value / norm for value in values]
-
     def _get_embeddings(self, texts: list, *, text_type: str = "document") -> list:
-        """将 Markdown 分块或查询转换为有序、同维、单位范数向量。
-
-        文档使用 ``document``，查询使用 ``query``。批次返回按 DashScope 的
-        ``text_index`` 恢复输入顺序，避免服务端返回顺序变化时错配正文和向量。
-        """
-        if text_type not in {"document", "query"}:
+        """兼容入口：委托给可替换的 EmbeddingModel 适配器。"""
+        if text_type == "document":
+            embeddings = self.embedding.embed_documents(texts)
+        elif text_type == "query":
+            embeddings = self.embedding.embed_queries(texts)
+        else:
             raise ValueError("text_type 必须为 document 或 query")
-        if not texts:
-            return []
-        if any(not isinstance(text, str) or not text.strip() for text in texts):
-            raise ValueError("Embedding 输入必须是非空文本")
-
-        embeddings = []
-        observed_dim = None
-        batch_size = min(self.embedding_batch_size, self._embedding_batch_limit())
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            response = self._call_embedding_api(batch, text_type)
-            output = self._response_value(response, "output")
-            items = output.get("embeddings") if isinstance(output, dict) else None
-            if not isinstance(items, (list, tuple)) or len(items) != len(batch):
-                raise RuntimeError(
-                    "Embedding 返回条数与请求条数不一致："
-                    f"expected={len(batch)}, actual={len(items) if items is not None else 0}"
-                )
-
-            indexed_items = list(items)
-            has_indexes = [
-                isinstance(item, dict) and item.get("text_index") is not None
-                for item in indexed_items
-            ]
-            if any(has_indexes):
-                if not all(has_indexes):
-                    raise RuntimeError("Embedding 返回结果缺少部分 text_index")
-                try:
-                    indexed_items = sorted(indexed_items, key=lambda item: int(item["text_index"]))
-                except (KeyError, TypeError, ValueError) as exc:
-                    raise RuntimeError("Embedding 返回了无效的 text_index") from exc
-                indexes = [int(item["text_index"]) for item in indexed_items]
-                if indexes != list(range(len(batch))):
-                    raise RuntimeError(
-                        f"Embedding text_index 不完整或重复：{indexes}"
-                    )
-
-            for item in indexed_items:
-                if not isinstance(item, dict) or "embedding" not in item:
-                    raise RuntimeError("Embedding 返回项缺少 embedding 字段")
-                vector = self._normalize_embedding(item["embedding"])
-                vector_dim = len(vector)
-                if observed_dim is None:
-                    observed_dim = vector_dim
-                elif vector_dim != observed_dim:
-                    raise RuntimeError(
-                        "同一批 Embedding 维度不一致："
-                        f"expected={observed_dim}, actual={vector_dim}"
-                    )
-                embeddings.append(vector)
-
+        observed_dim = len(embeddings[0]) if embeddings else None
         if observed_dim is not None:
             if self._probed_dim is not None and self._probed_dim != observed_dim:
                 raise RuntimeError(
@@ -1026,7 +885,7 @@ class KnowledgeService:
                 metadatas.append(metadata)
 
             try:
-                self.collection.add(
+                self.vector_store.add(
                     ids=ids,
                     embeddings=embeddings,
                     documents=chunks,
@@ -1593,39 +1452,33 @@ class KnowledgeService:
         if collection_count <= 0:
             return []
 
-        query_embedding = self._get_embeddings([query], text_type="query")
-        results = col.query(
-            query_embeddings=query_embedding,
-            n_results=min(requested_top_k, collection_count),
+        query_embedding = self._get_embeddings([query], text_type="query")[0]
+        store = (
+            self.vector_store
+            if col is self.collection
+            else ChromaVectorStore(lambda: col)
         )
+        results = store.query(query_embedding, min(requested_top_k, collection_count))
 
         docs = []
-        if results.get("documents") and results["documents"][0]:
-            for i, doc in enumerate(results["documents"][0]):
-                meta = (
-                    results["metadatas"][0][i]
-                    if results.get("metadatas") and results["metadatas"][0]
-                    else {}
-                ) or {}
-                distance = (
-                    float(results["distances"][0][i])
-                    if results.get("distances") and results["distances"][0]
-                    else 0.0
-                )
-                docs.append({
-                    "content": doc,
-                    "source": source_label,
-                    "doc_id": meta.get("doc_id"),
-                    "filename": meta.get("filename", meta.get("name", "")),
-                    # Chroma 返回的是 cosine distance（越小越相关）；对外保留
-                    # score 作为 similarity，避免调用方把距离误判为相关性分数。
-                    "score": 1.0 - distance,
-                    "distance": distance,
-                    "heading_path": meta.get("heading_path"),
-                    "heading_paths": meta.get("heading_paths", meta.get("heading_path")),
-                    "chunk_index": meta.get("chunk_index"),
-                    "content_format": meta.get("content_format", "markdown"),
-                })
+        for result in results:
+            meta = result["metadata"]
+            docs.append({
+                "content": result["content"],
+                "source": source_label,
+                "doc_id": meta.get("doc_id"),
+                "filename": meta.get("filename", meta.get("name", "")),
+                # Chroma 返回的是 cosine distance（越小越相关）；对外保留
+                # score 作为 similarity，避免调用方把距离误判为相关性分数。
+                "score": result["score"],
+                "distance": result["distance"],
+                "heading_path": meta.get("heading_path"),
+                "heading_paths": meta.get(
+                    "heading_paths", meta.get("heading_path")
+                ),
+                "chunk_index": meta.get("chunk_index"),
+                "content_format": meta.get("content_format", "markdown"),
+            })
         return docs
 
     def search_documents(self, query: str, top_k: int = 3) -> list:
@@ -1642,12 +1495,10 @@ class KnowledgeService:
         """读取现有 Chroma 分块，供轻量字面检索使用，不引入新索引。"""
         if not self._ensure_consistent_or_warn("list_document_chunks"):
             return []
-        data = self.collection.get(include=["documents", "metadatas"])
-        documents = list(data.get("documents") or [])
-        metadatas = list(data.get("metadatas") or [])
         chunks = []
-        for content, metadata in zip(documents, metadatas):
-            metadata = metadata or {}
+        for node in self.vector_store.list_nodes():
+            content = node["content"]
+            metadata = node["metadata"]
             chunks.append({
                 "content": content,
                 "source": "knowledge_base",

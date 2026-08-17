@@ -90,7 +90,7 @@ import { Plus, Delete, ChatDotRound, Monitor, Promotion } from '@element-plus/ic
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/utils/request'
 import { API_BASE_URL, getCsrfToken } from '@/utils/auth'
-import { marked } from 'marked'
+import { renderMarkdown } from '@/utils/markdown'
 
 const messagesContainer = ref(null)
 
@@ -102,8 +102,6 @@ const data = reactive({
   inputMessage: '',
   loading: false
 })
-
-const renderMarkdown = (text) => marked(text || '')
 
 const formatTime = (value) => {
   if (!value) return ''

@@ -84,6 +84,3 @@ fastapi-app/files/
 
 # 临时开发文档
 docs/
-
-# Agent 模块
-fastapi-app/agent/

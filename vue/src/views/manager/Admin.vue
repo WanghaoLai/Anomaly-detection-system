@@ -122,7 +122,7 @@
           />
         </el-form-item>
         <el-form-item label="头像" prop="avatar">
-          <el-upload :action="uploadUrl" :headers="uploadHeaders" :with-credentials="true" list-type="picture" :on-success="handleImgSuccess">
+          <el-upload :action="uploadUrl" :headers="uploadHeaders" :with-credentials="true" list-type="picture" :on-success="handleImgSuccess" :on-error="handleUploadError">
             <el-button type="primary">上传图片</el-button>
           </el-upload>
         </el-form-item>
@@ -143,6 +143,7 @@ import { Key, Plus, Edit, Delete } from "@element-plus/icons-vue"
 import request from "@/utils/request"
 import { ElMessageBox, ElMessage } from "element-plus"
 import { API_BASE_URL, getCsrfToken } from "@/utils/auth"
+import { handleUploadError } from "@/utils/upload"
 
 const uploadUrl = API_BASE_URL + '/files/upload'
 const uploadHeaders = { 'X-CSRF-Token': getCsrfToken() }
