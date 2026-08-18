@@ -2,7 +2,7 @@
 import logging
 import os
 
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, UploadFile, File, Form
 from tortoise.transactions import in_transaction
 
 from common.auth import get_current_admin
@@ -43,34 +43,41 @@ async def _read_upload_limited(file: UploadFile) -> bytes:
     return bytes(content)
 
 
-async def _upsert_knowledge_metadata(info: dict, original_name: str) -> Knowledge:
-    """在一个 MySQL 事务内更新文档指针并清理同名重复记录。"""
-    async with in_transaction() as connection:
-        rows = await Knowledge.filter(original_name=original_name).using_db(
-            connection
-        ).order_by("id")
-        if rows:
-            canonical = rows[0]
-            await Knowledge.filter(id=canonical.id).using_db(connection).update(
-                filename=info["doc_id"],
-                original_name=original_name,
-                file_size=info["file_size"],
-                chunk_count=info["chunk_count"],
-            )
-            duplicate_ids = [row.id for row in rows[1:]]
-            if duplicate_ids:
-                await Knowledge.filter(id__in=duplicate_ids).using_db(connection).delete()
-            knowledge_id = canonical.id
-        else:
-            knowledge = await Knowledge.create(
-                using_db=connection,
-                filename=info["doc_id"],
-                original_name=original_name,
-                file_size=info["file_size"],
-                chunk_count=info["chunk_count"],
-            )
-            knowledge_id = knowledge.id
+async def _upsert_knowledge_metadata_using(
+    info: dict, original_name: str, connection
+) -> int:
+    """在调用方事务内更新文档指针并清理同名重复记录。"""
+    rows = await Knowledge.filter(original_name=original_name).using_db(
+        connection
+    ).order_by("id")
+    if rows:
+        canonical = rows[0]
+        await Knowledge.filter(id=canonical.id).using_db(connection).update(
+            filename=info["doc_id"],
+            original_name=original_name,
+            file_size=info["file_size"],
+            chunk_count=info["chunk_count"],
+        )
+        duplicate_ids = [row.id for row in rows[1:]]
+        if duplicate_ids:
+            await Knowledge.filter(id__in=duplicate_ids).using_db(connection).delete()
+        return canonical.id
+    knowledge = await Knowledge.create(
+        using_db=connection,
+        filename=info["doc_id"],
+        original_name=original_name,
+        file_size=info["file_size"],
+        chunk_count=info["chunk_count"],
+    )
+    return knowledge.id
 
+
+async def _upsert_knowledge_metadata(info: dict, original_name: str) -> Knowledge:
+    """兼容独立调用；发布链路使用上方的显式事务版。"""
+    async with in_transaction() as connection:
+        knowledge_id = await _upsert_knowledge_metadata_using(
+            info, original_name, connection
+        )
     return await Knowledge.get(id=knowledge_id)
 
 
@@ -95,7 +102,12 @@ async def preview(file: UploadFile = File(...)):
 
 
 @router.post("/upload")
-async def upload(file: UploadFile = File(...)):
+async def upload(
+    file: UploadFile = File(...),
+    visibility: str = Form("internal"),
+    allowed_roles: str = Form("管理员,用户"),
+    allowed_user_ids: str = Form(""),
+):
     original_name = os.path.basename((file.filename or "").replace("\\", "/"))
     ext = os.path.splitext(original_name)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
@@ -107,35 +119,54 @@ async def upload(file: UploadFile = File(...)):
         raise CustomException("文件内容为空")
 
     try:
-        info = knowledge_service.add_document(file_bytes, original_name)
+        # P1 阶段只构建影子 collection，此时在线检索指针未变。
+        info = await knowledge_service.astage_document_release(
+            file_bytes,
+            original_name,
+            visibility=visibility,
+            allowed_roles=allowed_roles,
+            allowed_user_ids=allowed_user_ids,
+        )
     except (ValueError, RuntimeError) as exc:
         raise CustomException(str(exc)) from exc
     except Exception as exc:
         logger.exception("知识库文档构建失败: filename=%s", original_name)
-        raise CustomException("知识库向量写入失败，请重启后端后重试") from exc
+        raise CustomException("知识库影子索引构建失败，当前发布版本未受影响") from exc
 
+    previous_pointer = None
+    published = False
     try:
-        knowledge = await _upsert_knowledge_metadata(info, original_name)
-    except Exception as exc:
-        # Chroma 和 MySQL 没有跨存储事务：SQL 写入失败时必须补偿删除已经
-        # 写入的向量，保证“上传成功”不会只留下孤儿 chunk。
-        try:
-            restored = bool(info.get("unchanged"))
-            if info.get("replaced_existing"):
-                restored = knowledge_service.rollback_replacement(info["doc_id"])
-            deleted_chunks = 0 if restored else knowledge_service.delete_document(info["doc_id"])
-            if not restored and deleted_chunks != info["chunk_count"]:
-                logger.error(
-                    "上传回滚不完整: doc_id=%s expected=%s deleted=%s",
-                    info["doc_id"],
-                    info["chunk_count"],
-                    deleted_chunks,
+        async with in_transaction() as connection:
+            knowledge_id = await _upsert_knowledge_metadata_using(
+                info, original_name, connection
+            )
+            if not info.get("unchanged"):
+                # 指针写入放在 MySQL 事务内：发布失败时 SQL 回滚；
+                # SQL 在退出事务时提交失败，外层则恢复原指针。
+                previous_pointer = knowledge_service.publish_staged_release(
+                    info["release_id"]
                 )
-        except Exception:
-            logger.exception("上传回滚失败: doc_id=%s", info["doc_id"])
-        raise CustomException("知识库元数据保存失败，已尝试回滚向量数据") from exc
+                published = True
+        knowledge = await Knowledge.get(id=knowledge_id)
+    except Exception as exc:
+        rollback_ok = True
+        if published:
+            rollback_ok = knowledge_service.rollback_published_release(
+                info["release_id"], previous_pointer
+            )
+        if not info.get("unchanged"):
+            try:
+                knowledge_service.discard_staged_release(info["release_id"])
+            except Exception:
+                logger.exception("清理未发布影子索引失败: %s", info["release_id"])
+        if not rollback_ok:
+            logger.critical(
+                "MySQL 提交失败后发布指针恢复失败: release_id=%s",
+                info["release_id"],
+            )
+            raise CustomException("知识库发布回滚失败，请立即检查健康状态") from exc
+        raise CustomException("知识库发布失败，当前版本已保持不变") from exc
 
-    knowledge_service.complete_replacement(info["doc_id"])
     if info.get("unchanged"):
         logger.info(
             "知识库重复上传已复用现有索引: filename=%s doc_id=%s",
@@ -177,31 +208,38 @@ async def delete(doc_id: int):
     if not knowledge:
         raise CustomException("文档不存在")
 
-    expected_chunks = int(knowledge.chunk_count or 0)
     try:
-        snapshot = knowledge_service.snapshot_document(
-            knowledge.filename,
-            expected_count=expected_chunks,
-        )
-        knowledge_service.delete_document(
-            knowledge.filename,
-            expected_count=expected_chunks,
-        )
+        staged = await knowledge_service.astage_delete_release(knowledge.filename)
     except ValueError as exc:
-        logger.error("删除预检失败: doc_id=%s error=%s", knowledge.filename, exc)
-        raise CustomException("向量数据不完整，未执行删除，请先检查知识库健康状态") from exc
+        logger.error("删除影子索引预检失败: doc_id=%s error=%s", knowledge.filename, exc)
+        raise CustomException(str(exc)) from exc
     except Exception as exc:
-        raise CustomException("向量数据删除失败，未删除知识库记录") from exc
+        raise CustomException("删除影子索引构建失败，当前版本未受影响") from exc
 
+    previous_pointer = None
+    published = False
     try:
-        await knowledge.delete()
+        async with in_transaction() as connection:
+            deleted = await Knowledge.filter(id=doc_id).using_db(connection).delete()
+            if deleted != 1:
+                raise RuntimeError("知识库 MySQL 记录删除数量异常")
+            previous_pointer = knowledge_service.publish_staged_release(
+                staged["release_id"]
+            )
+            published = True
     except Exception as exc:
+        rollback_ok = True
+        if published:
+            rollback_ok = knowledge_service.rollback_published_release(
+                staged["release_id"], previous_pointer
+            )
         try:
-            knowledge_service.restore_document_snapshot(snapshot)
-        except Exception as restore_exc:
-            logger.exception("SQL 删除失败且 Chroma 快照恢复失败: doc_id=%s", knowledge.filename)
-            raise CustomException("知识库删除失败且向量恢复失败，请立即检查健康状态") from restore_exc
-        raise CustomException("知识库记录删除失败，向量数据已恢复") from exc
+            knowledge_service.discard_staged_release(staged["release_id"])
+        except Exception:
+            logger.exception("清理删除影子索引失败: %s", staged["release_id"])
+        if not rollback_ok:
+            raise CustomException("知识库删除回滚失败，请立即检查健康状态") from exc
+        raise CustomException("知识库删除失败，当前发布版本已保持不变") from exc
     return Result.success()
 
 

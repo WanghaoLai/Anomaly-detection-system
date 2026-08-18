@@ -4,9 +4,9 @@
 MarkItDown、DashScope 与 Chroma 实现通过适配器接入。
 """
 
-from .contracts import Document, Node, RetrievalResult
-from .ingestion import DocumentIngestionPipeline
-from .retrieval import HybridResultSelector, RetrievalPolicy
+from .core import Document, Node, RetrievalResult
+from .document import DocumentIngestionPipeline
+from .search import HybridResultSelector, RetrievalPolicy
 
 __all__ = [
     "Document",

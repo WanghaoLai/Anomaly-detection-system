@@ -6,15 +6,15 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).parents[1] / "fastapi-app"
 sys.path.insert(0, str(BACKEND_DIR))
 
-from services.rag.contracts import Document, Node  # noqa: E402
-from services.rag.generation import (  # noqa: E402
+from services.rag.core.contracts import Document, Node  # noqa: E402
+from services.rag.answering.prompting import (  # noqa: E402
     HistoryAwareQueryTransformer,
     NumberedContextBuilder,
     PromptBuilder,
     RAGGenerationPipeline,
 )
-from services.rag.ingestion import DocumentIngestionPipeline  # noqa: E402
-from services.rag.retrieval import HybridResultSelector, RetrievalPolicy  # noqa: E402
+from services.rag.document.pipeline import DocumentIngestionPipeline  # noqa: E402
+from services.rag.search.retrieval import HybridResultSelector, RetrievalPolicy  # noqa: E402
 
 
 class _Loader:

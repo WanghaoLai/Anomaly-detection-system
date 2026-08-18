@@ -86,20 +86,70 @@ TORTOISE_ORM = {
 # 智能问答配置
 AI_CONFIG = {
     "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY", ""),
+    "dashscope_compatible_base_url": os.getenv(
+        "DASHSCOPE_COMPATIBLE_BASE_URL",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    ).rstrip("/"),
     "model": os.getenv("DASHSCOPE_MODEL", "qwen-turbo"),
+    "llm_timeout_seconds": _env_float("AI_LLM_TIMEOUT_SECONDS", 45.0),
+    "llm_max_retries": _env_int("AI_LLM_MAX_RETRIES", 2),
+    "llm_retry_backoff_seconds": _env_float("AI_LLM_RETRY_BACKOFF_SECONDS", 0.4),
+    "llm_circuit_failure_threshold": _env_int(
+        "AI_LLM_CIRCUIT_FAILURE_THRESHOLD", 5
+    ),
+    "llm_circuit_recovery_seconds": _env_float(
+        "AI_LLM_CIRCUIT_RECOVERY_SECONDS", 30.0
+    ),
     "embedding_model": os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v2"),
     "max_history": _env_int("AI_MAX_HISTORY", 20),
     "top_k": _env_int("AI_TOP_K", 3),
     "rag_candidate_k": _env_int("AI_RAG_CANDIDATE_K", 8),
+    "rag_dense_candidate_k": _env_int("AI_RAG_DENSE_CANDIDATE_K", 50),
+    "rag_lexical_candidate_k": _env_int("AI_RAG_LEXICAL_CANDIDATE_K", 50),
+    "rag_candidate_union_limit": _env_int("AI_RAG_CANDIDATE_UNION_LIMIT", 100),
     "rag_final_k": _env_int("AI_RAG_FINAL_K", 4),
+    "rag_rerank_final_k": _env_int("AI_RAG_RERANK_FINAL_K", 6),
     "rag_score_threshold": _env_float("AI_RAG_SCORE_THRESHOLD", 0.20),
     "rag_hybrid_enabled": _env_bool("AI_RAG_HYBRID_ENABLED", True),
+    "rag_acl_pushdown_enabled": _env_bool("AI_RAG_ACL_PUSHDOWN_ENABLED", True),
+    "rag_bm25_enabled": _env_bool("AI_RAG_BM25_ENABLED", True),
+    "rag_reranker_enabled": _env_bool("AI_RAG_RERANKER_ENABLED", False),
+    "rag_reranker_model": os.getenv("AI_RAG_RERANKER_MODEL", ""),
+    "rag_reranker_timeout_seconds": _env_float(
+        "AI_RAG_RERANKER_TIMEOUT_SECONDS", 2.0
+    ),
+    "rag_audit_enabled": _env_bool("AI_RAG_AUDIT_ENABLED", True),
     "rag_lexical_min_score": _env_float("AI_RAG_LEXICAL_MIN_SCORE", 0.08),
     "rag_context_tokens": _env_int("AI_RAG_CONTEXT_TOKENS", 1800),
+    # P4 Context Packing：标题、来源、Node ID、正文和省略标记共同计入总预算。
+    # 普通 Node 使用软上限；原子命令允许借用软上限但不得突破总预算。
+    "rag_context_min_node_tokens": _env_int(
+        "AI_RAG_CONTEXT_MIN_NODE_TOKENS", 48
+    ),
+    "rag_context_max_node_tokens": _env_int(
+        "AI_RAG_CONTEXT_MAX_NODE_TOKENS", 420
+    ),
+    "rag_context_duplicate_similarity": _env_float(
+        "AI_RAG_CONTEXT_DUPLICATE_SIMILARITY", 0.92
+    ),
+    "rag_context_precision_target": _env_float(
+        "AI_RAG_CONTEXT_PRECISION_TARGET", 0.70
+    ),
+    "rag_faithfulness_threshold": _env_float(
+        "AI_RAG_FAITHFULNESS_THRESHOLD", 0.90
+    ),
+    "rag_claim_lexical_support": _env_float(
+        "AI_RAG_CLAIM_LEXICAL_SUPPORT", 0.08
+    ),
     "rag_query_history_turns": _env_int("AI_RAG_QUERY_HISTORY_TURNS", 2),
     "rag_chunk_tokens": _env_int("AI_RAG_CHUNK_TOKENS", 500),
     "rag_overlap_tokens": _env_int("AI_RAG_OVERLAP_TOKENS", 50),
     "rag_max_upload_bytes": _env_int("AI_RAG_MAX_UPLOAD_BYTES", 20 * 1024 * 1024),
+    # P1 原始文件、DocStore 和发布清单的本地持久化根目录。
+    # 该目录与 Chroma 分离：前者是可追溯事实源，后者是可重建派生物。
+    "rag_artifact_path": os.getenv(
+        "AI_RAG_ARTIFACT_PATH"
+    ) or str(BASE_DIR / "files" / "knowledge"),
     # DashScope 当前 text-embedding-v2 单批最多 25 条；v3/v4 会由服务层自动
     # 收紧到接口上限。重试只覆盖网络、限流和 5xx 等临时错误。
     "embedding_batch_size": _env_int("AI_EMBEDDING_BATCH_SIZE", 25),
@@ -107,6 +157,8 @@ AI_CONFIG = {
     "embedding_retry_backoff_seconds": _env_float(
         "AI_EMBEDDING_RETRY_BACKOFF_SECONDS", 0.5
     ),
+    # 影子索引是全量写入，默认串行以避免同机 embedding/磁盘争用。
+    "rag_ingestion_concurrency": _env_int("AI_RAG_INGESTION_CONCURRENCY", 1),
 }
 
 # JWT 配置

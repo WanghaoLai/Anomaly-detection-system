@@ -21,7 +21,7 @@ class ChatServiceRagLoggingTests(unittest.TestCase):
             context = service._get_rag_context("查询")
 
         self.assertEqual(context, "")
-        self.assertIn("RAG 检索失败并降级为普通问答", "\n".join(captured.output))
+        self.assertIn("RAG 检索失败并进入无知识拒答", "\n".join(captured.output))
 
     def test_retrieval_success_logs_scores_without_raw_query(self):
         knowledge = Mock()

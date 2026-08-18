@@ -1,33 +1,54 @@
 """知识库服务 - 文档解析、分块、向量化、ChromaDB 存储与检索"""
+import asyncio
 import hashlib
+import json
 import logging
-import math
 import os
-import re
+import threading
 import uuid
-from collections import Counter
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from dashscope import TextEmbedding
 
 from settings import AI_CONFIG
-from .rag.contracts import Document
-from .rag.embeddings import DashScopeEmbeddingModel
-from .rag.loaders import (
-    DefaultDocumentPreprocessor,
-    MarkItDownDocumentLoader,
-    SUPPORTED_DOCUMENT_EXTENSIONS as RAG_SUPPORTED_DOCUMENT_EXTENSIONS,
-    preprocess_pdf_markdown as _rag_preprocess_pdf_markdown,
+from .rag.core import (
+    AccessPrincipal,
+    Document,
+    DocumentAccessPolicy,
+    KnowledgeAccessPolicy,
+    Node,
+    SourceInfo,
 )
-from .rag.splitters import (
+from .rag.document import (
+    AsyncIngestionExecutor,
+    DOCUMENT_SCHEMA_VERSION,
+    DefaultDocumentPreprocessor,
+    RELEASE_SCHEMA_VERSION,
+    KnowledgeArtifactRepository,
     MarkdownNodeParser,
+    MarkItDownDocumentLoader,
+    PARSER_SCHEMA_VERSION,
+    SUPPORTED_DOCUMENT_EXTENSIONS as RAG_SUPPORTED_DOCUMENT_EXTENSIONS,
     approx_token_len as _rag_approx_token_len,
     chunk_paragraphs as _rag_chunk_paragraphs,
+    deterministic_document_id,
+    deterministic_node_id,
+    preprocess_pdf_markdown as _rag_preprocess_pdf_markdown,
+    sha256_bytes,
     split_paragraphs_with_headings as _rag_split_paragraphs_with_headings,
+    utc_now_iso,
 )
-from .rag.vector_store import ChromaVectorStore
+from .rag.indexing import (
+    ChromaVectorStore,
+    DashScopeEmbeddingModel,
+    INDEX_WRITER_SCHEMA_VERSION,
+    LlamaIndexChromaIndexWriter,
+    LlamaIndexEmbeddingAdapter,
+)
+from .rag.search import ReleaseBM25Cache
 
 try:
     from markitdown import MarkItDown, StreamInfo
@@ -37,9 +58,14 @@ except ImportError:  # 依赖在部署环境中由 requirements.txt 提供；保
 
 logger = logging.getLogger(__name__)
 
-CHROMA_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chroma_db")
+DEFAULT_CHROMA_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "chroma_db"
+)
+CHROMA_PATH = DEFAULT_CHROMA_PATH
 
 DOC_COLLECTION = "knowledge_base"
+SHADOW_COLLECTION_PREFIX = "knowledge_shadow_"
+_P1_RELEASE_LOCK = threading.RLock()
 
 # 这是应用层的安全白名单，不等同于 MarkItDown 的全部能力。图片、音频、URL
 # 等输入不作为知识库文档接收，避免把不必要的多模态/网络访问引入上传链路。
@@ -71,7 +97,7 @@ EMBEDDING_PROVIDER = "dashscope"
 EMBEDDING_SCHEMA_VERSION = "dashscope-text-embedding-v1"
 # 原文件哈希相同不代表预处理结果相同。分块、PDF 清理等逻辑升级时提升
 # 该版本，同名文件下次上传会重建一次，之后仍可正常命中重复上传。
-INGESTION_SCHEMA_VERSION = "markitdown-pdf-cleanup-v1"
+INGESTION_SCHEMA_VERSION = "markitdown-pdf-cleanup-llamaindex-node-v1"
 BASE_COLLECTION_METADATA = {
     "hnsw:space": "cosine",
     "embedding_provider": EMBEDDING_PROVIDER,
@@ -79,475 +105,7 @@ BASE_COLLECTION_METADATA = {
     "embedding_normalized": True,
 }
 
-_MARKDOWN_HEADING_RE = re.compile(
-    r"^ {0,3}(?P<marks>#{1,6})(?:[ \t]+(?P<title>.*?)\s*|[ \t]*)$"
-)
-_MARKDOWN_FENCE_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})")
-_PDF_PAGE_NUMBER_RE = re.compile(
-    r"^\s*(?:第\s*\d+\s*页|page\s*\d+(?:\s*(?:/|of)\s*\d+)?)\s*$",
-    re.IGNORECASE,
-)
-_NUMBERED_TITLE_RE = re.compile(
-    r"^\s*(?P<number>\d+(?:\.\d+){0,4})[.、]?\s+(?P<title>\S.*?)\s*$"
-)
-_CHINESE_TITLE_RE = re.compile(
-    r"^\s*(?:(?:第[一二三四五六七八九十百零〇\d]+[章节篇部])|(?:[一二三四五六七八九十]+、))\s*(?P<title>\S.*?)\s*$"
-)
-
-
-def _normalize_repeated_pdf_line(line: str) -> str:
-    """规范化页边界文本，用于识别带页码变化的重复页眉页脚。"""
-    normalized = re.sub(r"\s+", " ", line.strip()).lower()
-    return re.sub(r"\d+", "#", normalized)
-
-
-def _split_pdf_pages(markdown: str) -> Tuple[List[List[str]], int]:
-    """利用换页符或独立页码行切分页，不依赖特定 PDF 解析器。"""
-    pages: List[List[str]] = []
-    current: List[str] = []
-    page_markers = 0
-    expanded = markdown.replace("\f", "\n\f\n")
-    for line in expanded.splitlines():
-        stripped = line.strip()
-        if stripped == "\f" or _PDF_PAGE_NUMBER_RE.match(stripped):
-            page_markers += 1
-            if any(item.strip() for item in current):
-                pages.append(current)
-            current = []
-            continue
-        current.append(line)
-    if any(item.strip() for item in current):
-        pages.append(current)
-    return pages or [markdown.splitlines()], page_markers
-
-
-def _page_boundary_indexes(lines: List[str], *, from_start: bool) -> List[int]:
-    nonempty = [index for index, line in enumerate(lines) if line.strip()]
-    selected = nonempty[:3] if from_start else nonempty[-3:]
-    return selected
-
-
-def _remove_repeated_pdf_boundaries(
-    pages: List[List[str]],
-) -> Tuple[List[List[str]], List[str], List[str]]:
-    """只在每页前三/后三个非空行中清理高频文本，避免误删正文。"""
-    if len(pages) < 3:
-        return pages, [], []
-
-    header_counter: Counter = Counter()
-    footer_counter: Counter = Counter()
-    for page in pages:
-        for index in _page_boundary_indexes(page, from_start=True):
-            line = page[index].strip()
-            if 2 <= len(line) <= 120:
-                key = _normalize_repeated_pdf_line(line)
-                header_counter[key] += 1
-        for index in _page_boundary_indexes(page, from_start=False):
-            line = page[index].strip()
-            if 2 <= len(line) <= 120:
-                key = _normalize_repeated_pdf_line(line)
-                footer_counter[key] += 1
-
-    minimum_occurrences = max(3, math.ceil(len(pages) * 0.6))
-    repeated_headers = {
-        key for key, count in header_counter.items() if count >= minimum_occurrences
-    }
-    repeated_footers = {
-        key for key, count in footer_counter.items() if count >= minimum_occurrences
-    }
-
-    cleaned_pages: List[List[str]] = []
-    seen_headers = set()
-    removed_headers: List[str] = []
-    removed_footers: List[str] = []
-    for page in pages:
-        header_indexes = set(_page_boundary_indexes(page, from_start=True))
-        footer_indexes = set(_page_boundary_indexes(page, from_start=False))
-        cleaned_page = []
-        for index, line in enumerate(page):
-            key = _normalize_repeated_pdf_line(line) if line.strip() else ""
-            if index in footer_indexes and key in repeated_footers:
-                removed_footers.append(line.strip())
-                continue
-            if index in header_indexes and key in repeated_headers:
-                # 文档首页保留一次标题，后续页移除重复页眉。
-                if key in seen_headers:
-                    removed_headers.append(line.strip())
-                    continue
-                seen_headers.add(key)
-            cleaned_page.append(line)
-        cleaned_pages.append(cleaned_page)
-
-    return cleaned_pages, removed_headers, removed_footers
-
-
-def _looks_like_title(title: str, full_line: str) -> bool:
-    if not title or len(full_line.strip()) > 80:
-        return False
-    if full_line.rstrip().endswith(("。", "！", "？", "；", ".", "!", "?", ";", ":", "：")):
-        return False
-    return not full_line.lstrip().startswith(("|", "- ", "* ", ">", "```", "~~~"))
-
-
-def _recognize_pdf_titles(markdown: str) -> Tuple[str, List[str]]:
-    """把常见章节编号转换为 Markdown 标题，供现有语义分块器使用。"""
-    converted: List[str] = []
-    detected: List[str] = []
-    fence: Optional[Tuple[str, int]] = None
-    for line in markdown.splitlines():
-        fence_match = _MARKDOWN_FENCE_RE.match(line)
-        if fence is not None:
-            converted.append(line)
-            if (
-                fence_match
-                and fence_match.group("fence")[0] == fence[0]
-                and len(fence_match.group("fence")) >= fence[1]
-            ):
-                fence = None
-            continue
-        if fence_match:
-            marker = fence_match.group("fence")
-            fence = (marker[0], len(marker))
-            converted.append(line)
-            continue
-        if _MARKDOWN_HEADING_RE.match(line):
-            converted.append(line)
-            detected.append(line.strip())
-            continue
-
-        numbered = _NUMBERED_TITLE_RE.match(line)
-        if numbered and _looks_like_title(numbered.group("title"), line):
-            level = min(6, numbered.group("number").count(".") + 1)
-            heading = f"{'#' * level} {line.strip()}"
-            converted.append(heading)
-            detected.append(heading)
-            continue
-        chinese = _CHINESE_TITLE_RE.match(line)
-        if chinese and _looks_like_title(chinese.group("title"), line):
-            heading = f"# {line.strip()}"
-            converted.append(heading)
-            detected.append(heading)
-            continue
-        converted.append(line)
-    return "\n".join(converted).strip(), detected
-
-
-def _preprocess_pdf_markdown(markdown: str) -> Tuple[str, Dict]:
-    """执行保守的 PDF 清理并返回可供预览的诊断数据。"""
-    pages, page_markers = _split_pdf_pages(markdown)
-    pages, removed_headers, removed_footers = _remove_repeated_pdf_boundaries(pages)
-    cleaned = "\n\n".join("\n".join(page).strip() for page in pages if any(line.strip() for line in page))
-    enriched, detected_titles = _recognize_pdf_titles(cleaned)
-    return enriched, {
-        "page_count": len(pages),
-        "page_markers_removed": page_markers,
-        "headers_removed": len(removed_headers),
-        "footers_removed": len(removed_footers),
-        "removed_header_samples": list(dict.fromkeys(removed_headers))[:5],
-        "removed_footer_samples": list(dict.fromkeys(removed_footers))[:5],
-        "detected_title_count": len(detected_titles),
-        "detected_titles": detected_titles[:20],
-        "raw_char_count": len(markdown),
-        "cleaned_char_count": len(enriched),
-    }
-
-
-def _is_cjk(ch: str) -> bool:
-    """判断字符是否属于 CJK 范围。"""
-    code = ord(ch)
-    return (
-        0x4E00 <= code <= 0x9FFF
-        or 0x3400 <= code <= 0x4DBF
-        or 0x20000 <= code <= 0x2A6DF
-        or 0x2A700 <= code <= 0x2B73F
-        or 0x2B740 <= code <= 0x2B81F
-        or 0x2B820 <= code <= 0x2CEAF
-        or 0xF900 <= code <= 0xFAFF
-    )
-
-
-def _approx_token_len(text: str) -> int:
-    """近似估计中英文混合文本的 Token 数量。
-
-    中文字符通常独立承担语义，按 1 Token 估算；非 CJK 文本按空白分词
-    估算。该方法用于控制分块边界，不替代 embedding 服务的真实 tokenizer。
-    """
-    cjk = sum(1 for ch in text if _is_cjk(ch))
-    non_cjk_tokens = len([token for token in text.split() if token])
-    return cjk + non_cjk_tokens
-
-
-def _heading_markdown(heading_stack: List[Tuple[int, str]]) -> str:
-    """把当前标题路径还原为可放回分块正文的 Markdown 标题上下文。"""
-    return "\n".join(
-        f"{'#' * level} {title}".rstrip()
-        for level, title in heading_stack
-    )
-
-
-def _split_paragraphs_with_headings(text: str) -> List[Dict]:
-    """按 Markdown 标题和空行切分段落，并保留标题路径及字符位置。
-
-    标题行本身不作为独立正文段落，但会以 ``heading_markdown`` 和
-    ``heading_path`` 绑定到其后的段落。代码围栏中的 ``#`` 不会被识别为标题。
-    """
-    if not text or not text.strip():
-        return []
-
-    lines = text.splitlines(keepends=True)
-    heading_stack: List[Tuple[int, str]] = []
-    paragraphs: List[Dict] = []
-    buf: List[str] = []
-    buf_start: Optional[int] = None
-    char_pos = 0
-    fence: Optional[Tuple[str, int]] = None
-
-    def flush_buf(end_pos: int) -> None:
-        nonlocal buf, buf_start
-        if not buf:
-            return
-
-        content = "\n".join(buf).strip()
-        start = buf_start if buf_start is not None else max(0, end_pos - len(content))
-        buf = []
-        buf_start = None
-        if not content:
-            return
-
-        current_heading_path = (
-            " > ".join(title for _, title in heading_stack)
-            if heading_stack
-            else None
-        )
-        paragraphs.append({
-            "content": content,
-            "heading_path": current_heading_path,
-            "heading_markdown": _heading_markdown(heading_stack),
-            "start": max(0, start),
-            "end": min(len(text), end_pos),
-        })
-
-    for line_with_ending in lines:
-        raw = line_with_ending.rstrip("\r\n")
-        line_end = char_pos + len(line_with_ending)
-
-        fence_match = _MARKDOWN_FENCE_RE.match(raw)
-        if fence is not None:
-            if (
-                fence_match
-                and fence_match.group("fence")[0] == fence[0]
-                and len(fence_match.group("fence")) >= fence[1]
-            ):
-                fence = None
-            if buf_start is None:
-                buf_start = char_pos
-            buf.append(raw)
-            char_pos = line_end
-            continue
-
-        if fence_match:
-            if buf_start is None:
-                buf_start = char_pos
-            buf.append(raw)
-            marker = fence_match.group("fence")
-            fence = (marker[0], len(marker))
-            char_pos = line_end
-            continue
-
-        heading_match = _MARKDOWN_HEADING_RE.match(raw)
-        if heading_match:
-            flush_buf(char_pos)
-            level = len(heading_match.group("marks"))
-            title = (heading_match.group("title") or "").strip()
-            title = re.sub(r"[ \t]+#+[ \t]*$", "", title).strip()
-            if level <= len(heading_stack):
-                heading_stack = heading_stack[: level - 1]
-            heading_stack.append((level, title))
-            char_pos = line_end
-            continue
-
-        if raw.strip() == "":
-            flush_buf(char_pos)
-            char_pos = line_end
-            continue
-
-        if buf_start is None:
-            buf_start = char_pos
-        buf.append(raw)
-        char_pos = line_end
-
-    flush_buf(char_pos)
-
-    # 只有标题没有正文时，保留原始 Markdown，避免丢失标题结构。
-    if not paragraphs:
-        content = text.strip()
-        if not content:
-            return []
-        paragraphs = [{
-            "content": content,
-            "heading_path": None,
-            "heading_markdown": "",
-            "start": 0,
-            "end": len(text),
-        }]
-
-    return paragraphs
-
-
-def _paragraph_token_len(paragraph: Dict) -> int:
-    heading = paragraph.get("heading_markdown") or ""
-    content = paragraph.get("content") or ""
-    rendered = f"{heading}\n\n{content}" if heading else content
-    return _approx_token_len(rendered) or 1
-
-
-def _contains_fenced_code(text: str) -> bool:
-    """判断段落中是否包含 fenced code，避免为控长破坏代码围栏。"""
-    return sum(1 for line in text.splitlines() if _MARKDOWN_FENCE_RE.match(line)) >= 2
-
-
-def _split_text_by_token_budget(text: str, chunk_tokens: int) -> List[str]:
-    """把超长普通段落按近似 Token 预算拆成最小可用文本片段。"""
-    if _approx_token_len(text) <= chunk_tokens:
-        return [text]
-
-    # 单个 CJK 字符、非空白词和空白片段分别作为可拼接单元，尽量不在单词中间切断。
-    units = re.findall(r"[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]|[^\s]+|\s+", text)
-    parts: List[str] = []
-    current = ""
-
-    for unit in units:
-        candidate = current + unit
-        if current.strip() and _approx_token_len(candidate) > chunk_tokens:
-            parts.append(current.strip())
-            current = unit.lstrip()
-        else:
-            current = candidate
-
-    if current.strip():
-        parts.append(current.strip())
-    return parts or [text]
-
-
-def _split_oversized_paragraph(paragraph: Dict, chunk_tokens: int) -> List[Dict]:
-    """拆分超过 Token 预算的段落，同时保留标题上下文和大致字符位置。"""
-    if _paragraph_token_len(paragraph) <= chunk_tokens:
-        item = dict(paragraph)
-        item["token_count"] = _paragraph_token_len(item)
-        return [item]
-
-    content = paragraph.get("content") or ""
-    # 代码块是一个 Markdown 结构单元，宁可允许它暂时超长，也不生成缺失围栏的无效 Markdown。
-    if _contains_fenced_code(content):
-        item = dict(paragraph)
-        item["token_count"] = _paragraph_token_len(item)
-        return [item]
-
-    heading_tokens = _approx_token_len(paragraph.get("heading_markdown") or "")
-    body_budget = max(1, chunk_tokens - heading_tokens)
-    parts = _split_text_by_token_budget(content, body_budget)
-    result: List[Dict] = []
-    search_from = 0
-    for part in parts:
-        relative_start = content.find(part, search_from)
-        if relative_start < 0:
-            relative_start = search_from
-        relative_end = relative_start + len(part)
-        search_from = relative_end
-
-        item = dict(paragraph)
-        item["content"] = part
-        item["start"] = paragraph.get("start", 0) + relative_start
-        item["end"] = paragraph.get("start", 0) + relative_end
-        item["token_count"] = _paragraph_token_len(item)
-        result.append(item)
-    return result
-
-
-def _render_chunk_markdown(paragraphs: List[Dict]) -> str:
-    """渲染分块正文，在标题路径发生变化时补回 Markdown 标题上下文。"""
-    rendered: List[str] = []
-    active_heading = None
-    for paragraph in paragraphs:
-        heading = paragraph.get("heading_markdown") or ""
-        if heading and heading != active_heading:
-            rendered.append(heading)
-            active_heading = heading
-        content = (paragraph.get("content") or "").strip()
-        if content:
-            rendered.append(content)
-    return "\n\n".join(rendered).strip()
-
-
-def _chunk_paragraphs(
-    paragraphs: List[Dict],
-    chunk_tokens: int,
-    overlap_tokens: int,
-) -> List[Dict]:
-    """按 Token 预算合并语义段落，并以完整段落为单位构建重叠。"""
-    if chunk_tokens <= 0:
-        raise ValueError("chunk_tokens 必须大于 0")
-    if overlap_tokens < 0 or overlap_tokens >= chunk_tokens:
-        raise ValueError("overlap_tokens 必须满足 0 <= overlap_tokens < chunk_tokens")
-
-    normalized: List[Dict] = []
-    for paragraph in paragraphs:
-        normalized.extend(_split_oversized_paragraph(paragraph, chunk_tokens))
-
-    chunks: List[Dict] = []
-    start_index = 0
-    while start_index < len(normalized):
-        current: List[Dict] = []
-        current_tokens = 0
-        end_index = start_index
-
-        while end_index < len(normalized):
-            paragraph = normalized[end_index]
-            paragraph_tokens = paragraph.get("token_count") or _paragraph_token_len(paragraph)
-            if current and current_tokens + paragraph_tokens > chunk_tokens:
-                break
-            current.append(paragraph)
-            current_tokens += paragraph_tokens
-            end_index += 1
-
-        content = _render_chunk_markdown(current)
-        heading_paths = []
-        for item in current:
-            path = item.get("heading_path")
-            if path and path not in heading_paths:
-                heading_paths.append(path)
-        heading_path = heading_paths[0] if heading_paths else None
-        chunks.append({
-            "content": content,
-            "start": current[0].get("start", 0),
-            "end": current[-1].get("end", 0),
-            "heading_path": heading_path,
-            "heading_paths": " | ".join(heading_paths) if heading_paths else None,
-            "token_count": _approx_token_len(content) or 1,
-            "paragraph_count": len(current),
-        })
-
-        if end_index >= len(normalized):
-            break
-
-        # 从当前分块尾部回溯完整段落，保证 overlap 不切断 Markdown 结构。
-        next_start = end_index
-        kept_tokens = 0
-        while next_start > start_index:
-            candidate = normalized[next_start - 1]
-            candidate_tokens = candidate.get("token_count") or _paragraph_token_len(candidate)
-            if kept_tokens + candidate_tokens > overlap_tokens:
-                break
-            next_start -= 1
-            kept_tokens += candidate_tokens
-
-        # 只含一个很短段落时，不能重复同一段导致死循环；下一轮必须向前推进。
-        start_index = max(start_index + 1, next_start)
-
-    return chunks
-
-
-# 旧模块路径仍对测试、评测脚本开放，但实现统一指向新的核心组件，避免两套逻辑漂移。
+# 旧模块私有名保留为兼容导出；实现只有 services.rag.document 一份。
 _preprocess_pdf_markdown = _rag_preprocess_pdf_markdown
 _approx_token_len = _rag_approx_token_len
 _split_paragraphs_with_headings = _rag_split_paragraphs_with_headings
@@ -555,6 +113,8 @@ _chunk_paragraphs = _rag_chunk_paragraphs
 
 
 class KnowledgeService:
+    supports_authorized_retrieval = True
+
     def __init__(
         self,
         embedding_model: str = None,
@@ -569,12 +129,27 @@ class KnowledgeService:
         node_parser=None,
         embedding=None,
         vector_store=None,
+        index_writer=None,
+        async_ingestion_executor=None,
+        artifact_root: str = None,
+        artifact_repository=None,
     ):
         self.embedding_model = embedding_model or AI_CONFIG.get("embedding_model", "text-embedding-v2")
         self.dashscope_api_key = AI_CONFIG.get("dashscope_api_key", "")
         self._client = None
         self._collection = None
+        self._collection_name = None
         self._markdown_converter = markdown_converter
+        if artifact_root is not None:
+            resolved_artifact_root = artifact_root
+        elif CHROMA_PATH != DEFAULT_CHROMA_PATH:
+            # 测试、租户或工具注入独立 Chroma 目录时，发布指针也必须
+            # 跟随该实例隔离，不得误读默认生产指针。
+            resolved_artifact_root = str(Path(CHROMA_PATH) / ".knowledge_artifacts")
+        else:
+            resolved_artifact_root = AI_CONFIG.get("rag_artifact_path")
+        self._artifact_root = Path(resolved_artifact_root)
+        self._artifact_repository = artifact_repository
         self._probed_dim = None  # 首次 _get_embeddings 后填充，便于校验
         # 新向量写入成功、SQL 元数据尚未提交期间保留旧文档快照。以新 doc_id
         # 为键，避免并发上传时一个请求覆盖另一个请求的回滚信息。
@@ -632,7 +207,33 @@ class KnowledgeService:
             max_retries=self.embedding_max_retries,
             retry_backoff_seconds=self.embedding_retry_backoff_seconds,
         )
+        self.embedding_provider = str(
+            getattr(self.embedding, "provider", EMBEDDING_PROVIDER)
+        )
+        self.embedding_schema_version = str(
+            getattr(self.embedding, "schema_version", EMBEDDING_SCHEMA_VERSION)
+        )
+        self.embedding_normalized = bool(
+            getattr(self.embedding, "normalized", True)
+        )
+        self.llama_embedding = LlamaIndexEmbeddingAdapter(
+            self.embedding,
+            model_name=self.embedding_model,
+            embed_batch_size=self.embedding_batch_size,
+        )
         self.vector_store = vector_store or ChromaVectorStore(lambda: self.collection)
+        self.index_writer = index_writer or LlamaIndexChromaIndexWriter(
+            client_provider=lambda: self.client,
+            embedding_adapter=self.llama_embedding,
+            insert_batch_size=100,
+        )
+        self.async_ingestion_executor = (
+            async_ingestion_executor
+            or AsyncIngestionExecutor(
+                AI_CONFIG.get("rag_ingestion_concurrency", 1)
+            )
+        )
+        self._bm25_cache = ReleaseBM25Cache(self._lexical_snapshot)
 
     @property
     def client(self):
@@ -644,14 +245,38 @@ class KnowledgeService:
         return self._client
 
     @property
+    def artifact_repository(self) -> KnowledgeArtifactRepository:
+        if self._artifact_repository is None:
+            self._artifact_repository = KnowledgeArtifactRepository(self._artifact_root)
+        return self._artifact_repository
+
+    def active_collection_name(self) -> str:
+        """返回唯一发布指针引用的 collection；P1 前兼容固定名。"""
+        pointer = self.artifact_repository.releases.active()
+        if pointer and pointer.get("collection_name"):
+            return str(pointer["collection_name"])
+        return DOC_COLLECTION
+
+    @property
     def collection(self):
-        if self._collection is None:
+        # 单元测试和现有调用方会显式注入 collection 替身。
+        if self._collection is not None and self._collection_name is None:
+            return self._collection
+        collection_name = self.active_collection_name()
+        if self._collection is None or self._collection_name != collection_name:
             self._collection = self.client.get_or_create_collection(
-                name=DOC_COLLECTION,
+                name=collection_name,
                 # collection metadata 创建后不可直接改，这里把模型和嵌入契约一起写入；
                 # 维度在首次成功调用 embedding 后再补入。
-                metadata={**BASE_COLLECTION_METADATA, "embedding_model": self.embedding_model},
+                metadata={
+                    **BASE_COLLECTION_METADATA,
+                    "embedding_model": self.embedding_model,
+                    "embedding_provider": self.embedding_provider,
+                    "embedding_schema_version": self.embedding_schema_version,
+                    "embedding_normalized": self.embedding_normalized,
+                },
             )
+            self._collection_name = collection_name
         return self._collection
 
     # ==================== 文档知识库 ====================
@@ -686,17 +311,41 @@ class KnowledgeService:
         """兼容旧调用方；所有文件解析统一委托给 MarkItDown。"""
         return self.convert_to_markdown(file_bytes, filename)
 
-    def prepare_document(self, file_bytes: bytes, filename: str) -> dict:
+    def prepare_document(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        *,
+        document_id: str | None = None,
+        source: SourceInfo | None = None,
+    ) -> dict:
         """转换并清理文档，返回入库 Markdown、分块和质量诊断。"""
         source_filename = self._safe_filename(filename)
         extension = os.path.splitext(source_filename)[1].lower()
         raw_markdown = self.convert_to_markdown(file_bytes, source_filename)
         document, diagnostics = self.document_preprocessor.process(Document(
             text=raw_markdown,
-            metadata={"filename": source_filename, "extension": extension},
+            metadata={
+                "filename": source_filename,
+                "extension": extension,
+                "content_format": "markdown",
+                "converter": "markitdown",
+                "ingestion_schema_version": INGESTION_SCHEMA_VERSION,
+            },
+            document_id=document_id,
+            source=source,
         ))
         markdown = document.text
-        chunks = self.split_markdown(markdown)
+        if document_id is None and source is None:
+            # 保留 P0 预览/旧调用方的单参数行为。
+            chunks = self.split_markdown(markdown)
+        else:
+            chunks = self.split_markdown(
+                markdown,
+                metadata=dict(document.metadata),
+                document_id=document.document_id,
+                source=document.source,
+            )
         if not chunks:
             raise ValueError("文档分块后无有效内容")
         diagnostics["chunk_count"] = len(chunks)
@@ -742,21 +391,36 @@ class KnowledgeService:
             ],
         }
 
-    def split_markdown(self, markdown: str) -> List[Dict]:
-        """执行 Markdown 标题分段和 Token 预算分块。"""
-        nodes = self.node_parser.parse(Document(text=markdown))
-        return [{"content": node.text, **dict(node.metadata)} for node in nodes]
+    def split_markdown(
+        self,
+        markdown: str,
+        *,
+        metadata: Dict | None = None,
+        document_id: str | None = None,
+        source: SourceInfo | None = None,
+    ) -> List[Dict]:
+        """输出可引用、可追溯的稳定 Node 记录。"""
+        nodes = self.node_parser.parse(Document(
+            text=markdown,
+            metadata=metadata or {},
+            document_id=document_id,
+            source=source,
+        ))
+        return [
+            {"content": node.text, "node_id": node.node_id, **dict(node.metadata)}
+            for node in nodes
+        ]
 
     def split_text(self, text: str) -> list:
         """兼容旧调用方，仅返回分块正文；正文仍来自 Markdown 分块器。"""
         return [chunk["content"] for chunk in self.split_markdown(text)]
 
     def _get_embeddings(self, texts: list, *, text_type: str = "document") -> list:
-        """兼容入口：委托给可替换的 EmbeddingModel 适配器。"""
+        """兼容入口：由 LlamaIndex 管理批处理并保留文档/查询区分。"""
         if text_type == "document":
-            embeddings = self.embedding.embed_documents(texts)
+            embeddings = self.llama_embedding.get_text_embedding_batch(list(texts))
         elif text_type == "query":
-            embeddings = self.embedding.embed_queries(texts)
+            embeddings = self.llama_embedding.get_query_embeddings(list(texts))
         else:
             raise ValueError("text_type 必须为 document 或 query")
         observed_dim = len(embeddings[0]) if embeddings else None
@@ -767,6 +431,757 @@ class KnowledgeService:
                 )
             self._probed_dim = observed_dim
         return embeddings
+
+    # ==================== P1 不可变文档与影子索引 ====================
+
+    @staticmethod
+    def _node_ids_hash(node_ids: List[str]) -> str:
+        return sha256_bytes("\n".join(sorted(node_ids)).encode("utf-8"))
+
+    @staticmethod
+    def _scalar_metadata(metadata: Dict) -> Dict:
+        """Chroma metadata 只接受标量，丢弃 None 和容器值。"""
+        return {
+            str(key): value
+            for key, value in metadata.items()
+            if value is not None and isinstance(value, (str, int, float, bool))
+        }
+
+    def _collection_fingerprint(self, collection_name: str) -> str:
+        names = {item.name for item in self.client.list_collections()}
+        if collection_name not in names:
+            return sha256_bytes(b"")
+        data = self.client.get_collection(name=collection_name).get(
+            include=["metadatas"]
+        )
+        records = sorted(
+            ({"id": record_id, "metadata": metadata or {}}
+             for record_id, metadata in zip(
+                 list(data.get("ids") or []),
+                 list(data.get("metadatas") or []),
+             )),
+            key=lambda item: item["id"],
+        )
+        payload = json.dumps(
+            records,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return sha256_bytes(payload)
+
+    def _bootstrap_legacy_catalog(self) -> tuple[Dict[str, str], str]:
+        """P1 首次发布时把 P0 Chroma 节点固化为可重建 DocStore。
+
+        P0 未保存原始字节，因此历史记录会显式标记
+        ``raw_available=False``，不会伪造来源。
+        """
+        collection_name = DOC_COLLECTION
+        fingerprint = self._collection_fingerprint(collection_name)
+        names = {item.name for item in self.client.list_collections()}
+        if collection_name not in names:
+            return {}, fingerprint
+        data = self.client.get_collection(name=collection_name).get(
+            include=["documents", "metadatas"]
+        )
+        ids = list(data.get("ids") or [])
+        documents = list(data.get("documents") or [])
+        metadatas = list(data.get("metadatas") or [])
+        grouped: Dict[str, list] = {}
+        for position, record_id in enumerate(ids):
+            metadata = dict(metadatas[position] or {}) if position < len(metadatas) else {}
+            text = str(documents[position] or "") if position < len(documents) else ""
+            filename = self._safe_filename(str(metadata.get("filename") or "legacy.md"))
+            supplied_id = str(metadata.get("doc_id") or "")
+            if supplied_id and all(ch in "0123456789abcdef-" for ch in supplied_id):
+                document_id = supplied_id
+            else:
+                content_hash = str(metadata.get("content_hash") or sha256_bytes(text.encode("utf-8")))
+                document_id = deterministic_document_id(
+                    filename, content_hash, "legacy-chroma-bootstrap-v1"
+                )
+            grouped.setdefault(document_id, []).append(
+                (record_id, text, metadata, filename)
+            )
+
+        catalog: Dict[str, str] = {}
+        for document_id, records in grouped.items():
+            records.sort(key=lambda item: int(item[2].get("chunk_index") or 0))
+            filename = records[0][3]
+            text = "\n\n".join(item[1] for item in records if item[1].strip())
+            if not text.strip():
+                raise RuntimeError(f"历史文档无可重建正文: {document_id}")
+            content_hashes = {
+                item[2].get("content_hash") for item in records if item[2].get("content_hash")
+            }
+            source_hash = (
+                next(iter(content_hashes))
+                if len(content_hashes) == 1
+                else sha256_bytes(text.encode("utf-8"))
+            )
+            node_records = []
+            for index, (_, node_text, old_metadata, _) in enumerate(records):
+                node_metadata = dict(old_metadata)
+                node_metadata["chunk_index"] = index
+                node_id = deterministic_node_id(
+                    document_id, index, node_text, {
+                        "start": node_metadata.get("char_start"),
+                        "end": node_metadata.get("char_end"),
+                        "heading_path": node_metadata.get("heading_path"),
+                    }
+                )
+                node_records.append({
+                    "node_id": node_id,
+                    "text": node_text,
+                    "text_sha256": sha256_bytes(node_text.encode("utf-8")),
+                    "metadata": node_metadata,
+                })
+            extension = os.path.splitext(filename)[1].lower()
+            record = {
+                "schema_version": DOCUMENT_SCHEMA_VERSION,
+                "document_id": document_id,
+                "text": text,
+                "text_sha256": sha256_bytes(text.encode("utf-8")),
+                "metadata": {
+                    "filename": filename,
+                    "extension": extension,
+                    "content_format": "markdown",
+                    "converter": "legacy-chroma-bootstrap",
+                    "raw_available": False,
+                },
+                "source": {
+                    "filename": filename,
+                    "extension": extension,
+                    "media_type": "application/octet-stream",
+                    "byte_size": 0,
+                    "sha256": source_hash,
+                    "storage_key": None,
+                    "uploaded_at": "1970-01-01T00:00:00+00:00",
+                },
+                "diagnostics": {
+                    "legacy_bootstrap": True,
+                    "chunk_count": len(node_records),
+                },
+                "nodes": node_records,
+            }
+            self.artifact_repository.documents.put_record(record)
+            catalog[filename] = document_id
+        return catalog, fingerprint
+
+    def _active_catalog_and_guard(self) -> tuple[Dict[str, str], Dict]:
+        pointer = self.artifact_repository.releases.active()
+        if pointer is None:
+            catalog, fingerprint = self._bootstrap_legacy_catalog()
+            return catalog, {
+                "active_pointer": None,
+                "legacy_collection": DOC_COLLECTION,
+                "legacy_fingerprint": fingerprint,
+                "access_policies": {},
+            }
+        manifest = self.artifact_repository.releases.get(pointer["release_id"])
+        if manifest.get("collection_name") != pointer.get("collection_name"):
+            raise RuntimeError("发布指针与清单的 collection 不一致")
+        return dict(manifest.get("catalog") or {}), {
+            "active_pointer": pointer,
+            "access_policies": dict(manifest.get("access_policies") or {}),
+        }
+
+    def _build_shadow_release(
+        self,
+        catalog: Dict[str, str],
+        base_guard: Dict,
+        access_policies: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> dict:
+        """只从 DocStore 重建全量影子索引，不读发布索引的 embedding。"""
+        release_id = uuid.uuid4().hex
+        collection_name = f"{SHADOW_COLLECTION_PREFIX}{release_id}"
+        all_nodes: Dict[str, Dict] = {}
+        docstore_node_count = 0
+        document_ids = sorted(set(catalog.values()))
+        active_policies = dict(
+            access_policies
+            if access_policies is not None
+            else base_guard.get("access_policies") or {}
+        )
+        normalized_policies: Dict[str, Dict[str, str]] = {}
+        for document_id in document_ids:
+            record = self.artifact_repository.documents.get(document_id)
+            record_metadata = dict(record.get("metadata") or {})
+            configured_policy = dict(active_policies.get(document_id) or {})
+            policy = DocumentAccessPolicy.normalize(
+                visibility=configured_policy.get(
+                    "visibility", record_metadata.get("visibility", "internal")
+                ),
+                allowed_roles=configured_policy.get(
+                    "allowed_roles",
+                    record_metadata.get("allowed_roles", "管理员,用户"),
+                ),
+                allowed_user_ids=configured_policy.get(
+                    "allowed_user_ids",
+                    record_metadata.get("allowed_user_ids", ""),
+                ),
+            ).as_metadata()
+            normalized_policies[document_id] = policy
+            for node in record.get("nodes") or []:
+                docstore_node_count += 1
+                node_id = str(node["node_id"])
+                candidate = {
+                    **node,
+                    "document_id": document_id,
+                    "source": record["source"],
+                }
+                existing = all_nodes.get(node_id)
+                if existing is not None:
+                    if json.dumps(
+                        existing,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ) != json.dumps(
+                        candidate,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ):
+                        raise RuntimeError(
+                            f"Node ID 冲突且正文、来源或元数据不同: {node_id}"
+                        )
+                    continue
+                all_nodes[node_id] = candidate
+
+        ordered_ids = sorted(all_nodes)
+        expected_report = self.validate_embedding_config()
+        expected_dim = (
+            expected_report.get("actual_dim")
+            or expected_report.get("collection_dim")
+            or expected_report.get("chunk_dim")
+        )
+        metadata = {
+            **BASE_COLLECTION_METADATA,
+            "embedding_model": self.embedding_model,
+            "embedding_provider": self.embedding_provider,
+            "embedding_schema_version": self.embedding_schema_version,
+            "embedding_normalized": self.embedding_normalized,
+            "release_id": release_id,
+            "document_schema_version": DOCUMENT_SCHEMA_VERSION,
+            "index_framework": "llamaindex",
+            "index_writer_schema_version": INDEX_WRITER_SCHEMA_VERSION,
+            "blue_green": True,
+        }
+        writer_nodes: List[Node] = []
+        for node_id in ordered_ids:
+            item = all_nodes[node_id]
+            source = item["source"]
+            node_metadata = dict(item.get("metadata") or {})
+            access_metadata = normalized_policies[item["document_id"]]
+            node_metadata.update({
+                "node_id": node_id,
+                "doc_id": item["document_id"],
+                "filename": source.get("filename", ""),
+                "content_hash": source.get("sha256", ""),
+                "raw_storage_key": source.get("storage_key") or "",
+                "source_extension": source.get("extension", ""),
+                "content_format": "markdown",
+                "type": "document",
+                "embedding_model": self.embedding_model,
+                "embedding_provider": self.embedding_provider,
+                "embedding_schema_version": self.embedding_schema_version,
+                "embedding_normalized": self.embedding_normalized,
+                "embedding_text_type": "document",
+                "ingestion_schema_version": INGESTION_SCHEMA_VERSION,
+                "document_schema_version": DOCUMENT_SCHEMA_VERSION,
+                "char_start": node_metadata.get("start"),
+                "char_end": node_metadata.get("end"),
+                **access_metadata,
+            })
+            writer_nodes.append(Node(
+                text=str(item["text"]),
+                metadata=self._scalar_metadata(node_metadata),
+                node_id=node_id,
+            ))
+        try:
+            write_result = self.index_writer.build(
+                collection_name=collection_name,
+                collection_metadata=metadata,
+                nodes=writer_nodes,
+                expected_dimension=(
+                    int(expected_dim) if expected_dim is not None else None
+                ),
+            )
+            written_ids = list(write_result.node_ids)
+            manifest = {
+                "schema_version": RELEASE_SCHEMA_VERSION,
+                "release_id": release_id,
+                "collection_name": collection_name,
+                "created_at": utc_now_iso(),
+                "catalog": dict(sorted(catalog.items())),
+                "document_ids": document_ids,
+                "document_count": len(document_ids),
+                "access_policies": dict(sorted(normalized_policies.items())),
+                "node_count": write_result.written_node_count,
+                "node_ids_sha256": self._node_ids_hash(written_ids),
+                "embedding": {
+                    "provider": self.embedding_provider,
+                    "model": self.embedding_model,
+                    "schema_version": self.embedding_schema_version,
+                    "normalized": self.embedding_normalized,
+                    "dimension": write_result.dimension,
+                    "document_input_type": "document",
+                    "query_input_type": "query",
+                    "manager": "LlamaIndexEmbeddingAdapter",
+                    "batch_size": self.embedding_batch_size,
+                },
+                "indexing": {
+                    "framework": "llamaindex",
+                    "writer": "VectorStoreIndex",
+                    "writer_schema_version": write_result.writer_schema_version,
+                    "vector_store_provider": getattr(
+                        self.index_writer, "provider", "replaceable"
+                    ),
+                    "mode": "blue_green_full_rebuild",
+                    "docstore_node_count": docstore_node_count,
+                    "prewrite_duplicate_count": (
+                        docstore_node_count - len(writer_nodes)
+                    ),
+                    "input_node_count": write_result.input_node_count,
+                    "written_node_count": write_result.written_node_count,
+                    "duplicate_node_count": write_result.duplicate_node_count,
+                    "embedding_batches": write_result.embedding_batches,
+                    "write_batches": write_result.write_batches,
+                    "asynchronous": write_result.asynchronous,
+                    "async_capable": hasattr(self.index_writer, "abuild"),
+                },
+                "base_guard": base_guard,
+            }
+            self.artifact_repository.releases.put(manifest)
+            return manifest
+        except Exception:
+            try:
+                self.index_writer.discard(collection_name)
+            except Exception:
+                logger.exception("清理失败的影子 collection 失败: %s", collection_name)
+            raise
+
+    def stage_document_release(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        *,
+        visibility: str = "internal",
+        allowed_roles: object = "管理员,用户",
+        allowed_user_ids: object = "",
+    ) -> dict:
+        """保存原文件/Document/Node 并构建全量影子索引。"""
+        with _P1_RELEASE_LOCK:
+            access_policy = DocumentAccessPolicy.normalize(
+                visibility=visibility,
+                allowed_roles=allowed_roles,
+                allowed_user_ids=allowed_user_ids,
+            ).as_metadata()
+            source_filename = self._safe_filename(filename)
+            extension = os.path.splitext(source_filename)[1].lower()
+            if extension not in SUPPORTED_DOCUMENT_EXTENSIONS:
+                raise ValueError(f"不支持的文件格式: {extension or '[无扩展名]'}")
+            if not file_bytes:
+                raise ValueError("文件内容为空")
+            if self.collection.count() > 0:
+                self._ensure_consistent_or_raise("stage_document_release")
+
+            source = self.artifact_repository.files.put(
+                bytes(file_bytes), source_filename, extension
+            )
+            document_id = deterministic_document_id(
+                source_filename, source.sha256, INGESTION_SCHEMA_VERSION
+            )
+            prepared = self.prepare_document(
+                file_bytes,
+                source_filename,
+                document_id=document_id,
+                source=source,
+            )
+            try:
+                record = self.artifact_repository.documents.get(document_id)
+                if record["source"].get("sha256") != source.sha256:
+                    raise RuntimeError("DocStore 来源哈希冲突")
+            except FileNotFoundError:
+                document = Document(
+                    text=prepared["markdown"],
+                    metadata={
+                        "filename": source_filename,
+                        "extension": extension,
+                        "content_format": "markdown",
+                        "converter": "markitdown",
+                        "ingestion_schema_version": INGESTION_SCHEMA_VERSION,
+                        **access_policy,
+                    },
+                    document_id=document_id,
+                    source=source,
+                )
+                nodes = []
+                for index, chunk in enumerate(prepared["chunks"]):
+                    metadata = dict(chunk)
+                    text = str(metadata.pop("content"))
+                    node_id = str(metadata.pop("node_id") or "")
+                    metadata["chunk_index"] = index
+                    nodes.append(Node(
+                        text=text,
+                        metadata=metadata,
+                        node_id=(
+                            node_id
+                            or deterministic_node_id(document_id, index, text, metadata)
+                        ),
+                    ))
+                record = self.artifact_repository.documents.put(
+                    document, nodes, prepared["diagnostics"]
+                )
+
+            catalog, base_guard = self._active_catalog_and_guard()
+            previous_doc_id = catalog.get(source_filename)
+            active_pointer = base_guard.get("active_pointer")
+            access_policies = dict(base_guard.get("access_policies") or {})
+            previous_policy = access_policies.get(document_id)
+            access_policies[document_id] = access_policy
+            if (
+                previous_doc_id == document_id
+                and active_pointer is not None
+                and previous_policy == access_policy
+            ):
+                return {
+                    "doc_id": document_id,
+                    "chunk_count": len(record["nodes"]),
+                    "file_size": source.byte_size,
+                    "content_format": "markdown",
+                    "content_hash": source.sha256,
+                    "release_id": active_pointer["release_id"],
+                    "collection_name": active_pointer["collection_name"],
+                    "replaced_existing": False,
+                    "unchanged": True,
+                    "permission_changed": False,
+                    "access_policy": access_policy,
+                    "previous_doc_ids": [document_id],
+                }
+            candidate = dict(catalog)
+            candidate[source_filename] = document_id
+            manifest = self._build_shadow_release(
+                candidate,
+                base_guard,
+                access_policies=access_policies,
+            )
+            return {
+                "doc_id": document_id,
+                "chunk_count": len(record["nodes"]),
+                "file_size": source.byte_size,
+                "content_format": "markdown",
+                "content_hash": source.sha256,
+                "release_id": manifest["release_id"],
+                "collection_name": manifest["collection_name"],
+                "replaced_existing": previous_doc_id is not None,
+                "unchanged": False,
+                "permission_changed": (
+                    previous_doc_id == document_id
+                    and previous_policy != access_policy
+                ),
+                "access_policy": access_policy,
+                "previous_doc_ids": [previous_doc_id] if previous_doc_id else [],
+            }
+
+    async def astage_document_release(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        *,
+        visibility: str = "internal",
+        allowed_roles: object = "管理员,用户",
+        allowed_user_ids: object = "",
+    ) -> dict:
+        """有界异步入库：不阻塞 FastAPI 事件循环，仍等待安全影子版完成。"""
+
+        return await self.async_ingestion_executor.run(
+            self.stage_document_release,
+            file_bytes,
+            filename,
+            visibility=visibility,
+            allowed_roles=allowed_roles,
+            allowed_user_ids=allowed_user_ids,
+        )
+
+    def stage_delete_release(self, doc_id: str) -> dict:
+        """构建不含目标文档的影子索引，不修改当前发布版。"""
+        with _P1_RELEASE_LOCK:
+            if self.collection.count() > 0:
+                self._ensure_consistent_or_raise("stage_delete_release")
+            catalog, base_guard = self._active_catalog_and_guard()
+            matched = [name for name, value in catalog.items() if value == doc_id]
+            if not matched:
+                raise ValueError("DocStore 发布清单中不存在该文档")
+            candidate = {
+                name: value for name, value in catalog.items() if value != doc_id
+            }
+            access_policies = dict(base_guard.get("access_policies") or {})
+            access_policies.pop(doc_id, None)
+            manifest = self._build_shadow_release(
+                candidate,
+                base_guard,
+                access_policies=access_policies,
+            )
+            return {
+                "doc_id": doc_id,
+                "release_id": manifest["release_id"],
+                "collection_name": manifest["collection_name"],
+                "removed_sources": matched,
+            }
+
+    async def astage_delete_release(self, doc_id: str) -> dict:
+        return await self.async_ingestion_executor.run(
+            self.stage_delete_release, doc_id
+        )
+
+    def stage_node_parser_migration(self) -> dict:
+        """从当前 DocStore 正文确定性重建 P2 Node 影子版本。
+
+        此方法只追加不可变 Document 记录并构建新 collection，
+        不修改 MySQL、当前发布指针或旧 collection。
+        """
+        with _P1_RELEASE_LOCK:
+            if self.collection.count() > 0:
+                self._ensure_consistent_or_raise("stage_node_parser_migration")
+            catalog, base_guard = self._active_catalog_and_guard()
+            candidate: Dict[str, str] = {}
+            migrations: List[Dict] = []
+            for source_filename, old_document_id in sorted(catalog.items()):
+                record = self.artifact_repository.documents.get(old_document_id)
+                old_nodes = list(record.get("nodes") or [])
+                already_p2 = (
+                    record.get("metadata", {}).get("ingestion_schema_version")
+                    == INGESTION_SCHEMA_VERSION
+                    and bool(old_nodes)
+                    and all(
+                        node.get("metadata", {}).get("parser_schema_version")
+                        == PARSER_SCHEMA_VERSION
+                        for node in old_nodes
+                    )
+                )
+                if already_p2:
+                    candidate[source_filename] = old_document_id
+                    migrations.append({
+                        "source_filename": source_filename,
+                        "old_document_id": old_document_id,
+                        "new_document_id": old_document_id,
+                        "file_size": int(record["source"].get("byte_size") or 0),
+                        "old_node_count": len(old_nodes),
+                        "new_node_count": len(old_nodes),
+                        "changed": False,
+                    })
+                    continue
+
+                source_payload = dict(record.get("source") or {})
+                source = SourceInfo(
+                    filename=self._safe_filename(
+                        str(source_payload.get("filename") or source_filename)
+                    ),
+                    extension=str(source_payload.get("extension") or ""),
+                    media_type=str(
+                        source_payload.get("media_type") or "application/octet-stream"
+                    ),
+                    byte_size=int(source_payload.get("byte_size") or 0),
+                    sha256=str(source_payload.get("sha256") or ""),
+                    storage_key=(
+                        str(source_payload["storage_key"])
+                        if source_payload.get("storage_key")
+                        else None
+                    ),
+                    uploaded_at=str(
+                        source_payload.get("uploaded_at")
+                        or "1970-01-01T00:00:00+00:00"
+                    ),
+                )
+                new_document_id = deterministic_document_id(
+                    source_filename,
+                    source.sha256,
+                    INGESTION_SCHEMA_VERSION,
+                )
+                if new_document_id == old_document_id:
+                    raise RuntimeError(
+                        "Document ID 已是 P2 版本但 Node 契约不完整，"
+                        "已阻断覆盖不可变 DocStore"
+                    )
+                metadata = {
+                    **dict(record.get("metadata") or {}),
+                    "filename": source_filename,
+                    "extension": source.extension,
+                    "content_format": "markdown",
+                    "ingestion_schema_version": INGESTION_SCHEMA_VERSION,
+                }
+                document = Document(
+                    text=str(record["text"]),
+                    metadata=metadata,
+                    document_id=new_document_id,
+                    source=source,
+                )
+                nodes = list(self.node_parser.parse(document))
+                if not nodes:
+                    raise RuntimeError(f"P2 节点解析结果为空: {source_filename}")
+                token_range_ratio = sum(
+                    1
+                    for node in nodes
+                    if bool(node.metadata.get("within_target_range"))
+                ) / len(nodes)
+                diagnostics = {
+                    **dict(record.get("diagnostics") or {}),
+                    "node_parser_migration": True,
+                    "parser_schema_version": PARSER_SCHEMA_VERSION,
+                    "previous_document_id": old_document_id,
+                    "previous_node_count": len(old_nodes),
+                    "chunk_count": len(nodes),
+                    "token_range_ratio": round(token_range_ratio, 6),
+                }
+                self.artifact_repository.documents.put(document, nodes, diagnostics)
+                candidate[source_filename] = new_document_id
+                migrations.append({
+                    "source_filename": source_filename,
+                    "old_document_id": old_document_id,
+                    "new_document_id": new_document_id,
+                    "file_size": source.byte_size,
+                    "old_node_count": len(old_nodes),
+                    "new_node_count": len(nodes),
+                    "token_range_ratio": round(token_range_ratio, 6),
+                    "changed": True,
+                })
+
+            manifest = self._build_shadow_release(candidate, base_guard)
+            return {
+                "release": manifest,
+                "documents": migrations,
+                "changed_documents": sum(
+                    1 for item in migrations if item["changed"]
+                ),
+                "parser_schema_version": PARSER_SCHEMA_VERSION,
+                "ingestion_schema_version": INGESTION_SCHEMA_VERSION,
+            }
+
+    def rebuild_shadow_from_active(self) -> dict:
+        """从 DocStore 完整重建一个未发布影子索引。"""
+        with _P1_RELEASE_LOCK:
+            if self.collection.count() > 0:
+                self._ensure_consistent_or_raise("rebuild_shadow_from_active")
+            catalog, base_guard = self._active_catalog_and_guard()
+            return self._build_shadow_release(catalog, base_guard)
+
+    async def arebuild_shadow_from_active(self) -> dict:
+        return await self.async_ingestion_executor.run(
+            self.rebuild_shadow_from_active
+        )
+
+    def _validate_shadow_manifest(self, manifest: Dict) -> None:
+        names = {item.name for item in self.client.list_collections()}
+        collection_name = manifest["collection_name"]
+        if collection_name not in names:
+            raise RuntimeError(f"影子 collection 不存在: {collection_name}")
+        collection = self.client.get_collection(name=collection_name)
+        metadata = dict(collection.metadata or {})
+        embedding = manifest["embedding"]
+        if metadata.get("embedding_model") != embedding["model"]:
+            raise RuntimeError("影子索引 embedding model 不一致，已阻断发布")
+        if int(metadata.get("embedding_dimension") or 0) != int(embedding["dimension"]):
+            raise RuntimeError("影子索引 embedding dimension 不一致，已阻断发布")
+        indexing = manifest.get("indexing") or {}
+        if indexing:
+            if indexing.get("writer_schema_version") != INDEX_WRITER_SCHEMA_VERSION:
+                raise RuntimeError("影子索引 writer schema 不一致，已阻断发布")
+            if metadata.get("index_framework") != "llamaindex":
+                raise RuntimeError("影子索引未由 LlamaIndex 构建，已阻断发布")
+            if (
+                metadata.get("index_writer_schema_version")
+                != indexing.get("writer_schema_version")
+            ):
+                raise RuntimeError("影子索引 collection/Manifest 写入契约不一致")
+            if int(indexing.get("written_node_count") or 0) != int(
+                manifest["node_count"]
+            ):
+                raise RuntimeError("影子索引 Manifest 写入数量不一致")
+        data = collection.get(include=["metadatas"])
+        ids = list(data.get("ids") or [])
+        if len(ids) != manifest["node_count"]:
+            raise RuntimeError("影子索引 Node 数量不一致，已阻断发布")
+        if len(ids) != len(set(ids)) or self._node_ids_hash(ids) != manifest["node_ids_sha256"]:
+            raise RuntimeError("影子索引 Node ID 集合不一致，已阻断发布")
+        if indexing:
+            node_metadatas = list(data.get("metadatas") or [])
+            if any(
+                (item or {}).get("embedding_text_type") != "document"
+                for item in node_metadatas
+            ):
+                raise RuntimeError("影子索引存在非 document 类型 Embedding")
+            if embedding.get("query_input_type") != "query":
+                raise RuntimeError("查询 Embedding 类型契约缺失")
+            access_policies = dict(manifest.get("access_policies") or {})
+            for item in node_metadatas:
+                node_metadata = dict(item or {})
+                doc_id = str(node_metadata.get("doc_id") or "")
+                expected_policy = access_policies.get(doc_id)
+                if expected_policy is None:
+                    raise RuntimeError("影子索引存在未声明权限策略的文档")
+                actual_policy = {
+                    key: str(node_metadata.get(key) or "")
+                    for key in (
+                        "visibility", "allowed_roles", "allowed_user_ids"
+                    )
+                }
+                if actual_policy != expected_policy:
+                    raise RuntimeError("影子索引权限元数据与 Manifest 不一致")
+        sample = collection.peek(limit=1)
+        embeddings = sample.get("embeddings")
+        if embeddings is not None and len(embeddings) > 0:
+            if len(embeddings[0]) != int(embedding["dimension"]):
+                raise RuntimeError("影子索引实际向量维度不一致，已阻断发布")
+
+    def publish_staged_release(self, release_id: str) -> Optional[Dict]:
+        """比较并交换发布指针；只有此方法会改变在线检索版本。"""
+        with _P1_RELEASE_LOCK:
+            manifest = self.artifact_repository.releases.get(release_id)
+            self._validate_shadow_manifest(manifest)
+            guard = manifest.get("base_guard") or {}
+            current_pointer = self.artifact_repository.releases.active()
+            if current_pointer != guard.get("active_pointer"):
+                raise RuntimeError("发布基线已变更，已拒绝覆盖并发发布")
+            if current_pointer is None:
+                current_fingerprint = self._collection_fingerprint(
+                    str(guard.get("legacy_collection") or DOC_COLLECTION)
+                )
+                if current_fingerprint != guard.get("legacy_fingerprint"):
+                    raise RuntimeError("P0 发布索引已变更，已拒绝覆盖并发发布")
+            previous = self.artifact_repository.releases.publish(manifest)
+            self._collection = None
+            self._collection_name = None
+            return previous
+
+    def rollback_published_release(
+        self, release_id: str, previous_pointer: Optional[Dict]
+    ) -> bool:
+        """在 MySQL 交易提交失败时恢复之前的原子指针。"""
+        with _P1_RELEASE_LOCK:
+            current = self.artifact_repository.releases.active()
+            if current is None or current.get("release_id") != release_id:
+                return False
+            self.artifact_repository.releases.restore(previous_pointer)
+            self._collection = None
+            self._collection_name = None
+            return True
+
+    def discard_staged_release(self, release_id: str) -> bool:
+        """删除未发布影子 collection；不删不可变原文件/DocStore。"""
+        with _P1_RELEASE_LOCK:
+            active = self.artifact_repository.releases.active()
+            if active and active.get("release_id") == release_id:
+                return False
+            try:
+                manifest = self.artifact_repository.releases.get(release_id)
+            except FileNotFoundError:
+                return False
+            name = manifest.get("collection_name")
+            if not str(name).startswith(SHADOW_COLLECTION_PREFIX):
+                return False
+            return bool(self.index_writer.discard(str(name)))
 
     def add_document(self, file_bytes: bytes, filename: str) -> dict:
         source_filename = self._safe_filename(filename)
@@ -871,9 +1286,9 @@ class KnowledgeService:
                     "paragraph_count": chunk["paragraph_count"],
                     "embedding_model": self.embedding_model,
                     "embedding_dim": dim,
-                    "embedding_provider": EMBEDDING_PROVIDER,
-                    "embedding_schema_version": EMBEDDING_SCHEMA_VERSION,
-                    "embedding_normalized": True,
+                    "embedding_provider": self.embedding_provider,
+                    "embedding_schema_version": self.embedding_schema_version,
+                    "embedding_normalized": self.embedding_normalized,
                     "embedding_text_type": "document",
                     "content_hash": content_hash,
                     "ingestion_schema_version": INGESTION_SCHEMA_VERSION,
@@ -1094,7 +1509,13 @@ class KnowledgeService:
         self._probed_dim = None
         self.client.get_or_create_collection(
             name=DOC_COLLECTION,
-            metadata={**BASE_COLLECTION_METADATA, "embedding_model": self.embedding_model},
+            metadata={
+                **BASE_COLLECTION_METADATA,
+                "embedding_model": self.embedding_model,
+                "embedding_provider": self.embedding_provider,
+                "embedding_schema_version": self.embedding_schema_version,
+                "embedding_normalized": self.embedding_normalized,
+            },
         )
         return True
 
@@ -1181,7 +1602,13 @@ class KnowledgeService:
         """
         existing_names = [c.name for c in self.client.list_collections()]
         if DOC_COLLECTION not in existing_names:
-            meta = {**BASE_COLLECTION_METADATA, "embedding_model": self.embedding_model}
+            meta = {
+                **BASE_COLLECTION_METADATA,
+                "embedding_model": self.embedding_model,
+                "embedding_provider": self.embedding_provider,
+                "embedding_schema_version": self.embedding_schema_version,
+                "embedding_normalized": self.embedding_normalized,
+            }
             self._collection = self.client.get_or_create_collection(
                 name=DOC_COLLECTION, metadata=meta
             )
@@ -1234,7 +1661,13 @@ class KnowledgeService:
 
         # 删除旧 collection，按 cosine 重建
         self.client.delete_collection(name=DOC_COLLECTION)
-        new_meta = {**BASE_COLLECTION_METADATA, "embedding_model": self.embedding_model}
+        new_meta = {
+            **BASE_COLLECTION_METADATA,
+            "embedding_model": self.embedding_model,
+            "embedding_provider": self.embedding_provider,
+            "embedding_schema_version": self.embedding_schema_version,
+            "embedding_normalized": self.embedding_normalized,
+        }
         new_col = self.client.get_or_create_collection(
             name=DOC_COLLECTION, metadata=new_meta
         )
@@ -1286,10 +1719,11 @@ class KnowledgeService:
             "actual_dim": None,
             "chunk_dim": None,
         }
-        if DOC_COLLECTION not in names:
+        collection_name = self.active_collection_name()
+        if collection_name not in names:
             return result
 
-        col = self.client.get_collection(name=DOC_COLLECTION)
+        col = self.client.get_collection(name=collection_name)
         col_meta = col.metadata or {}
         result["collection_model"] = col_meta.get("embedding_model")
         result["collection_provider"] = col_meta.get("embedding_provider")
@@ -1319,19 +1753,20 @@ class KnowledgeService:
                 f"collection.metadata.embedding_model={result['collection_model']!r} "
                 f"!= config={self.embedding_model!r}"
             )
-        if result["collection_provider"] != EMBEDDING_PROVIDER:
+        if result["collection_provider"] != self.embedding_provider:
             result["issues"].append(
                 "collection.metadata.embedding_provider="
-                f"{result['collection_provider']!r} != {EMBEDDING_PROVIDER!r}"
+                f"{result['collection_provider']!r} != {self.embedding_provider!r}"
             )
-        if result["collection_schema_version"] != EMBEDDING_SCHEMA_VERSION:
+        if result["collection_schema_version"] != self.embedding_schema_version:
             result["issues"].append(
                 "collection.metadata.embedding_schema_version="
-                f"{result['collection_schema_version']!r} != {EMBEDDING_SCHEMA_VERSION!r}"
+                f"{result['collection_schema_version']!r} "
+                f"!= {self.embedding_schema_version!r}"
             )
-        if result["collection_normalized"] is not True:
+        if result["collection_normalized"] is not self.embedding_normalized:
             result["issues"].append(
-                "collection.metadata.embedding_normalized 必须为 True"
+                "collection.metadata.embedding_normalized 与当前适配器不一致"
             )
 
         # chunk 级（核心校验）
@@ -1340,18 +1775,27 @@ class KnowledgeService:
                 f"chunk.embedding_model={result['chunk_model']!r} "
                 f"!= config={self.embedding_model!r}"
             )
-        if col.count() > 0 and result["chunk_provider"] != EMBEDDING_PROVIDER:
+        if col.count() > 0 and result["chunk_provider"] != self.embedding_provider:
             result["issues"].append(
                 "chunk.embedding_provider="
-                f"{result['chunk_provider']!r} != {EMBEDDING_PROVIDER!r}"
+                f"{result['chunk_provider']!r} != {self.embedding_provider!r}"
             )
-        if col.count() > 0 and result["chunk_schema_version"] != EMBEDDING_SCHEMA_VERSION:
+        if (
+            col.count() > 0
+            and result["chunk_schema_version"] != self.embedding_schema_version
+        ):
             result["issues"].append(
                 "chunk.embedding_schema_version="
-                f"{result['chunk_schema_version']!r} != {EMBEDDING_SCHEMA_VERSION!r}"
+                f"{result['chunk_schema_version']!r} "
+                f"!= {self.embedding_schema_version!r}"
             )
-        if col.count() > 0 and result["chunk_normalized"] is not True:
-            result["issues"].append("chunk.embedding_normalized 必须为 True")
+        if (
+            col.count() > 0
+            and result["chunk_normalized"] is not self.embedding_normalized
+        ):
+            result["issues"].append(
+                "chunk.embedding_normalized 与当前适配器不一致"
+            )
         if result["chunk_dim"] and result["actual_dim"] and result["chunk_dim"] != result["actual_dim"]:
             result["issues"].append(
                 f"chunk.embedding_dim={result['chunk_dim']} != actual={result['actual_dim']}"
@@ -1438,7 +1882,72 @@ class KnowledgeService:
 
     # ==================== 统一检索 ====================
 
-    def _query_collection(self, col, query: str, top_k: int, source_label: str) -> list:
+    def current_release_id(self) -> str:
+        pointer = self.artifact_repository.releases.active()
+        return str(pointer.get("release_id")) if pointer else f"legacy:{self.active_collection_name()}"
+
+    def allowed_document_ids(self, principal: AccessPrincipal) -> set[str]:
+        """从发布控制面解析授权文档，供 Chroma/BM25 在排序前过滤。"""
+
+        policy = KnowledgeAccessPolicy()
+        pointer = self.artifact_repository.releases.active()
+        if pointer is not None:
+            manifest = self.artifact_repository.releases.get(pointer["release_id"])
+            access_policies = dict(manifest.get("access_policies") or {})
+            return {
+                str(doc_id)
+                for doc_id in manifest.get("document_ids") or []
+                if policy.is_allowed(access_policies.get(str(doc_id)) or {}, principal)
+            }
+
+        # P1 前历史索引没有 Manifest；只在该兼容分支反读 metadata。
+        allowed: set[str] = set()
+        for item in self.list_document_chunks():
+            doc_id = item.get("doc_id")
+            if doc_id and policy.is_allowed(item, principal):
+                allowed.add(str(doc_id))
+        return allowed
+
+    def _lexical_snapshot(self) -> tuple[str, list[dict]]:
+        return self.current_release_id(), self.list_document_chunks()
+
+    def lexical_search(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        allowed_doc_ids: set[str] | None,
+    ) -> list[dict]:
+        _, results = self._bm25_cache.search(
+            query,
+            top_k=top_k,
+            allowed_doc_ids=allowed_doc_ids,
+        )
+        return results
+
+    async def alexical_search(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        allowed_doc_ids: set[str] | None,
+    ) -> list[dict]:
+        return await asyncio.to_thread(
+            self.lexical_search,
+            query,
+            top_k=top_k,
+            allowed_doc_ids=allowed_doc_ids,
+        )
+
+    def _query_collection(
+        self,
+        col,
+        query: str,
+        top_k: int,
+        source_label: str,
+        *,
+        allowed_doc_ids: set[str] | None = None,
+    ) -> list:
         if not isinstance(query, str) or not query.strip():
             return []
         try:
@@ -1448,6 +1957,8 @@ class KnowledgeService:
         if requested_top_k <= 0:
             return []
 
+        if allowed_doc_ids is not None and not allowed_doc_ids:
+            return []
         collection_count = col.count()
         if collection_count <= 0:
             return []
@@ -1458,12 +1969,21 @@ class KnowledgeService:
             if col is self.collection
             else ChromaVectorStore(lambda: col)
         )
-        results = store.query(query_embedding, min(requested_top_k, collection_count))
+        where = (
+            {"doc_id": {"$in": sorted(allowed_doc_ids)}}
+            if allowed_doc_ids is not None else None
+        )
+        result_limit = min(requested_top_k, collection_count)
+        results = (
+            store.query(query_embedding, result_limit, where=where)
+            if where else store.query(query_embedding, result_limit)
+        )
 
         docs = []
         for result in results:
             meta = result["metadata"]
             docs.append({
+                "node_id": result.get("node_id") or meta.get("node_id"),
                 "content": result["content"],
                 "source": source_label,
                 "doc_id": meta.get("doc_id"),
@@ -1478,18 +1998,66 @@ class KnowledgeService:
                 ),
                 "chunk_index": meta.get("chunk_index"),
                 "content_format": meta.get("content_format", "markdown"),
+                "section_path": meta.get(
+                    "section_path", meta.get("heading_path")
+                ),
+                "position": meta.get("position"),
+                "line_start": meta.get("line_start"),
+                "line_end": meta.get("line_end"),
+                "char_start": meta.get("char_start"),
+                "char_end": meta.get("char_end"),
+                "citation_label": meta.get("citation_label"),
+                "visibility": meta.get("visibility", "internal"),
+                "allowed_roles": meta.get(
+                    "allowed_roles", "管理员,用户"
+                ),
+                "allowed_user_ids": meta.get("allowed_user_ids", ""),
             })
         return docs
 
-    def search_documents(self, query: str, top_k: int = 3) -> list:
+    def search_documents(
+        self,
+        query: str,
+        top_k: int = 3,
+        *,
+        allowed_doc_ids: set[str] | None = None,
+    ) -> list:
         """仅检索文档知识库。配置不一致时记 error 并返回空，避免污染 LLM 上下文。"""
         if not self._ensure_consistent_or_warn("search_documents"):
             return []
-        return self._query_collection(self.collection, query, top_k, "knowledge_base")
+        return self._query_collection(
+            self.collection,
+            query,
+            top_k,
+            "knowledge_base",
+            allowed_doc_ids=allowed_doc_ids,
+        )
 
-    def search(self, query: str, top_k: int = 3) -> list:
+    def search(
+        self,
+        query: str,
+        top_k: int = 3,
+        *,
+        allowed_doc_ids: set[str] | None = None,
+    ) -> list:
         """检索文档知识库"""
-        return self.search_documents(query, top_k)
+        return self.search_documents(
+            query, top_k, allowed_doc_ids=allowed_doc_ids
+        )
+
+    async def asearch(
+        self,
+        query: str,
+        top_k: int = 3,
+        *,
+        allowed_doc_ids: set[str] | None = None,
+    ) -> list:
+        return await asyncio.to_thread(
+            self.search,
+            query,
+            top_k,
+            allowed_doc_ids=allowed_doc_ids,
+        )
 
     def list_document_chunks(self) -> list:
         """读取现有 Chroma 分块，供轻量字面检索使用，不引入新索引。"""
@@ -1500,6 +2068,7 @@ class KnowledgeService:
             content = node["content"]
             metadata = node["metadata"]
             chunks.append({
+                "node_id": node.get("node_id") or metadata.get("node_id"),
                 "content": content,
                 "source": "knowledge_base",
                 "doc_id": metadata.get("doc_id"),
@@ -1511,6 +2080,20 @@ class KnowledgeService:
                 ),
                 "chunk_index": metadata.get("chunk_index"),
                 "content_format": metadata.get("content_format", "markdown"),
+                "section_path": metadata.get(
+                    "section_path", metadata.get("heading_path")
+                ),
+                "position": metadata.get("position"),
+                "line_start": metadata.get("line_start"),
+                "line_end": metadata.get("line_end"),
+                "char_start": metadata.get("char_start"),
+                "char_end": metadata.get("char_end"),
+                "citation_label": metadata.get("citation_label"),
+                "visibility": metadata.get("visibility", "internal"),
+                "allowed_roles": metadata.get(
+                    "allowed_roles", "管理员,用户"
+                ),
+                "allowed_user_ids": metadata.get("allowed_user_ids", ""),
             })
         return chunks
 
@@ -1520,8 +2103,255 @@ class KnowledgeService:
         doc_count = self.collection.count()
         return {"document_chunks": doc_count, "total_chunks": doc_count}
 
+    def _reconcile_p1_stores(self, sql_documents: List[Dict]) -> dict:
+        """对账当前发布中的 MySQL、原文件、DocStore 和 Chroma。"""
+        issues: List[Dict] = []
+
+        def add_issue(code: str, message: str, **details) -> None:
+            issues.append({"code": code, "message": message, **details})
+
+        pointer = self.artifact_repository.releases.active()
+        if pointer is None:
+            raise RuntimeError("P1 对账缺少发布指针")
+        try:
+            manifest = self.artifact_repository.releases.get(pointer["release_id"])
+        except Exception as exc:
+            return {
+                "healthy": False,
+                "status": "degraded",
+                "summary": {
+                    "mysql_documents": len(sql_documents),
+                    "file_references": 0,
+                    "docstore_documents": 0,
+                    "chroma_documents": 0,
+                    "mysql_chunks": sum(int(item.get("chunk_count") or 0) for item in sql_documents),
+                    "docstore_nodes": 0,
+                    "chroma_chunks": 0,
+                    "issue_count": 1,
+                },
+                "embedding": {"consistent": False, "issues": [str(exc)]},
+                "issues": [{
+                    "code": "release_manifest_unavailable",
+                    "message": "无法读取当前发布清单",
+                    "details": str(exc),
+                }],
+                "documents": [],
+            }
+
+        catalog = dict(manifest.get("catalog") or {})
+        active_doc_ids = set(catalog.values())
+        sql_by_doc_id: Dict[str, List[Dict]] = {}
+        for row in sql_documents:
+            doc_id = row.get("filename")
+            if not doc_id:
+                add_issue("missing_mysql_doc_id", "MySQL 记录缺少 document_id", mysql_id=row.get("id"))
+                continue
+            sql_by_doc_id.setdefault(str(doc_id), []).append(row)
+        for doc_id, rows in sql_by_doc_id.items():
+            if len(rows) > 1:
+                add_issue(
+                    "duplicate_mysql_doc_id",
+                    "多个 MySQL 记录指向同一文档",
+                    doc_id=doc_id,
+                    mysql_ids=[row.get("id") for row in rows],
+                )
+
+        docstore_by_id: Dict[str, Dict] = {}
+        expected_node_ids: set[str] = set()
+        raw_keys: set[str] = set()
+        raw_reference_count = 0
+        for document_id in sorted(active_doc_ids):
+            try:
+                record = self.artifact_repository.documents.get(document_id)
+                docstore_by_id[document_id] = record
+            except Exception as exc:
+                add_issue(
+                    "docstore_document_unavailable",
+                    "DocStore 文档缺失或损坏",
+                    doc_id=document_id,
+                    details=str(exc),
+                )
+                continue
+            source = record.get("source") or {}
+            storage_key = source.get("storage_key")
+            if storage_key:
+                raw_reference_count += 1
+                raw_keys.add(str(storage_key))
+                for error in self.artifact_repository.files.verify(source):
+                    add_issue(
+                        "original_file_inconsistent",
+                        error,
+                        doc_id=document_id,
+                        storage_key=storage_key,
+                    )
+            elif not (record.get("metadata") or {}).get("raw_available") is False:
+                add_issue(
+                    "missing_original_file",
+                    "文档没有原始文件定位符",
+                    doc_id=document_id,
+                )
+            for node in record.get("nodes") or []:
+                node_id = str(node.get("node_id") or "")
+                if not node_id or node_id in expected_node_ids:
+                    add_issue(
+                        "duplicate_docstore_node",
+                        "DocStore 中存在缺失或重复 Node ID",
+                        doc_id=document_id,
+                        node_id=node_id,
+                    )
+                expected_node_ids.add(node_id)
+
+        try:
+            embedding_report = self.validate_embedding_config()
+        except Exception as exc:
+            embedding_report = {
+                "consistent": False,
+                "expected_model": self.embedding_model,
+                "issues": [str(exc)],
+            }
+        if not embedding_report.get("consistent"):
+            add_issue(
+                "embedding_config_inconsistent",
+                "Embedding 模型或维度与发布索引不一致",
+                details=list(embedding_report.get("issues") or []),
+            )
+
+        chroma_doc_ids: set[str] = set()
+        chroma_node_ids: list[str] = []
+        try:
+            collection = self.client.get_collection(name=manifest["collection_name"])
+            index = collection.get(include=["metadatas"])
+            chroma_ids = list(index.get("ids") or [])
+            chroma_metadatas = list(index.get("metadatas") or [])
+            for position, record_id in enumerate(chroma_ids):
+                metadata = dict(chroma_metadatas[position] or {}) if position < len(chroma_metadatas) else {}
+                node_id = str(metadata.get("node_id") or record_id)
+                chroma_node_ids.append(node_id)
+                if metadata.get("doc_id"):
+                    chroma_doc_ids.add(str(metadata["doc_id"]))
+            if len(chroma_node_ids) != len(set(chroma_node_ids)):
+                add_issue("duplicate_chroma_node", "Chroma 中存在重复 Node ID")
+            missing_nodes = sorted(expected_node_ids - set(chroma_node_ids))
+            orphan_nodes = sorted(set(chroma_node_ids) - expected_node_ids)
+            if missing_nodes:
+                add_issue(
+                    "missing_chroma_nodes",
+                    "DocStore Node 未完整写入 Chroma",
+                    count=len(missing_nodes),
+                    samples=missing_nodes[:10],
+                )
+            if orphan_nodes:
+                add_issue(
+                    "orphan_chroma_nodes",
+                    "Chroma 存在非当前 DocStore 的 Node",
+                    count=len(orphan_nodes),
+                    samples=orphan_nodes[:10],
+                )
+        except Exception as exc:
+            chroma_ids = []
+            add_issue("chroma_unavailable", "无法读取当前发布 Chroma", details=str(exc))
+
+        mysql_ids = set(sql_by_doc_id)
+        for missing in sorted(active_doc_ids - mysql_ids):
+            add_issue("missing_mysql_document", "发布清单文档在 MySQL 中不存在", doc_id=missing)
+        for orphan in sorted(mysql_ids - active_doc_ids):
+            add_issue("orphan_mysql_document", "MySQL 文档未被当前发布清单引用", doc_id=orphan)
+        if chroma_doc_ids != active_doc_ids:
+            add_issue(
+                "chroma_document_set_mismatch",
+                "Chroma 文档集与发布清单不一致",
+                missing=sorted(active_doc_ids - chroma_doc_ids),
+                orphan=sorted(chroma_doc_ids - active_doc_ids),
+            )
+
+        document_results = []
+        for document_id in sorted(active_doc_ids | mysql_ids | chroma_doc_ids):
+            record = docstore_by_id.get(document_id)
+            sql_rows = sql_by_doc_id.get(document_id) or []
+            sql_row = sql_rows[0] if sql_rows else None
+            source = (record or {}).get("source") or {}
+            node_count = len((record or {}).get("nodes") or []) if record else None
+            document_issues = []
+            if record is None:
+                document_issues.append("docstore_document_unavailable")
+            if sql_row is None:
+                document_issues.append("missing_mysql_document")
+            elif node_count is not None and int(sql_row.get("chunk_count") or 0) != node_count:
+                document_issues.append("chunk_count_mismatch")
+                add_issue(
+                    "chunk_count_mismatch",
+                    "MySQL chunk_count 与 DocStore Node 数不一致",
+                    doc_id=document_id,
+                    mysql=int(sql_row.get("chunk_count") or 0),
+                    docstore=node_count,
+                )
+            if sql_row and source.get("filename") and sql_row.get("original_name") != source.get("filename"):
+                document_issues.append("filename_mismatch")
+                add_issue(
+                    "filename_mismatch",
+                    "MySQL 原文件名与 DocStore 来源不一致",
+                    doc_id=document_id,
+                    mysql=sql_row.get("original_name"),
+                    docstore=source.get("filename"),
+                )
+            if (
+                sql_row
+                and source.get("storage_key")
+                and int(sql_row.get("file_size") or 0) != int(source.get("byte_size") or 0)
+            ):
+                document_issues.append("file_size_mismatch")
+                add_issue(
+                    "file_size_mismatch",
+                    "MySQL file_size 与原始文件库不一致",
+                    doc_id=document_id,
+                    mysql=int(sql_row.get("file_size") or 0),
+                    file_store=int(source.get("byte_size") or 0),
+                )
+            if document_id not in chroma_doc_ids:
+                document_issues.append("missing_chroma_document")
+            document_results.append({
+                "doc_id": document_id,
+                "original_name": source.get("filename") or (sql_row or {}).get("original_name"),
+                "raw_file": "available" if source.get("storage_key") else "legacy_unavailable",
+                "mysql_chunks": int(sql_row.get("chunk_count") or 0) if sql_row else None,
+                "docstore_nodes": node_count,
+                "status": "healthy" if not document_issues else "degraded",
+                "issues": document_issues,
+            })
+
+        summary = {
+            "mysql_documents": len(sql_documents),
+            "file_references": raw_reference_count,
+            "unique_files": len(raw_keys),
+            "docstore_documents": len(docstore_by_id),
+            "chroma_documents": len(chroma_doc_ids),
+            "mysql_chunks": sum(int(item.get("chunk_count") or 0) for item in sql_documents),
+            "docstore_nodes": len(expected_node_ids),
+            "chroma_chunks": len(chroma_ids),
+            "issue_count": len(issues),
+        }
+        return {
+            "healthy": not issues,
+            "status": "healthy" if not issues else "degraded",
+            "release": {
+                "release_id": manifest["release_id"],
+                "collection_name": manifest["collection_name"],
+                "document_schema_version": DOCUMENT_SCHEMA_VERSION,
+            },
+            "summary": summary,
+            "embedding": {
+                "consistent": bool(embedding_report.get("consistent")),
+                "expected_model": embedding_report.get("expected_model"),
+                "issues": list(embedding_report.get("issues") or []),
+            },
+            "issues": issues,
+            "documents": document_results,
+        }
+
     def reconcile_metadata(self, sql_documents: List[Dict]) -> dict:
         """只读对账 MySQL 文档元数据与 Chroma 分块，返回可操作的问题清单。"""
+        if self.artifact_repository.releases.active() is not None:
+            return self._reconcile_p1_stores(sql_documents)
         issues: List[Dict] = []
 
         def add_issue(code: str, message: str, **details) -> None:

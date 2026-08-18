@@ -48,6 +48,12 @@ async def start_training_monitor():
 
 @app.on_event("shutdown")
 async def stop_training_monitor():
+    # API 单例复用的 Qwen HTTP 连接池在应用退出时显式关闭。
+    from api.chat import llm_service
+    from api.admin_chat import _llm_service
+
+    await llm_service.aclose()
+    await _llm_service.aclose()
     await inference_executor_service.stop_monitor()
     await training_executor_service.stop_monitor()
 
