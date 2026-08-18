@@ -1,7 +1,8 @@
-import json
+import asyncio
+import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -10,6 +11,12 @@ from common.result import Result
 from models import Conversation, Message
 from services import LLMService, ChatService
 from services.knowledge_service import knowledge_service
+from services.llm_service import LLMError
+from services.rag.operations import (
+    PUBLIC_FAILURE_MESSAGES,
+    encode_sse,
+    iter_until_disconnected,
+)
 from settings import AI_CONFIG
 
 
@@ -33,6 +40,7 @@ llm_service = LLMService(
     model=AI_CONFIG["model"]
 )
 chat_service = ChatService(llm_service, knowledge_service)
+logger = logging.getLogger(__name__)
 
 
 class ConversationCreate(BaseModel):
@@ -109,6 +117,7 @@ async def get_messages(
 @router.post("/send")
 async def send_message(
     data: MessageRequest,
+    request: Request,
     current_user: dict = Depends(get_current_chat_user),
 ):
     conversation = await _get_owned_conversation(
@@ -116,7 +125,7 @@ async def send_message(
         current_user["user_id"],
     )
 
-    await Message.create(
+    user_message = await Message.create(
         conversation_id=conversation.id,
         role="user",
         content=data.message
@@ -129,24 +138,91 @@ async def send_message(
 
     async def generate():
         full_response = ""
-        async for chunk in chat_service.process_message_stream(data.message, history_list[:-1], current_user["user_id"]):
-            full_response += chunk
-            yield f"data: {json.dumps({'content': chunk})}\n\n"
+        terminal = False
+        try:
+            events = chat_service.process_message_events(
+                data.message,
+                history_list[:-1],
+                current_user["user_id"],
+                principal=current_user,
+                audit_context={
+                    "conversation_type": "user",
+                    "conversation_id": conversation.id,
+                    "message_id": user_message.id,
+                },
+            )
+            async for event in iter_until_disconnected(
+                events, request.is_disconnected
+            ):
+                if event.get("type") == "content":
+                    chunk = str(event.get("content") or "")
+                    full_response += chunk
+                    yield encode_sse({"content": chunk}, event="content")
+                else:
+                    yield encode_sse(event, event="status")
 
-        await Message.create(
-            conversation_id=conversation.id,
-            role="assistant",
-            content=full_response
-        )
-
-        if conversation.title == "新对话":
-            title = data.message[:20] + "..." if len(data.message) > 20 else data.message
-            await Conversation.filter(
-                id=conversation.id,
-                user_id=current_user["user_id"],
-            ).update(title=title)
-
-        yield f"data: {json.dumps({'done': True})}\n\n"
+            if not full_response:
+                raise RuntimeError("生成完成但回答为空")
+            await Message.create(
+                conversation_id=conversation.id,
+                role="assistant",
+                content=full_response,
+            )
+            if conversation.title == "新对话":
+                title = (
+                    data.message[:20] + "..."
+                    if len(data.message) > 20 else data.message
+                )
+                await Conversation.filter(
+                    id=conversation.id,
+                    user_id=current_user["user_id"],
+                ).update(title=title)
+            terminal = True
+            yield encode_sse(
+                {"status": "completed", "done": True}, event="done"
+            )
+        except asyncio.CancelledError:
+            interrupted = PUBLIC_FAILURE_MESSAGES["stream_disconnected"]
+            try:
+                await asyncio.shield(Message.create(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content=interrupted,
+                ))
+            except Exception:
+                logger.exception("记录 SSE 断开状态失败: conversation=%s", conversation.id)
+            logger.info("SSE 客户端断开: conversation=%s status=disconnected", conversation.id)
+            raise
+        except Exception as exc:
+            code = exc.code if isinstance(exc, LLMError) else "generation_failed"
+            message = PUBLIC_FAILURE_MESSAGES.get(
+                code, PUBLIC_FAILURE_MESSAGES["generation_failed"]
+            )
+            logger.exception(
+                "聊天生成失败: conversation=%s code=%s", conversation.id, code
+            )
+            await Message.create(
+                conversation_id=conversation.id,
+                role="assistant",
+                content=message,
+            )
+            terminal = True
+            yield encode_sse({
+                "status": "failed",
+                "code": code,
+                "message": message,
+            }, event="status")
+            yield encode_sse({
+                "status": "failed",
+                "code": code,
+                "done": True,
+            }, event="done")
+        finally:
+            if not terminal:
+                logger.info(
+                    "SSE 流非正常终止: conversation=%s status=disconnected",
+                    conversation.id,
+                )
 
     return StreamingResponse(
         generate(),

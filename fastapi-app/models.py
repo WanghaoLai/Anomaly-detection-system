@@ -124,6 +124,38 @@ class Knowledge(Model):
         table = 'knowledge'
 
 
+class RagRetrievalTrace(Model):
+    """RAG 请求的版本化检索、引用和耗时审计。"""
+
+    id = fields.CharField(max_length=36, pk=True)
+    conversation_type = fields.CharField(max_length=16, null=True)
+    conversation_id = fields.IntField(null=True, index=True)
+    message_id = fields.IntField(null=True, index=True)
+    principal_role = fields.CharField(max_length=20, null=True)
+    principal_id = fields.IntField(null=True, index=True)
+    query_hash = fields.CharField(max_length=64, index=True)
+    mode = fields.CharField(max_length=24, default='knowledge_base')
+    release_id = fields.CharField(max_length=64, null=True, index=True)
+    status = fields.CharField(max_length=24, default='completed', index=True)
+    error_code = fields.CharField(max_length=64, null=True)
+    embedding_provider = fields.CharField(max_length=64, null=True)
+    embedding_model = fields.CharField(max_length=128, null=True)
+    embedding_schema_version = fields.CharField(max_length=128, null=True)
+    prompt_version = fields.CharField(max_length=64, null=True)
+    reranker_model = fields.CharField(max_length=255, null=True)
+    retrieval_config = fields.JSONField(null=True)
+    candidate_counts = fields.JSONField(null=True)
+    stage_durations_ms = fields.JSONField(null=True)
+    token_usage = fields.JSONField(null=True)
+    candidates = fields.JSONField(null=True)
+    citation_map = fields.JSONField(null=True)
+    created_at = fields.DatetimeField(auto_now_add=True, index=True)
+    completed_at = fields.DatetimeField(null=True)
+
+    class Meta:
+        table = 'rag_retrieval_traces'
+
+
 class Dataset(Model):
     id = fields.IntField(pk=True, null=False)
     dataset_no = fields.CharField(max_length=26, null=False, unique=True, description='数据集编号')

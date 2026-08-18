@@ -210,34 +210,47 @@ const sendMessage = async () => {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let assistantMessage = ''
+    let sseBuffer = ''
+    let terminalReceived = false
+    let streamFailure = null
 
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      const text = decoder.decode(value)
-      for (const line of text.split('\n')) {
-        if (line.startsWith('data: ')) {
-          try {
-            const jsonStr = line.slice(6)
-            if (jsonStr.trim()) {
-              const sseData = JSON.parse(jsonStr)
-              if (sseData.content) {
-                assistantMessage += sseData.content
-                const lastMsg = data.messages[data.messages.length - 1]
-                if (lastMsg?.role === 'assistant') lastMsg.content = assistantMessage
-                scrollToBottom()
-              }
-              if (sseData.done) break
-            }
-          } catch (e) {
-            console.error('解析 SSE 数据失败:', e)
+      sseBuffer += decoder.decode(value, { stream: true })
+      const frames = sseBuffer.split('\n\n')
+      sseBuffer = frames.pop() || ''
+      for (const frame of frames) {
+        const dataLines = frame.split('\n')
+          .filter(line => line.startsWith('data:'))
+          .map(line => line.slice(5).trimStart())
+        if (!dataLines.length) continue
+        try {
+          const sseData = JSON.parse(dataLines.join('\n'))
+          if (sseData.content) {
+            assistantMessage += sseData.content
+            const lastMsg = data.messages[data.messages.length - 1]
+            if (lastMsg?.role === 'assistant') lastMsg.content = assistantMessage
+            scrollToBottom()
           }
+          if (sseData.status === 'failed') {
+            streamFailure = sseData.message || '模型生成失败，请稍后重试。'
+          }
+          if (sseData.done) {
+            terminalReceived = true
+            break
+          }
+        } catch (e) {
+          console.error('解析 SSE 数据失败:', e)
         }
       }
+      if (terminalReceived) break
     }
+    if (streamFailure) throw new Error(streamFailure)
+    if (!terminalReceived) throw new Error('连接已断开，回答未完成。')
     await loadConversations()
   } catch (error) {
-    ElMessage.error('发送消息失败')
+    ElMessage.error(error?.message || '发送消息失败')
   } finally {
     data.loading = false
     scrollToBottom()

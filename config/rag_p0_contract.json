@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-08-17",
+  "source_commit": "267f6ae",
+  "dataset": {
+    "path": "config/rag_eval_questions.json",
+    "sha256": "70629e7717c97a19d7839729d9cefb9f36cafa6f9dc3d11b7c03f629421a21f1",
+    "questions": 40,
+    "categories": {
+      "semantic": 18,
+      "exact": 22
+    }
+  },
+  "runtime_configuration": {
+    "embedding_model": "text-embedding-v2",
+    "rag_candidate_k": 8,
+    "rag_final_k": 4,
+    "rag_score_threshold": 0.2,
+    "rag_hybrid_enabled": true,
+    "rag_lexical_min_score": 0.08,
+    "rag_context_tokens": 1800,
+    "rag_query_history_turns": 2,
+    "rag_chunk_tokens": 500,
+    "rag_overlap_tokens": 50
+  },
+  "behavior": {
+    "system_prompt_sha256": "b6029152054588483dd8aad9d8ba351c83c5423147a9496fb2bfa766a614e19d",
+    "index_snapshot": {
+      "embedding_model": "text-embedding-v2",
+      "documents": 1,
+      "chunks": 14
+    },
+    "metrics": {
+      "dense_candidate_at_8.all.hit_rate": 0.975,
+      "dense_pipeline_at_4.all.hit_rate": 0.95,
+      "hybrid_at_4.all.hit_rate": 0.975,
+      "dense_mrr_at_8": 0.805
+    },
+    "comparison_tolerance": 0.0001
+  },
+  "application_ports": {
+    "DocumentLoader": {
+      "load": ["self", "file_bytes", "filename"]
+    },
+    "DocumentPreprocessor": {
+      "process": ["self", "document"]
+    },
+    "NodeParser": {
+      "parse": ["self", "document"]
+    },
+    "EmbeddingModel": {
+      "embed_documents": ["self", "texts"],
+      "embed_query": ["self", "query"],
+      "embed_queries": ["self", "queries"]
+    },
+    "VectorStore": {
+      "add": ["self", "ids", "embeddings", "documents", "metadatas"],
+      "query": ["self", "query_embedding", "top_k"],
+      "list_nodes": ["self"]
+    },
+    "Retriever": {
+      "retrieve": ["self", "query", "top_k"]
+    },
+    "ResponseGenerator": {
+      "chat": ["self", "messages", "system_prompt"],
+      "chat_stream": ["self", "messages", "system_prompt"]
+    }
+  },
+  "api_routes": [
+    {"path": "/knowledge/preview", "method": "post", "authenticated": true, "request_content_type": "multipart/form-data", "required_fields": ["file"]},
+    {"path": "/knowledge/upload", "method": "post", "authenticated": true, "request_content_type": "multipart/form-data", "required_fields": ["file"]},
+    {"path": "/knowledge/list", "method": "get", "authenticated": true},
+    {"path": "/knowledge/delete/{doc_id}", "method": "delete", "authenticated": true, "path_parameters": ["doc_id"]},
+    {"path": "/knowledge/stats", "method": "get", "authenticated": true},
+    {"path": "/knowledge/health", "method": "get", "authenticated": true},
+    {"path": "/chat/conversation", "method": "post", "authenticated": true, "request_content_type": "application/json", "required_fields": []},
+    {"path": "/chat/conversations", "method": "get", "authenticated": true},
+    {"path": "/chat/messages/{conversation_id}", "method": "get", "authenticated": true, "path_parameters": ["conversation_id"]},
+    {"path": "/chat/send", "method": "post", "authenticated": true, "request_content_type": "application/json", "required_fields": ["conversation_id", "message"]},
+    {"path": "/chat/conversation/{conversation_id}", "method": "delete", "authenticated": true, "path_parameters": ["conversation_id"]},
+    {"path": "/admin/chat/conversation", "method": "post", "authenticated": true, "request_content_type": "application/json", "required_fields": []},
+    {"path": "/admin/chat/conversations", "method": "get", "authenticated": true},
+    {"path": "/admin/chat/messages/{conversation_id}", "method": "get", "authenticated": true, "path_parameters": ["conversation_id"]},
+    {"path": "/admin/chat/send", "method": "post", "authenticated": true, "request_content_type": "application/json", "required_fields": ["conversation_id", "message"]},
+    {"path": "/admin/chat/conversation/{conversation_id}", "method": "delete", "authenticated": true, "path_parameters": ["conversation_id"]}
+  ]
+}

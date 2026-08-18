@@ -31,13 +31,17 @@ def _lexical_score(question: str, document: str) -> float:
 
 
 def _format_dense_results(raw: dict, query_index: int) -> List[dict]:
+    ids = (raw.get("ids") or [[]])[query_index]
     documents = (raw.get("documents") or [[]])[query_index]
     metadatas = (raw.get("metadatas") or [[]])[query_index]
     distances = (raw.get("distances") or [[]])[query_index]
     results = []
-    for content, metadata, distance in zip(documents, metadatas, distances):
+    for node_id, content, metadata, distance in zip(
+        ids, documents, metadatas, distances
+    ):
         metadata = metadata or {}
         results.append({
+            "node_id": node_id,
             "content": content,
             "doc_id": metadata.get("doc_id"),
             "filename": metadata.get("filename"),
@@ -120,35 +124,50 @@ def _cosine_rank(vectors: List[List[float]], query_vector: List[float], records:
     return sorted(scored, key=lambda item: item["score"], reverse=True)
 
 
-def evaluate(dataset: dict, *, compare_v4: bool = False) -> dict:
+def evaluate(
+    dataset: dict,
+    *,
+    compare_v4: bool = False,
+    collection_name: str | None = None,
+) -> dict:
     cases = list(dataset["questions"])
     service = KnowledgeService()
-    config_report = service.validate_embedding_config()
-    if not config_report["consistent"]:
-        raise RuntimeError("现有 Chroma embedding 配置不一致：" + "; ".join(config_report["issues"]))
+    if collection_name:
+        collection = service.client.get_collection(name=collection_name)
+        collection_metadata = dict(collection.metadata or {})
+        if collection_metadata.get("embedding_model") != service.embedding_model:
+            raise RuntimeError("候选 collection 的 embedding model 与运行时不一致")
+    else:
+        config_report = service.validate_embedding_config()
+        if not config_report["consistent"]:
+            raise RuntimeError("现有 Chroma embedding 配置不一致：" + "; ".join(config_report["issues"]))
+        collection = service.collection
 
     chat = ChatService(None, service)
     candidate_k = chat.rag_candidate_k
     final_k = chat.rag_final_k
-    index = service.collection.get(include=["documents", "metadatas"])
+    index = collection.get(include=["documents", "metadatas"])
     documents = list(index.get("documents") or [])
     metadatas = list(index.get("metadatas") or [])
     records = [
         {
+            "node_id": node_id,
             "content": content,
             "doc_id": (metadata or {}).get("doc_id"),
             "filename": (metadata or {}).get("filename"),
             "heading_path": (metadata or {}).get("heading_path"),
             "chunk_index": (metadata or {}).get("chunk_index"),
         }
-        for content, metadata in zip(documents, metadatas)
+        for node_id, content, metadata in zip(
+            list(index.get("ids") or []), documents, metadatas
+        )
     ]
     if not records:
         raise RuntimeError("Chroma 知识库为空，无法评测")
 
     questions = [case["question"] for case in cases]
     query_vectors = service._get_embeddings(questions, text_type="query")
-    raw = service.collection.query(
+    raw = collection.query(
         query_embeddings=query_vectors,
         n_results=min(candidate_k, len(records)),
         include=["documents", "metadatas", "distances"],
@@ -282,6 +301,7 @@ def evaluate(dataset: dict, *, compare_v4: bool = False) -> dict:
         },
         "index": {
             "embedding_model": service.embedding_model,
+            "collection_name": collection.name,
             "documents": len({record.get("doc_id") for record in records}),
             "chunks": len(records),
         },
@@ -331,6 +351,11 @@ def main() -> int:
         default=str(PROJECT_ROOT / "config" / "rag_eval_questions.json"),
     )
     parser.add_argument("--compare-v4", action="store_true")
+    parser.add_argument(
+        "--collection",
+        default=None,
+        help="评测指定影子 collection，不切换在线发布指针",
+    )
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
@@ -340,7 +365,11 @@ def main() -> int:
         raise ValueError("评测集必须包含 30～50 条问题")
 
     started = time.perf_counter()
-    report = evaluate(dataset, compare_v4=args.compare_v4)
+    report = evaluate(
+        dataset,
+        compare_v4=args.compare_v4,
+        collection_name=args.collection,
+    )
     report["elapsed_seconds"] = round(time.perf_counter() - started, 2)
     output_path = (
         Path(args.output).resolve()
