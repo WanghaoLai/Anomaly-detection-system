@@ -48,7 +48,31 @@
               <div v-else class="avatar-ai"><el-icon><Monitor /></el-icon></div>
             </div>
             <div class="message-bubble">
-              <div class="message-text" v-html="renderMarkdown(msg.content)"></div>
+              <div
+                class="message-text"
+                v-html="renderMarkdown(msg.content)"
+                @click="handleCitationClick($event, msg)"
+              ></div>
+              <div v-if="msg.role === 'assistant' && msg.sources && msg.sources.length" class="source-bar">
+                <div class="source-bar-title">
+                  <el-icon :size="12"><Collection /></el-icon>
+                  <span>参考来源</span>
+                </div>
+                <div class="source-cards">
+                  <div
+                    v-for="source in msg.sources"
+                    :key="source.citation_id"
+                    :class="['source-card', { active: msg.activeSource === source.citation_id }]"
+                    :title="source.snippet"
+                  >
+                    <span class="source-chip">{{ source.citation_id }}</span>
+                    <span class="source-name">{{ source.source }}</span>
+                    <span v-if="source.heading || source.position" class="source-loc">
+                      {{ [source.heading, source.position].filter(Boolean).join(' · ') }}
+                    </span>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -86,7 +110,7 @@
 
 <script setup>
 import { reactive, ref, nextTick, onMounted } from 'vue'
-import { Plus, Delete, ChatDotRound, Monitor, Promotion } from '@element-plus/icons-vue'
+import { Plus, Delete, ChatDotRound, Collection, Monitor, Promotion } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/utils/request'
 import { API_BASE_URL, getCsrfToken } from '@/utils/auth'
@@ -123,6 +147,13 @@ const scrollToBottom = () => {
       messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
     }
   })
+}
+
+const handleCitationClick = (event, msg) => {
+  const chip = event.target.closest('.citation-chip')
+  if (!chip || !msg.sources?.length) return
+  const citationId = chip.textContent.trim()
+  msg.activeSource = msg.activeSource === citationId ? null : citationId
 }
 
 const loadConversations = async () => {
@@ -232,6 +263,13 @@ const sendMessage = async () => {
             const lastMsg = data.messages[data.messages.length - 1]
             if (lastMsg?.role === 'assistant') lastMsg.content = assistantMessage
             scrollToBottom()
+          }
+          if (sseData.sources) {
+            const lastMsg = data.messages[data.messages.length - 1]
+            if (lastMsg?.role === 'assistant') {
+              lastMsg.sources = sseData.sources
+              lastMsg.activeSource = null
+            }
           }
           if (sseData.status === 'failed') {
             streamFailure = sseData.message || '模型生成失败，请稍后重试。'
@@ -495,6 +533,84 @@ onMounted(() => loadConversations())
   border: 1px solid #eef0f4;
 }
 
+.source-bar {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #e4e8ef;
+}
+
+.source-bar-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #9097a5;
+  margin-bottom: 6px;
+}
+
+.source-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.source-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 10px;
+  background: #ffffff;
+  border: 1px solid #e4e8ef;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #5a6474;
+  cursor: default;
+  transition: all 0.2s ease;
+}
+
+.source-card.active {
+  border-color: #1a73e8;
+  background: #eaf3ff;
+  color: #1a73e8;
+}
+
+.source-chip {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #eaf3ff;
+  color: #1a73e8;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.source-card.active .source-chip {
+  background: #1a73e8;
+  color: #ffffff;
+}
+
+.source-name {
+  font-weight: 500;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-loc {
+  color: #9097a5;
+  font-size: 11px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-card.active .source-loc {
+  color: #5a8fd6;
+}
+
 .message-text.loading {
   display: flex;
   gap: 5px;
@@ -550,6 +666,25 @@ onMounted(() => loadConversations())
 <style lang="scss">
 .message-text p { margin: 0; }
 .message-text p + p { margin-top: 8px; }
+
+.message-text .citation-chip {
+  display: inline-block;
+  margin: 0 2px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(26, 115, 232, 0.1);
+  color: #1a73e8;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+  cursor: pointer;
+  vertical-align: baseline;
+  user-select: none;
+}
+
+.message-text .citation-chip:hover {
+  background: rgba(26, 115, 232, 0.22);
+}
 
 .message-text pre {
   background: #1e1e1e;

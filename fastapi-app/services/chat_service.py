@@ -7,6 +7,7 @@ import time
 from .llm_service import LLMService
 from .knowledge_service import KnowledgeService
 from .rag.answering import (
+    AnswerRenderer,
     ContextPacker,
     ContextPackingPolicy,
     GroundedAnswerValidator,
@@ -113,7 +114,14 @@ class ChatService:
                 AI_CONFIG.get("rag_faithfulness_threshold", 0.90)
             ),
             minimum_lexical_support=float(
-                AI_CONFIG.get("rag_claim_lexical_support", 0.08)
+                AI_CONFIG.get("rag_claim_lexical_support", 0.30)
+            ),
+        )
+        self.rag_grounding_validation_retries = max(
+            0,
+            min(
+                1,
+                int(AI_CONFIG.get("rag_grounding_validation_retries", 1)),
             ),
         )
         self.rag_acl_pushdown_enabled = bool(
@@ -190,49 +198,78 @@ class ChatService:
         )
         if not packed.entries:
             return self.answer_validator.refusal("no_knowledge")
-        messages = self.grounded_prompt_builder.knowledge_messages(
-            user_message, history, packed
-        )
         structured_method = getattr(self.llm, "chat_structured", None)
         structured_metadata_method = getattr(
             self.llm, "chat_structured_with_metadata", None
         )
         try:
-            llm_result = None
-            raw = await (
-                structured_metadata_method(
-                    messages,
-                    self.grounded_prompt_builder.KNOWLEDGE_SYSTEM_PROMPT,
+            llm_results = []
+            for attempt in range(self.rag_grounding_validation_retries + 1):
+                messages = self.grounded_prompt_builder.knowledge_messages(
+                    user_message,
+                    history,
+                    packed,
+                    validation_retry=attempt > 0,
                 )
-                if structured_metadata_method is not None
-                else structured_method(
-                    messages,
-                    self.grounded_prompt_builder.KNOWLEDGE_SYSTEM_PROMPT,
+                raw = await (
+                    structured_metadata_method(
+                        messages,
+                        self.grounded_prompt_builder.KNOWLEDGE_SYSTEM_PROMPT,
+                    )
+                    if structured_metadata_method is not None
+                    else structured_method(
+                        messages,
+                        self.grounded_prompt_builder.KNOWLEDGE_SYSTEM_PROMPT,
+                    )
+                    if structured_method is not None
+                    else self.llm.chat(
+                        messages,
+                        self.grounded_prompt_builder.KNOWLEDGE_SYSTEM_PROMPT,
+                    )
                 )
-                if structured_method is not None
-                else self.llm.chat(
-                    messages,
-                    self.grounded_prompt_builder.KNOWLEDGE_SYSTEM_PROMPT,
-                )
-            )
-            if hasattr(raw, "text") and hasattr(raw, "usage"):
-                llm_result = raw
-                raw = raw.text
-            answer = self.answer_validator.validate(raw, packed)
-            if llm_result is not None:
+                if hasattr(raw, "text") and hasattr(raw, "usage"):
+                    llm_results.append(raw)
+                    raw = raw.text
+                try:
+                    answer = self.answer_validator.validate(raw, packed)
+                    break
+                except GroundingValidationError as exc:
+                    if attempt >= self.rag_grounding_validation_retries:
+                        raise
+                    logger.info(
+                        "知识回答候选校验失败，执行受控重生成: "
+                        "query_id=%s attempt=%s reason=%s",
+                        hashlib.sha256(
+                            retrieval_query.encode("utf-8")
+                        ).hexdigest()[:12],
+                        attempt + 1,
+                        str(exc),
+                    )
+            if llm_results:
+                token_usage = {
+                    "context_tokens_estimated": packed.token_count,
+                    "provider_usage_available": any(
+                        bool(result.usage) for result in llm_results
+                    ),
+                    "generation_attempts": len(llm_results),
+                }
+                for result in llm_results:
+                    for key, value in dict(result.usage).items():
+                        if isinstance(value, (int, float)) and not isinstance(
+                            value, bool
+                        ):
+                            token_usage[key] = token_usage.get(key, 0) + value
                 await self.audit_recorder.update(
                     trace_state.get("_trace_id"),
                     status=answer.status,
-                    token_usage={
-                        **dict(llm_result.usage),
-                        "context_tokens_estimated": packed.token_count,
-                        "provider_usage_available": bool(llm_result.usage),
-                    },
+                    token_usage=token_usage,
                     stage_durations_ms={
                         "retrieval_total": trace_state.get(
                             "_retrieval_elapsed_ms"
                         ),
-                        "llm": llm_result.latency_ms,
+                        "llm": round(sum(
+                            result.latency_ms for result in llm_results
+                        ), 1),
                     },
                 )
             return answer
@@ -305,9 +342,10 @@ class ChatService:
             "reason_code": answer.reason_code,
             "faithfulness": answer.faithfulness,
             "citations": list(answer.citations),
+            "sources": [dict(source) for source in answer.sources],
         }
-        for start in range(0, len(answer.text), 96):
-            yield {"type": "content", "content": answer.text[start:start + 96]}
+        for chunk in AnswerRenderer.chunk_answer(answer.text):
+            yield {"type": "content", "content": chunk}
         yield {
             "type": "status",
             "status": "completed",
@@ -315,6 +353,7 @@ class ChatService:
             "refusal": answer.refusal,
             "faithfulness": answer.faithfulness,
             "citations": list(answer.citations),
+            "sources": [dict(source) for source in answer.sources],
         }
 
     async def process_message_stream(

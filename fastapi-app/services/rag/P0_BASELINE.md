@@ -26,7 +26,7 @@ DashScope、Chroma、MarkItDown 和 LlamaIndex 对象创建下沉到适配器/bo
 - Dense Pipeline Hit@4：0.950。
 - Hybrid Hit@4：0.975。
 - Dense MRR@8：0.805。
-- 候选数 8、最终结果 4、阈值 0.20、上下文预算 1800 Token。
+- 候选数 8、最终结果 4、阈值 0.20、上下文预算 2800 Token（2026-08-19 由 1800 提升，配合 rerank final_k=8 提升回答覆盖面）。
 
 完整联网报告在本地 `reports/rag_baseline_p0.json`。`reports/` 为运行产物，不提交；
 需要重新建立基线时显式执行评测，并把新报告与 P0 契约比较。

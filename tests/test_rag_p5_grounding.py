@@ -20,9 +20,11 @@ from services.rag.answering.grounding import (  # noqa: E402
     GROUNDING_FAILURE_REFUSAL,
     INTERNAL_REFUSAL,
     GroundedAnswerValidator,
+    GroundedClaim,
     GroundingValidationError,
     QueryModeRouter,
 )
+from services.rag.answering.rendering import AnswerRenderer  # noqa: E402
 
 
 class FakeLLM:
@@ -39,6 +41,16 @@ class FakeLLM:
     async def chat(self, messages, system_prompt=None):
         self.general_calls.append((messages, system_prompt))
         return self.general
+
+
+class SequencedFakeLLM(FakeLLM):
+    def __init__(self, structured_values):
+        super().__init__()
+        self.structured_values = iter(structured_values)
+
+    async def chat_structured(self, messages, system_prompt=None):
+        self.structured_calls.append((messages, system_prompt))
+        return next(self.structured_values)
 
 
 def packed_context():
@@ -107,6 +119,66 @@ class GroundedAnswerValidatorTests(unittest.TestCase):
                     "text": "可执行 watch -n 99 nvidia-smi 刷新 GPU。",
                     "citations": ["K1"],
                 }],
+            }, self.packed)
+
+    def test_pdf_spacing_and_fullwidth_variants_are_format_equivalent(self):
+        # PDF 提取会把数值与单位、URL 拆出空格/换行；模型按惯例紧凑书写。
+        spaced = ContextPacker(ContextPackingPolicy(
+            token_budget=500,
+            min_body_tokens=8,
+            max_body_tokens=200,
+        )).pack([{
+            "node_id": "node-quota",
+            "filename": "manual.md",
+            "section_path": "存储",
+            "content": "每个用户默认存储空间约为 400 GB。planet 文件见\nhttps://pan.baidu.com/s/\n1tgN_CX_Wxu8PSbS3C1sSKg。",
+        }], query="存储空间")
+
+        answer = self.validator.validate({
+            "mode": "knowledge_base",
+            "refusal": False,
+            "claims": [
+                {"text": "每个用户默认存储空间约为 400GB。",
+                 "citations": ["K1"]},
+                {"text": "下载地址是 https://pan.baidu.com/s/1tgN_CX_Wxu8PSbS3C1sSKg。",
+                 "citations": ["K1"]},
+                {"text": "每个用户默认存储空间约为４００ＧＢ。",
+                 "citations": ["K1"]},
+            ],
+        }, spaced)
+
+        self.assertEqual(len(answer.claims), 3)
+
+    def test_unsupported_claim_is_dropped_but_survivors_publish(self):
+        answer = self.validator.validate({
+            "mode": "knowledge_base",
+            "refusal": False,
+            "claims": [
+                {"text": "GPU 状态可用 nvidia-smi 查看。", "citations": ["K1"]},
+                {"text": "服务器禁止修改 Linux 内核。", "citations": ["K1"]},
+                {"text": "每两秒刷新 GPU 可执行 `watch -n 2 nvidia-smi`。",
+                 "citations": ["K1"]},
+            ],
+        }, self.packed)
+
+        self.assertFalse(answer.refusal)
+        self.assertEqual(len(answer.claims), 2)
+        self.assertNotIn("内核", answer.text)
+        self.assertAlmostEqual(answer.faithfulness, 2 / 3)
+
+    def test_fabricated_prose_claim_is_blocked_by_lexical_floor(self):
+        # 无技术原子可校验的纯文字编造，必须被词面下限拦截。
+        strict = GroundedAnswerValidator(
+            minimum_faithfulness=0.90,
+            minimum_lexical_support=0.30,
+        )
+        with self.assertRaisesRegex(GroundingValidationError, "未被"):
+            strict.validate({
+                "mode": "knowledge_base",
+                "refusal": False,
+                "claims": [
+                    {"text": "服务器每日 0 点自动重启。", "citations": ["K1"]},
+                ],
             }, self.packed)
 
     def test_model_refusal_cannot_smuggle_claims(self):
@@ -292,6 +364,172 @@ class ChatServiceP5Tests(unittest.TestCase):
         self.assertTrue(answer.refusal)
         self.assertEqual(answer.text, GROUNDING_FAILURE_REFUSAL)
         self.assertEqual(answer.reason_code, "grounding_validation_failed")
+        self.assertEqual(len(llm.structured_calls), 2)
+
+    def test_missing_claims_is_retried_once_and_valid_answer_is_published(self):
+        llm = SequencedFakeLLM([
+            json.dumps({
+                "mode": "knowledge_base",
+                "refusal": False,
+                "answer": "服务器 GPU 使用 nvidia-smi 查看。",
+            }, ensure_ascii=False),
+            json.dumps({
+                "mode": "knowledge_base",
+                "refusal": False,
+                "claims": [{
+                    "text": "服务器 GPU 使用 nvidia-smi 查看。",
+                    "citations": ["K1"],
+                }],
+            }, ensure_ascii=False),
+        ])
+        node = {
+            "node_id": "node-1",
+            "doc_id": "doc-1",
+            "chunk_index": 0,
+            "filename": "manual.md",
+            "content": "服务器 GPU 使用 nvidia-smi 查看。",
+            "score": 0.99,
+        }
+        knowledge = Mock()
+        knowledge.search.return_value = [node]
+        knowledge.list_document_chunks.return_value = [node]
+        service = ChatService(llm, knowledge)
+
+        answer = self.run_async(service.answer(
+            "服务器配置", [], principal={"user_id": 3, "role": "用户"}
+        ))
+
+        self.assertFalse(answer.refusal)
+        self.assertEqual(answer.citations, ("K1",))
+        self.assertEqual(len(llm.structured_calls), 2)
+        retry_payload = llm.structured_calls[1][0][0]["content"]
+        self.assertIn("server_output_contract_retry", retry_payload)
+
+    def test_validation_retry_can_be_disabled(self):
+        llm = FakeLLM(structured=json.dumps({
+            "mode": "knowledge_base", "refusal": False, "claims": []
+        }))
+        node = {
+            "node_id": "node-1",
+            "doc_id": "doc-1",
+            "chunk_index": 0,
+            "filename": "manual.md",
+            "content": "服务器 GPU 使用 nvidia-smi 查看。",
+            "score": 0.99,
+        }
+        knowledge = Mock()
+        knowledge.search.return_value = [node]
+        knowledge.list_document_chunks.return_value = [node]
+        service = ChatService(llm, knowledge)
+        service.rag_grounding_validation_retries = 0
+
+        answer = self.run_async(service.answer(
+            "服务器配置", [], principal={"user_id": 3, "role": "用户"}
+        ))
+
+        self.assertTrue(answer.refusal)
+        self.assertEqual(len(llm.structured_calls), 1)
+
+
+class AnswerRendererTests(unittest.TestCase):
+    def test_multiple_factual_claims_render_as_bullets(self):
+        rendered = AnswerRenderer.render_claims([
+            GroundedClaim(text="GPU 显存为 24GB。", citations=("K1",)),
+            GroundedClaim(text="磁盘配额 200GB。", citations=("K2",)),
+        ])
+
+        self.assertEqual(
+            rendered,
+            "- GPU 显存为 `24GB`。 [K1]\n- 磁盘配额 `200GB`。 [K2]",
+        )
+
+    def test_command_claims_render_as_ordered_steps(self):
+        rendered = AnswerRenderer.render_claims([
+            GroundedClaim(text="先执行 df -h 查看占用。", citations=("K1",)),
+            GroundedClaim(text="再联系管理员扩容。", citations=("K1",)),
+        ])
+
+        self.assertTrue(rendered.startswith("1. "))
+        self.assertIn("\n2. ", rendered)
+        self.assertIn("`df -h`", rendered)
+
+    def test_single_claim_renders_without_list_marker(self):
+        rendered = AnswerRenderer.render_claims([
+            GroundedClaim(text="GPU 状态使用 nvidia-smi 查看。", citations=("K1",)),
+        ])
+
+        self.assertEqual(rendered, "GPU 状态使用 `nvidia-smi` 查看。 [K1]")
+
+    def test_model_inline_code_is_not_double_wrapped(self):
+        rendered = AnswerRenderer.render_claims([
+            GroundedClaim(
+                text="每两秒刷新 GPU 可执行 `watch -n 2 nvidia-smi`。",
+                citations=("K1",),
+            ),
+        ])
+
+        self.assertEqual(rendered.count("`"), 2)
+        self.assertNotIn("```", rendered)
+
+    def test_bare_numbers_keep_body_font(self):
+        rendered = AnswerRenderer.render_claims([
+            GroundedClaim(text="GPU 型号是 NVIDIA GeForce RTX 4090。", citations=("K1",)),
+        ])
+
+        self.assertNotIn("`4090`", rendered)
+
+    def test_chunk_answer_never_splits_citation_or_marker(self):
+        text = (
+            "- 第一条结论比较长，用于触发分片边界的逐字校验逻辑。 [K1]\n"
+            "- 第二条结论同样较长，确保多个分片都被覆盖到逐字校验。 [K2]"
+        )
+        chunks = AnswerRenderer.chunk_answer(text, max_chars=24)
+        self.assertGreater(len(chunks), 1)
+        joined = "".join(chunks)
+        self.assertEqual(joined, text)
+        for citation in ("[K1]", "[K2]"):
+            self.assertTrue(any(citation in chunk for chunk in chunks))
+
+    def test_validate_returns_sources_for_cited_entries_only(self):
+        validator = GroundedAnswerValidator(
+            minimum_faithfulness=0.90,
+            minimum_lexical_support=0.05,
+        )
+        packed = ContextPacker(ContextPackingPolicy(
+            token_budget=800,
+            min_body_tokens=8,
+            max_body_tokens=200,
+        )).pack([
+            {
+                "node_id": "node-1",
+                "filename": "manual.md",
+                "section_path": "GPU 监控",
+                "position": "L10-L12",
+                "content": "每两秒刷新 GPU 状态可执行 `watch -n 2 nvidia-smi`。",
+            },
+            {
+                "node_id": "node-2",
+                "filename": "quota.md",
+                "section_path": "磁盘配额",
+                "position": "L3-L5",
+                "content": "服务器磁盘配额为 200GB。",
+            },
+        ], query="如何持续刷新 GPU？磁盘配额？")
+
+        answer = validator.validate({
+            "mode": "knowledge_base",
+            "refusal": False,
+            "claims": [{
+                "text": "服务器磁盘配额为 200GB。",
+                "citations": ["K2"],
+            }],
+        }, packed)
+
+        self.assertEqual(len(answer.sources), 1)
+        source = answer.sources[0]
+        self.assertEqual(source["citation_id"], "K2")
+        self.assertEqual(source["source"], "quota.md")
+        self.assertIn("200GB", source["snippet"])
 
 
 if __name__ == "__main__":

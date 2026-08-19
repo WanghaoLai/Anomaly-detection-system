@@ -18,7 +18,7 @@
     "rag_score_threshold": 0.2,
     "rag_hybrid_enabled": true,
     "rag_lexical_min_score": 0.08,
-    "rag_context_tokens": 1800,
+    "rag_context_tokens": 2800,
     "rag_query_history_turns": 2,
     "rag_chunk_tokens": 500,
     "rag_overlap_tokens": 50
