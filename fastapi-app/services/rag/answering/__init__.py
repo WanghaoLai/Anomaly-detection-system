@@ -13,6 +13,7 @@ from .grounding import (
     QueryModeRouter,
     VerifiedAnswer,
 )
+from .rendering import AnswerRenderer
 from .llm_types import (
     CircuitBreaker,
     LLMCircuitOpenError,
@@ -24,6 +25,7 @@ from .llm_types import (
 )
 
 __all__ = [
+    "AnswerRenderer",
     "ContextPacker",
     "ContextPackingPolicy",
     "CircuitBreaker",

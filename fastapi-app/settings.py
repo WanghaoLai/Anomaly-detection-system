@@ -108,7 +108,7 @@ AI_CONFIG = {
     "rag_lexical_candidate_k": _env_int("AI_RAG_LEXICAL_CANDIDATE_K", 50),
     "rag_candidate_union_limit": _env_int("AI_RAG_CANDIDATE_UNION_LIMIT", 100),
     "rag_final_k": _env_int("AI_RAG_FINAL_K", 4),
-    "rag_rerank_final_k": _env_int("AI_RAG_RERANK_FINAL_K", 6),
+    "rag_rerank_final_k": _env_int("AI_RAG_RERANK_FINAL_K", 8),
     "rag_score_threshold": _env_float("AI_RAG_SCORE_THRESHOLD", 0.20),
     "rag_hybrid_enabled": _env_bool("AI_RAG_HYBRID_ENABLED", True),
     "rag_acl_pushdown_enabled": _env_bool("AI_RAG_ACL_PUSHDOWN_ENABLED", True),
@@ -120,7 +120,7 @@ AI_CONFIG = {
     ),
     "rag_audit_enabled": _env_bool("AI_RAG_AUDIT_ENABLED", True),
     "rag_lexical_min_score": _env_float("AI_RAG_LEXICAL_MIN_SCORE", 0.08),
-    "rag_context_tokens": _env_int("AI_RAG_CONTEXT_TOKENS", 1800),
+    "rag_context_tokens": _env_int("AI_RAG_CONTEXT_TOKENS", 2800),
     # P4 Context Packing：标题、来源、Node ID、正文和省略标记共同计入总预算。
     # 普通 Node 使用软上限；原子命令允许借用软上限但不得突破总预算。
     "rag_context_min_node_tokens": _env_int(
@@ -138,8 +138,14 @@ AI_CONFIG = {
     "rag_faithfulness_threshold": _env_float(
         "AI_RAG_FAITHFULNESS_THRESHOLD", 0.90
     ),
+    # claim 级词面支持下限：纯文字 claim（无命令/路径/数值原子可校验）至少
+    # 要有三成加权特征命中证据，拦截"服务器每天自动重启"式的编造。
     "rag_claim_lexical_support": _env_float(
-        "AI_RAG_CLAIM_LEXICAL_SUPPORT", 0.08
+        "AI_RAG_CLAIM_LEXICAL_SUPPORT", 0.30
+    ),
+    # JSON Object 仅保证返回对象；允许一次受控重生成修复字段缺失。
+    "rag_grounding_validation_retries": _env_int(
+        "AI_RAG_GROUNDING_VALIDATION_RETRIES", 1
     ),
     "rag_query_history_turns": _env_int("AI_RAG_QUERY_HISTORY_TURNS", 2),
     "rag_chunk_tokens": _env_int("AI_RAG_CHUNK_TOKENS", 500),

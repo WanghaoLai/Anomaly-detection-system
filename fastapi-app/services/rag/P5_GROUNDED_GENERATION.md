@@ -86,12 +86,14 @@ Prompt，用户指令也无法改变认证身份或 ACL。
 2. 非拒答必须包含至少一个 Claim，每个 Claim 至少一个引用；
 3. 引用必须存在于本次 `PackedContext.citation_map`；
 4. 引用证据必须达到字面支持阈值；
-5. Claim 中的代码、命令参数、路径、URL、数值和单位必须原样存在于证据；
-6. 发布 Claim 的支持率必须不低于 `AI_RAG_FAITHFULNESS_THRESHOLD`，默认 `0.90`。
+5. Claim 中的代码、命令参数、路径、URL、数值和单位必须存在于证据——比对采用
+   NFKC + casefold + 空白压缩后的格式等价匹配，容忍 PDF 断行造成的
+   `400 GB`/拆行 URL 与模型紧凑写法之间的排版差异，字符内容差异仍会失败。
 
-当前实现采用 fail-closed：发现任意无支撑 Claim 时整次回答拒绝发布。因此被发布回答
-的 Citation Validity 按构造为 100%，Faithfulness 门禁不低于 0.90；降低门槛只能
-影响候选通过率，不能让未知 K 编号成为合法引用。
+当前实现采用 claim 级 fail-closed：无支撑的 Claim 被直接丢弃，只有发布集合
+中的内容会发送给用户；全部 Claim 都无支撑时才拒绝整次回答并触发受控重试。
+因此被发布回答的 Citation Validity 按构造为 100%，`AI_RAG_FAITHFULNESS_THRESHOLD`
+（默认 `0.90`）作为候选整体质量的审计指标随事件流输出，不再单独阻断发布。
 
 ## SSE 与失败状态
 
