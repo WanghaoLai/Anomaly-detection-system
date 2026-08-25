@@ -1,32 +1,21 @@
-"""为管理类表维护从 1 开始的连续展示编号。"""
-import uuid
+"""为管理类表分配单调递增的展示编号。
+
+编号只增不减：删除不触发全表重排——历史编号是任务记录与外部沟通中的
+稳定标识，连续性只是展示需求，由前端列表序号承担。
+"""
 
 
-async def ensure_sequential_numbers(model, field_name: str, connection) -> int:
-    """锁定并按主键顺序压紧编号，返回当前记录数量。"""
-    rows = await (
+async def next_sequential_number(model, field_name: str, connection) -> int:
+    """返回 max(现有编号)+1；跳过无法解析为整数的非默认值。"""
+    values = await (
         model.all()
         .using_db(connection)
-        .select_for_update()
-        .order_by("id")
+        .values_list(field_name, flat=True)
     )
-    expected = [str(index) for index in range(1, len(rows) + 1)]
-    current = [str(getattr(row, field_name)) for row in rows]
-    if current == expected:
-        return len(rows)
-
-    # 唯一索引下直接交换编号可能冲突，先切换到一次性临时值。
-    prefix = uuid.uuid4().hex[:12]
-    for row in rows:
-        await (
-            model.filter(id=row.id)
-            .using_db(connection)
-            .update(**{field_name: f"{prefix}{row.id}"})
-        )
-    for index, row in enumerate(rows, start=1):
-        await (
-            model.filter(id=row.id)
-            .using_db(connection)
-            .update(**{field_name: str(index)})
-        )
-    return len(rows)
+    maximum = 0
+    for value in values:
+        try:
+            maximum = max(maximum, int(str(value)))
+        except (TypeError, ValueError):
+            continue
+    return maximum + 1

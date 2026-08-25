@@ -392,12 +392,20 @@ async def stream_job(
 
     async def event_stream():
         cursor = after_log_id
+        # 事件/指标在服务端累积缓存：DB 查询走增量与降频，但对前端仍发送
+        # 全量数组（mergeStreamState 用整体替换语义合并 state 事件）。
+        seed = await _stream_state(await TrainingJob.get(id=job.id))
+        cached_events = list(seed["events"])
+        cached_metrics = list(seed["metrics"])
+        last_event_sequence = (
+            cached_events[-1]["sequence"] if cached_events else 0
+        )
         if cursor == 0:
             recent = await TrainingLog.filter(job_id=job.id).order_by("-id").limit(300)
             recent.reverse()
             if recent:
                 cursor = recent[-1].id
-            snapshot = await _stream_state(await TrainingJob.get(id=job.id))
+            snapshot = dict(seed)
             snapshot["logs"] = [
                 {
                     "id": item.id,
@@ -413,6 +421,7 @@ async def stream_job(
 
         last_state = ""
         keepalive_tick = 0
+        metrics_tick = 0
         while not await request.is_disconnected():
             current = await TrainingJob.get(id=job.id)
             logs = await TrainingLog.filter(
@@ -433,13 +442,53 @@ async def stream_job(
                     item.id,
                 )
 
-            state = await _stream_state(current)
+            # 事件按 sequence 游标增量拉取，避免每秒全量查询。
+            new_events = await TrainingEvent.filter(
+                job_id=job.id,
+                sequence__gt=last_event_sequence,
+            ).order_by("sequence")
+            if new_events:
+                cached_events.extend(
+                    {
+                        "sequence": event.sequence,
+                        "type": event.event_type,
+                        "message": event.message,
+                        "payload": event.payload_json,
+                        "createdAt": event.created_at,
+                    }
+                    for event in new_events
+                )
+                last_event_sequence = new_events[-1].sequence
+
+            # 指标查询降频：每 5 轮或任务进入终态时刷新一次。
+            terminal = current.status in {"SUCCEEDED", "FAILED", "STOPPED", "LOST"}
+            metrics_tick += 1
+            if metrics_tick % 5 == 0 or terminal:
+                fresh_metrics = [
+                    {
+                        "name": metric.metric_name,
+                        "value": metric.metric_value,
+                        "epoch": metric.epoch,
+                        "step": metric.step,
+                    }
+                    for metric in await TrainingMetric.filter(
+                        job_id=job.id
+                    ).order_by("metric_name", "epoch", "id")
+                ]
+                if fresh_metrics != cached_metrics:
+                    cached_metrics = fresh_metrics
+
+            state = {
+                **_job_data(current),
+                "metrics": cached_metrics,
+                "events": cached_events,
+            }
             state_key = json.dumps(state, ensure_ascii=False, default=str, sort_keys=True)
             if state_key != last_state:
                 yield _sse_message("state", state)
                 last_state = state_key
 
-            if current.status in {"SUCCEEDED", "FAILED", "STOPPED", "LOST"}:
+            if terminal:
                 yield _sse_message("done", {"status": current.status})
                 return
             keepalive_tick += 1
@@ -465,13 +514,14 @@ async def cancel_job(
     current_user: dict = Depends(get_current_user),
 ):
     job = await _accessible_job(job_id, current_user)
+    was_queued = job.status == "QUEUED"
     try:
         job = await training_executor_service.cancel_job(job.id)
         await training_executor_service.audit(
             job.id,
             "JOB_CANCEL",
             current_user,
-            "用户取消排队任务",
+            "用户取消排队任务" if was_queued else "用户请求停止运行中的训练任务",
         )
         return Result.success(_job_data(job))
     except TrainingExecutorError as exc:

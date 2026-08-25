@@ -271,7 +271,7 @@ class P3ServiceIntegrationTests(unittest.TestCase):
                 "services.rag.indexing.writer.LlamaChromaVectorStore.add",
                 side_effect=RuntimeError("故障注入: async chroma write"),
             ):
-                return await self.service.astage_document_release(
+                return await self.service.stage_document_release_async(
                     b"raw-v2", "manual.md"
                 )
 

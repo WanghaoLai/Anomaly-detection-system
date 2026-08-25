@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import axios from 'axios'
+import { ElMessage } from 'element-plus'
 import {
   API_BASE_URL,
   clearAuthState,
@@ -10,6 +11,25 @@ import {
 
 const WHITE_LIST = ['/login', '/register']
 let sessionVerified = false
+
+// 与 Manager.vue 菜单的角色可见性保持一致：路由层先于后端 403 拦截，
+// 普通用户直达管理页时得到重定向而非整页报错。
+const ADMIN_ONLY_ROUTES = new Set([
+  '/manager/admin',
+  '/manager/user',
+  '/manager/datasetAdmin',
+  '/manager/datasetInfoAdmin',
+  '/manager/algorithmAdmin',
+  '/manager/algorithmInfoAdmin',
+  '/manager/notice',
+  '/manager/knowledge',
+  '/manager/adminChat',
+])
+const USER_ONLY_ROUTES = new Set([
+  '/manager/datasetInfo',
+  '/manager/algorithmInfo',
+  '/manager/chat',
+])
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -95,6 +115,18 @@ router.beforeEach(async (to, from, next) => {
       next(WHITE_LIST.includes(to.path) ? undefined : '/login')
       return
     }
+  }
+
+  const role = JSON.parse(localStorage.getItem('system-user') || '{}')?.role
+  if (ADMIN_ONLY_ROUTES.has(to.path) && role !== '管理员') {
+    ElMessage.warning('该页面仅管理员可见')
+    next('/manager/home')
+    return
+  }
+  if (USER_ONLY_ROUTES.has(to.path) && role !== '用户') {
+    ElMessage.warning('该页面仅普通用户可见')
+    next('/manager/home')
+    return
   }
 
   if (to.path === '/login') {

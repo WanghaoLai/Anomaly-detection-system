@@ -6,6 +6,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict
+from tortoise.exceptions import IntegrityError
 
 from common.auth import (
     authenticate_token,
@@ -16,6 +17,7 @@ from common.auth import (
     new_csrf_token,
     set_auth_cookies,
     validate_csrf,
+    validate_password_policy,
     verify_password,
 )
 from common.exception_handler import CustomException
@@ -90,7 +92,8 @@ async def login(
             account.username,
             account.role,
         )
-        raise HTTPException(status_code=401, detail="账号不存在")
+        # 账号不存在与密码错误返回同一消息，避免用户名可枚举。
+        raise HTTPException(status_code=401, detail="账号或密码错误")
 
     is_valid, needs_upgrade = verify_password(account.password, user.password)
     if not is_valid or user.role != account.role:
@@ -99,7 +102,7 @@ async def login(
             account.username,
             account.role,
         )
-        raise HTTPException(status_code=401, detail="密码错误")
+        raise HTTPException(status_code=401, detail="账号或密码错误")
 
     if needs_upgrade:
         hashed = hash_password(account.password)
@@ -205,16 +208,21 @@ async def register(account: Account):
         or not account.password.strip()
     ):
         raise CustomException("账号和密码不能为空")
+    validate_password_policy(account.password)
     user = await User.get_or_none(username=account.username)
     if user is not None:
         raise CustomException("账号已存在")
-    await User.create(
-        username=account.username,
-        password=hash_password(account.password),
-        name=account.name or account.username,
-        avatar=account.avatar,
-        role='用户',
-    )
+    try:
+        await User.create(
+            username=account.username,
+            password=hash_password(account.password),
+            name=account.name or account.username,
+            avatar=account.avatar,
+            role='用户',
+        )
+    except IntegrityError:
+        # 唯一索引兜底：并发注册同名账号时，先查后建存在竞态窗口。
+        raise CustomException("账号已存在")
     return Result.success()
 
 
@@ -259,6 +267,7 @@ async def update_password(
 
     if not password_update.password or not password_update.newPassword:
         raise CustomException("原密码和新密码不能为空")
+    validate_password_policy(password_update.newPassword)
 
     is_valid, _ = verify_password(password_update.password, user.password)
     if not is_valid:

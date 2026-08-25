@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import create_model
 from tortoise.contrib.pydantic import pydantic_model_creator
 
@@ -34,14 +34,16 @@ async def add(notice_pydantic: NoticeCreatePydantic):
 
 @router.put("/update", dependencies=[Depends(get_current_admin)])
 async def update(notice_pydantic: NoticeCreatePydantic):
+    if not notice_pydantic.id:
+        return Result.error("缺少 id")
     update_data = notice_pydantic.model_dump(exclude_unset=True, exclude={'id'})
     await Notice.filter(id=notice_pydantic.id).update(**update_data)
     return Result.success()
 
 
-@router.delete("/delete/{user_id}", dependencies=[Depends(get_current_admin)])
-async def delete(user_id: int):
-    await Notice.filter(id=user_id).delete()
+@router.delete("/delete/{notice_id}", dependencies=[Depends(get_current_admin)])
+async def delete(notice_id: int):
+    await Notice.filter(id=notice_id).delete()
     return Result.success()
 
 
@@ -53,7 +55,11 @@ async def select_all(name: str = ""):
 
 
 @router.get("/selectPage", dependencies=[Depends(get_current_admin)])
-async def select(name: str = "", page_num: int = 1, page_size: int = 5):
+async def select(
+    name: str = "",
+    page_num: int = Query(1, ge=1),
+    page_size: int = Query(5, ge=1, le=100),
+):
     # 同时获取分页数据和总数
     query = Notice.filter(name__contains=name)
     # 获取分页数据

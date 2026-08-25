@@ -1,14 +1,16 @@
 import json
 from typing import Optional, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import create_model, Field
 from tortoise.transactions import in_transaction
 from tortoise.contrib.pydantic import pydantic_model_creator
+from tortoise.exceptions import IntegrityError
 
 from common.auth import get_current_admin, get_current_user
+from common.exception_handler import CustomException
 from common.result import Result, PageInfo
-from common.sequential_number import ensure_sequential_numbers
+from common.sequential_number import next_sequential_number
 from models import Algorithm, AlgorithmInfo
 
 router = APIRouter(prefix="/algorithm", dependencies=[Depends(get_current_user)])
@@ -18,12 +20,16 @@ AlgorithmPydantic = pydantic_model_creator(Algorithm, name="AlgorithmPydantic")
 # AlgorithmInfo 只读模型
 AlgorithmInfoPydantic = pydantic_model_creator(AlgorithmInfo, name="AlgorithmInfoPydantic")
 
-# 创建用的模型，所有字段 Optional
+# 创建用的模型，所有字段 Optional。
+# Tortoise 初始化后 FK 字段会出现在 model_fields 中，与下方显式声明的
+# 同名参数冲突导致 create_model 抛 TypeError；推导时必须排除同名项，
+# 保证"api 先于或后于 ORM 初始化导入"两种顺序行为一致。
 AlgorithmCreatePydantic = create_model(
     "AlgorithmCreatePydantic",
     **{
         name: (Optional[field.annotation], None)
         for name, field in AlgorithmPydantic.model_fields.items()
+        if name != "created_by"
     },
     created_by=(Optional[int], Field(None, alias="createdBy")),
 )
@@ -35,6 +41,7 @@ AlgorithmInfoCreatePydantic = create_model(
     **{
         name: (Optional[Any], None) if name in JSON_FIELD_NAMES else (Optional[field.annotation], None)
         for name, field in AlgorithmInfoPydantic.model_fields.items()
+        if name != "algorithm_id"
     },
     algorithm_id=(Optional[int], Field(None, alias="algorithmId")),
 )
@@ -47,7 +54,12 @@ def _serialize_json_field(val):
 
 
 @router.get("/selectPage")
-async def select_page(name: str = "", userId: int = 0, pageNum: int = 1, pageSize: int = 5):
+async def select_page(
+    name: str = "",
+    userId: int = 0,
+    pageNum: int = Query(1, ge=1),
+    pageSize: int = Query(5, ge=1, le=100),
+):
     query = Algorithm.filter(deleted_at__isnull=True)
     if name and name != '':
         query = query.filter(name__contains=name)
@@ -103,13 +115,22 @@ async def add(
         },
     )
     create_data['created_by_id'] = current_admin['user_id']
-    async with in_transaction() as connection:
-        count = await ensure_sequential_numbers(
-            Algorithm, 'algorithm_no', connection
-        )
-        create_data['algorithm_no'] = str(count + 1)
-        algorithm = await Algorithm.create(using_db=connection, **create_data)
-    return Result.success(algorithm.id)
+    # 编号 max+1 单调递增；并发分配冲突由唯一索引兜底并重试。
+    for _ in range(3):
+        try:
+            async with in_transaction() as connection:
+                create_data['algorithm_no'] = str(
+                    await next_sequential_number(
+                        Algorithm, 'algorithm_no', connection
+                    )
+                )
+                algorithm = await Algorithm.create(
+                    using_db=connection, **create_data
+                )
+            return Result.success(algorithm.id)
+        except IntegrityError:
+            continue
+    raise CustomException("算法编号分配冲突，请重试")
 
 
 @router.put("/update", dependencies=[Depends(get_current_admin)])
@@ -129,11 +150,13 @@ async def update(algorithm_pydantic: AlgorithmCreatePydantic):
 
 @router.delete("/delete/{id}", dependencies=[Depends(get_current_admin)])
 async def delete(id: int):
-    async with in_transaction() as connection:
-        await Algorithm.all().using_db(connection).select_for_update()
-        await AlgorithmInfo.filter(algorithm_id=id).using_db(connection).delete()
-        await Algorithm.filter(id=id).using_db(connection).delete()
-        await ensure_sequential_numbers(Algorithm, 'algorithm_no', connection)
+    try:
+        async with in_transaction() as connection:
+            await AlgorithmInfo.filter(algorithm_id=id).using_db(connection).delete()
+            await Algorithm.filter(id=id).using_db(connection).delete()
+    except IntegrityError:
+        # 训练任务对算法是 RESTRICT 外键：被引用时拒绝删除而不是报系统错误。
+        raise CustomException("该算法仍被训练任务引用，请先处理相关任务")
     return Result.success()
 
 

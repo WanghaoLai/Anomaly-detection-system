@@ -885,7 +885,7 @@ class KnowledgeService:
                 "previous_doc_ids": [previous_doc_id] if previous_doc_id else [],
             }
 
-    async def astage_document_release(
+    async def stage_document_release_async(
         self,
         file_bytes: bytes,
         filename: str,
@@ -931,7 +931,7 @@ class KnowledgeService:
                 "removed_sources": matched,
             }
 
-    async def astage_delete_release(self, doc_id: str) -> dict:
+    async def stage_delete_release_async(self, doc_id: str) -> dict:
         return await self.async_ingestion_executor.run(
             self.stage_delete_release, doc_id
         )

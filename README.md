@@ -101,7 +101,7 @@ python3 init_db.py               # 按 Tortoise ORM 模型建表
 cd ..
 ```
 
-需要演示数据（默认管理员账号、PBAS 与 MVTec AD 登记信息）时，改为导入根目录的 `ad_system.sql`。增量结构变更见 `fastapi-app/migrations/`（编号 SQL，按序执行）。
+需要演示数据（默认管理员账号、PBAS 与 MVTec AD 登记信息）时，改为导入根目录的 `ad_system.sql`。增量结构变更见 `fastapi-app/migrations/`（编号 SQL，按序执行；部分迁移的文件头注释包含存量数据预检要求——例如 `011_user_username_unique.sql` 加唯一索引前需先确认无重复用户名，请先读注释再执行）。
 
 ### 5. 启动
 
@@ -164,9 +164,11 @@ anomaly_detection_system/
 │   ├── init_db.py             # 建表脚本
 │   ├── models.py              # Tortoise ORM 模型
 │   ├── migrations/            # 增量结构变更 SQL
-│   ├── api/                   # 路由模块（auth/user/admin/dataset/algorithm/
-│   │                          #   training/inference/experiment_results/
-│   │                          #   knowledge/chat/server/notice/files）
+│   ├── api/                   # 路由模块（登录/注册在 __init__.py 顶层；
+│   │                          #   user/admin/admin_chat/dataset/algorithm/
+│   │                          #   training/training_internal/inference/
+│   │                          #   experiment_results/knowledge/chat/server/
+│   │                          #   notice/files；auth_schemas 为登录请求模型）
 │   ├── services/              # 业务服务
 │   │   ├── training_executor_service.py    # 训练调度与监视
 │   │   ├── inference_executor_service.py   # 推理调度与监视
@@ -211,14 +213,19 @@ anomaly_detection_system/
 
 - [.env.example](.env.example) —— 全部环境变量及默认值
 - `fastapi-app/migrations/` —— 数据库结构演进记录
+- [代码审查报告](docs/code-review-2026-08-22.md) —— 2026-08 全系统审查：阻塞项/建议项/小改进的完整记录与修复结论
 
 ## 开发与测试
 
 ```bash
-# 运行测试（覆盖算法适配器、RAG P0–P6、训练/推理执行器等）
+# 运行测试（覆盖算法适配器、RAG P0–P6、训练/推理执行器、API 安全等）
 python3 -m pytest tests/
+```
 
-# 代码检查
+全部测试不依赖外部环境：数据库用 SQLite 内存模式，远程 SSH/SFTP 行为以模拟对象替代，克隆后即可直接运行。
+
+```bash
+# 代码检查（ruff 非内置依赖，需先安装：pip install ruff）
 ruff check fastapi-app scripts tests
 ```
 

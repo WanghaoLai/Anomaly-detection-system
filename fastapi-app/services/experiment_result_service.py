@@ -6,6 +6,7 @@ runner 的 ``result_json.visualizations`` 为索引，远程任务目录始终�
 
 from __future__ import annotations
 
+import asyncio
 import mimetypes
 import posixpath
 import tempfile
@@ -364,7 +365,11 @@ class ExperimentResultService:
         try:
             sftp = await connection.start_sftp_client()
             total_bytes = 0
-            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            # 可视化产物均为已压缩图片：STORED 免去无谓的 deflate CPU；
+            # 写入放线程池，避免大包压缩阻塞事件循环。
+            with zipfile.ZipFile(
+                archive, "w", compression=zipfile.ZIP_STORED
+            ) as bundle:
                 for remote_path, relative in entries:
                     attrs = await sftp.stat(remote_path)
                     size = int(attrs.size or 0)
@@ -372,7 +377,8 @@ class ExperimentResultService:
                     if size > 30 * 1024 * 1024 or total_bytes > 500 * 1024 * 1024:
                         raise ExperimentResultError("实验结果压缩包超过安全大小限制")
                     async with sftp.open(remote_path, "rb") as stream:
-                        bundle.writestr(relative, await stream.read())
+                        content = await stream.read()
+                    await asyncio.to_thread(bundle.writestr, relative, content)
         except ExperimentResultError:
             archive.close()
             raise

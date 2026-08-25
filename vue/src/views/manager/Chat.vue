@@ -96,7 +96,6 @@
             type="textarea"
             :rows="2"
             placeholder="输入您的问题... (Enter 发送，Ctrl+Enter 换行)"
-            @keydown.enter.ctrl="sendMessage"
             @keydown.enter.exact.prevent="sendMessage"
           />
           <el-button class="send-btn" type="primary" :disabled="!data.inputMessage.trim() || data.loading" @click="sendMessage">

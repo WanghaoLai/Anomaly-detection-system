@@ -1,14 +1,20 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, create_model
 from tortoise.contrib.pydantic import pydantic_model_creator
+from tortoise.exceptions import IntegrityError
 
-from common.auth import get_current_admin, get_current_user, hash_password
+from common.auth import (
+    get_current_admin,
+    get_current_user,
+    hash_password,
+    validate_password_policy,
+)
 from common.exception_handler import CustomException
 from common.result import Result, PageInfo
-from models import AuthSession, User
+from models import AuthSession, Conversation, InferenceJob, Message, TrainingJob, User
 
 router = APIRouter(prefix="/user", dependencies=[Depends(get_current_user)])
 UserPydantic = pydantic_model_creator(User)
@@ -39,11 +45,16 @@ async def add(user_pydantic: UserCreatePydantic):
     if not user_pydantic.password or not user_pydantic.password.strip():
         # 初始密码必须由管理员明确设置，禁止静默分配固定默认密码。
         raise CustomException("请输入初始密码")
+    validate_password_policy(user_pydantic.password)
     create_data = user_pydantic.model_dump(exclude_unset=True, exclude={'id'})
     create_data.pop('token_version', None)
     create_data['password'] = hash_password(create_data['password'])
     create_data['role'] = '用户'
-    await User.create(**create_data)
+    try:
+        await User.create(**create_data)
+    except IntegrityError:
+        # 唯一索引兜底：并发新增同名账号时，先查后建存在竞态窗口。
+        raise CustomException("账号重复")
     return Result.success()
 
 
@@ -80,6 +91,7 @@ async def reset_password(
 ):
     if not password_reset.newPassword or not password_reset.newPassword.strip():
         raise CustomException("新密码不能为空")
+    validate_password_policy(password_reset.newPassword)
 
     user = await User.get_or_none(id=user_id)
     if user is None:
@@ -107,13 +119,46 @@ async def reset_password(
 
 @router.delete("/delete/{user_id}", dependencies=[Depends(get_current_admin)])
 async def delete(user_id: int):
+    # 删除账号前必须先处理其名下任务：owner 悬挂会让归档、硬删除和
+    # 审计记录失去主体，进行中的任务更会直接失去管控。
+    if await TrainingJob.filter(
+        owner_id=user_id,
+        owner_role="用户",
+        status__in={"QUEUED", "STARTING", "RUNNING", "STOPPING"},
+    ).exists():
+        raise CustomException("该用户仍有进行中的训练任务，请先停止或等待结束")
+    if await InferenceJob.filter(
+        owner_id=user_id,
+        owner_role="用户",
+        status__in={"QUEUED", "STARTING", "RUNNING"},
+    ).exists():
+        raise CustomException("该用户仍有进行中的推理任务，请先停止或等待结束")
+    if (
+        await TrainingJob.filter(owner_id=user_id, owner_role="用户").exists()
+        or await InferenceJob.filter(
+            owner_id=user_id, owner_role="用户"
+        ).exists()
+    ):
+        raise CustomException(
+            "该用户存在历史任务记录，请先由管理员清理或归档相关任务"
+        )
+    conversation_ids = list(
+        await Conversation.filter(user_id=user_id).values_list("id", flat=True)
+    )
+    if conversation_ids:
+        await Message.filter(conversation_id__in=conversation_ids).delete()
+        await Conversation.filter(user_id=user_id).delete()
     await AuthSession.filter(user_id=user_id, role="用户").delete()
     await User.filter(id=user_id).delete()
     return Result.success()
 
 
 @router.get("/selectPage", dependencies=[Depends(get_current_admin)])
-async def select(name: str = "", pageNum: int = 1, pageSize: int = 5):
+async def select(
+    name: str = "",
+    pageNum: int = Query(1, ge=1),
+    pageSize: int = Query(5, ge=1, le=100),
+):
     query = User.filter(name__contains=name)
     user_list = await query.offset((pageNum - 1) * pageSize).limit(pageSize)
     user_list = [

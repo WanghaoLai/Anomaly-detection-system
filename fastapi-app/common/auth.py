@@ -9,6 +9,7 @@ from fastapi import Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
+from common.exception_handler import CustomException
 from models import Admin, AuthSession, User
 from settings import (
     ACCESS_COOKIE_NAME,
@@ -29,6 +30,20 @@ UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 def is_bcrypt_hash(value: str | None) -> bool:
     return isinstance(value, str) and value.startswith(("$2a$", "$2b$", "$2y$"))
+
+
+PASSWORD_MIN_LENGTH = 8
+# bcrypt 只取前 72 字节；超长直接拒绝而不是静默截断成等价密码。
+PASSWORD_MAX_BYTES = 72
+
+
+def validate_password_policy(plaintext: str | None, *, field: str = "密码") -> None:
+    if not isinstance(plaintext, str) or not plaintext.strip():
+        raise CustomException(f"{field}不能为空")
+    if len(plaintext) < PASSWORD_MIN_LENGTH:
+        raise CustomException(f"{field}长度不能少于 {PASSWORD_MIN_LENGTH} 位")
+    if len(plaintext.encode("utf-8")) > PASSWORD_MAX_BYTES:
+        raise CustomException(f"{field}长度不能超过 {PASSWORD_MAX_BYTES} 字节")
 
 
 def hash_password(plaintext: str) -> str:

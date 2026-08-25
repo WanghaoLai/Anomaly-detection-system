@@ -1,13 +1,15 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import create_model, Field
 from tortoise.transactions import in_transaction
 from tortoise.contrib.pydantic import pydantic_model_creator
+from tortoise.exceptions import IntegrityError
 
 from common.auth import get_current_admin, get_current_user
+from common.exception_handler import CustomException
 from common.result import Result, PageInfo
-from common.sequential_number import ensure_sequential_numbers
+from common.sequential_number import next_sequential_number
 from models import Dataset, DatasetInfo
 
 router = APIRouter(prefix="/dataset", dependencies=[Depends(get_current_user)])
@@ -17,12 +19,15 @@ DatasetPydantic = pydantic_model_creator(Dataset, name="DatasetPydantic")
 # DatasetInfo 只读模型
 DatasetInfoPydantic = pydantic_model_creator(DatasetInfo, name="DatasetInfoPydantic")
 
-# 创建用的模型，所有字段 Optional
+# 创建用的模型，所有字段 Optional。
+# 同 algorithm.py：FK 字段仅在 Tortoise 初始化后才进入 model_fields，
+# 推导时排除与显式声明同名的项，消除导入顺序依赖。
 DatasetCreatePydantic = create_model(
     "DatasetCreatePydantic",
     **{
         name: (Optional[field.annotation], None)
         for name, field in DatasetPydantic.model_fields.items()
+        if name != "created_by"
     },
     created_by=(Optional[int], Field(None, alias="createdBy")),
 )
@@ -32,13 +37,19 @@ DatasetInfoCreatePydantic = create_model(
     **{
         name: (Optional[field.annotation], None)
         for name, field in DatasetInfoPydantic.model_fields.items()
+        if name != "dataset_id"
     },
     dataset_id=(Optional[int], Field(None, alias="datasetId")),
 )
 
 
 @router.get("/selectPage")
-async def select_page(name: str = "", userId: int = 0, pageNum: int = 1, pageSize: int = 5):
+async def select_page(
+    name: str = "",
+    userId: int = 0,
+    pageNum: int = Query(1, ge=1),
+    pageSize: int = Query(5, ge=1, le=100),
+):
     query = Dataset.filter(deleted_at__isnull=True)
     if name and name != '':
         query = query.filter(name__contains=name)
@@ -82,13 +93,20 @@ async def add(
         },
     )
     create_data['created_by_id'] = current_admin['user_id']
-    async with in_transaction() as connection:
-        count = await ensure_sequential_numbers(
-            Dataset, 'dataset_no', connection
-        )
-        create_data['dataset_no'] = str(count + 1)
-        dataset = await Dataset.create(using_db=connection, **create_data)
-    return Result.success(dataset.id)
+    # 编号 max+1 单调递增；并发分配冲突由唯一索引兜底并重试。
+    for _ in range(3):
+        try:
+            async with in_transaction() as connection:
+                create_data['dataset_no'] = str(
+                    await next_sequential_number(
+                        Dataset, 'dataset_no', connection
+                    )
+                )
+                dataset = await Dataset.create(using_db=connection, **create_data)
+            return Result.success(dataset.id)
+        except IntegrityError:
+            continue
+    raise CustomException("数据集编号分配冲突，请重试")
 
 
 @router.put("/update", dependencies=[Depends(get_current_admin)])
@@ -108,11 +126,13 @@ async def update(dataset_pydantic: DatasetCreatePydantic):
 
 @router.delete("/delete/{id}", dependencies=[Depends(get_current_admin)])
 async def delete(id: int):
-    async with in_transaction() as connection:
-        await Dataset.all().using_db(connection).select_for_update()
-        await DatasetInfo.filter(dataset_id=id).using_db(connection).delete()
-        await Dataset.filter(id=id).using_db(connection).delete()
-        await ensure_sequential_numbers(Dataset, 'dataset_no', connection)
+    try:
+        async with in_transaction() as connection:
+            await DatasetInfo.filter(dataset_id=id).using_db(connection).delete()
+            await Dataset.filter(id=id).using_db(connection).delete()
+    except IntegrityError:
+        # 训练任务对数据集是 RESTRICT 外键：被引用时拒绝删除而不是报系统错误。
+        raise CustomException("该数据集仍被训练任务引用，请先处理相关任务")
     return Result.success()
 
 
