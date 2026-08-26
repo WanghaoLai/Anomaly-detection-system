@@ -103,6 +103,14 @@ AI_CONFIG = {
     "embedding_model": os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v2"),
     "max_history": _env_int("AI_MAX_HISTORY", 20),
     "top_k": _env_int("AI_TOP_K", 3),
+    "rag_profile": os.getenv("AI_RAG_PROFILE", "legacy_general_v1"),
+    "rag_paper_parser": os.getenv("AI_RAG_PAPER_PARSER", "docling"),
+    "rag_grobid_enabled": _env_bool("AI_RAG_GROBID_ENABLED", True),
+    "rag_grobid_url": os.getenv("AI_RAG_GROBID_URL", "").rstrip("/"),
+    "rag_grobid_timeout_seconds": _env_float(
+        "AI_RAG_GROBID_TIMEOUT_SECONDS", 30.0
+    ),
+    "rag_ocr_enabled": _env_bool("AI_RAG_OCR_ENABLED", True),
     "rag_candidate_k": _env_int("AI_RAG_CANDIDATE_K", 8),
     "rag_dense_candidate_k": _env_int("AI_RAG_DENSE_CANDIDATE_K", 50),
     "rag_lexical_candidate_k": _env_int("AI_RAG_LEXICAL_CANDIDATE_K", 50),
