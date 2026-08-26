@@ -7,6 +7,8 @@
 
 P0 已冻结行为、应用接口和分层规则；变更本模块前先阅读
 [`P0_BASELINE.md`](./P0_BASELINE.md)，并运行离线契约检查。
+多论文改进阶段 0 的冻结语料、黄金评测集和校验方式见
+[`MULTI_PAPER_BASELINE_V1.md`](./MULTI_PAPER_BASELINE_V1.md)。
 文档上传、DocStore 和影子索引发布见
 [`P1_INGESTION.md`](./P1_INGESTION.md)；LlamaIndex TextNode 解析见
 [`P2_NODES.md`](./P2_NODES.md)；LlamaIndex Embedding 与蓝绿向量写入见
@@ -84,3 +86,6 @@ SDK 调用移入 `asyncio.to_thread`，Qwen 客户端复用连接池并具备
 开启审计前应用 `migrations/010_rag_retrieval_audit.sql`；每次检索保存
 release、模型/Prompt 版本、候选分数、K 到来源的映射、估算 Token
 和分阶段耗时。
+
+阶段 0 多论文最终冻结语料、黄金评测集、release 与评测基线见
+`MULTI_PAPER_BASELINE_V1.md`。

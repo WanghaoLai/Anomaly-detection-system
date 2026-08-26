@@ -1063,6 +1063,12 @@ Embedding v4、Cross-Encoder、NLI 和 Qdrant 应分别做消融，不把多个�
 
 ### 阶段 0：冻结多论文基线
 
+> 实施状态（2026-08-25）：阶段 0 已完成。15 篇论文以单一 release
+> `b17672e25ed44ee793a8799def2d968e` 入库，共 974 个节点；42 条黄金问题已
+> 完成全量评测，结果冻结于 `config/rag_multi_paper_baseline_v1.json`。
+> baseline 如实保留 2 个 DashScope 45 秒超时和未达建议门槛项，作为后续
+> 阶段统一改进对照，不追溯性修改 v1。
+
 - 选择代表性的中英文异常检测论文。
 - 建立解析、召回、比较、综合、负样本和权限评测集。
 - 冻结当前 Chroma/v2/现有 Prompt 的基线结果。
