@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 import logging
 import uvicorn
@@ -5,6 +7,8 @@ from starlette.middleware.cors import CORSMiddleware
 from tortoise.contrib.fastapi import register_tortoise
 
 from api import api_router
+from api.admin_chat import _llm_service
+from api.chat import llm_service
 from common.exception_handler import setup_exceptions
 
 from common.result import Result
@@ -15,7 +19,26 @@ from services.inference_executor_service import inference_executor_service
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    report = knowledge_service.validate_embedding_config()
+    if not report["consistent"]:
+        logger.warning(
+            "RAG embedding 配置不一致，新增文档与检索将被拒绝/降级：\n  %s",
+            "\n  ".join(report["issues"]),
+        )
+    await training_executor_service.start_monitor()
+    await inference_executor_service.start_monitor()
+    yield
+    # API 单例复用的 Qwen HTTP 连接池在应用退出时显式关闭。
+    await llm_service.aclose()
+    await _llm_service.aclose()
+    await inference_executor_service.stop_monitor()
+    await training_executor_service.stop_monitor()
+
+
+app = FastAPI(lifespan=lifespan)
 
 # 跨域配置 CORS
 app.add_middleware(
@@ -33,29 +56,6 @@ register_tortoise(app, config=TORTOISE_ORM, add_exception_handlers=True)
 # 注册异常处理器
 setup_exceptions(app)
 
-
-@app.on_event("startup")
-async def start_training_monitor():
-    report = knowledge_service.validate_embedding_config()
-    if not report["consistent"]:
-        logger.warning(
-            "RAG embedding 配置不一致，新增文档与检索将被拒绝/降级：\n  %s",
-            "\n  ".join(report["issues"]),
-        )
-    await training_executor_service.start_monitor()
-    await inference_executor_service.start_monitor()
-
-
-@app.on_event("shutdown")
-async def stop_training_monitor():
-    # API 单例复用的 Qwen HTTP 连接池在应用退出时显式关闭。
-    from api.chat import llm_service
-    from api.admin_chat import _llm_service
-
-    await llm_service.aclose()
-    await _llm_service.aclose()
-    await inference_executor_service.stop_monitor()
-    await training_executor_service.stop_monitor()
 
 @app.get("/")
 async def root():

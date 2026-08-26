@@ -15,6 +15,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from tortoise import connections
+from tortoise.exceptions import IntegrityError
 from tortoise.transactions import in_transaction
 
 from models import (
@@ -62,6 +63,18 @@ class NoGpuAvailableError(TrainingExecutorError):
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _load_json_object(text: str | None) -> dict[str, Any] | None:
+    """解析远程 JSON 产物；写入未完成等损坏情况返回 None 由调用方降级。"""
+    if not text:
+        return None
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("远程 JSON 产物损坏（可能正在写入），本轮忽略")
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def _absolute_path(value: str, name: str) -> str:
@@ -112,6 +125,7 @@ class TrainingExecutorService:
         self._reconcile_lock = asyncio.Lock()
         self._dispatch_lock = asyncio.Lock()
         self._log_sync_locks: dict[int, asyncio.Lock] = {}
+        self._event_locks: dict[int, asyncio.Lock] = {}
 
     @property
     def enabled(self) -> bool:
@@ -156,6 +170,17 @@ class TrainingExecutorService:
         except Exception as exc:
             raise TrainingExecutorError("远程训练控制命令执行失败") from exc
 
+    def _release_job_locks(self, job_id: int) -> None:
+        """任务终态后回收 per-job 锁，避免长驻进程缓慢累积。
+
+        仅回收未持有的锁：若极小概率与一次并发同步交错，最坏情况是
+        撞 (job, sequence) 唯一键，与改造前的并发面一致。
+        """
+        for locks in (self._log_sync_locks, self._event_locks):
+            lock = locks.get(job_id)
+            if lock is not None and not lock.locked():
+                locks.pop(job_id, None)
+
     async def _event(
         self,
         job_id: int,
@@ -163,17 +188,27 @@ class TrainingExecutorService:
         message: str,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        latest = await TrainingEvent.filter(job_id=job_id).order_by(
-            "-sequence"
-        ).first()
-        sequence = (latest.sequence + 1) if latest else 1
-        await TrainingEvent.create(
-            job_id=job_id,
-            sequence=sequence,
-            event_type=event_type,
-            message=message,
-            payload_json=payload,
-        )
+        # (job, sequence) 有唯一约束；先查后写在用户操作与监控并发时会撞键。
+        # 进程内 per-job 锁 + 唯一键冲突重试，覆盖单进程与多进程两种部署。
+        lock = self._event_locks.setdefault(job_id, asyncio.Lock())
+        async with lock:
+            for attempt in range(2):
+                latest = await TrainingEvent.filter(job_id=job_id).order_by(
+                    "-sequence"
+                ).first()
+                sequence = (latest.sequence + 1) if latest else 1
+                try:
+                    await TrainingEvent.create(
+                        job_id=job_id,
+                        sequence=sequence,
+                        event_type=event_type,
+                        message=message,
+                        payload_json=payload,
+                    )
+                    return
+                except IntegrityError:
+                    if attempt == 1:
+                        raise
 
     async def audit(
         self,
@@ -769,28 +804,42 @@ class TrainingExecutorService:
             raise TrainingExecutorError(f"任务对应的算法适配器不可用: {key or '<empty>'}")
         return adapter
 
-    async def _upsert_metric(
+    async def _upsert_metrics(
         self,
         job_id: int,
-        name: str,
-        value: float,
-        epoch: int | None,
+        values: dict[tuple[str, int | None], float],
     ) -> None:
+        """按 (指标名, epoch) 批量 upsert，替代逐条查询的 N+1 写入。"""
+        if not values:
+            return
         existing = await TrainingMetric.filter(
             job_id=job_id,
-            metric_name=name,
-            epoch=epoch,
+            metric_name__in={name for name, _ in values},
             step__isnull=True,
-        ).first()
-        if existing:
-            await TrainingMetric.filter(id=existing.id).update(metric_value=value)
-        else:
-            await TrainingMetric.create(
+        )
+        updates = []
+        matched: set[tuple[str, int | None]] = set()
+        for metric in existing:
+            key = (metric.metric_name, metric.epoch)
+            if key in values and key not in matched:
+                matched.add(key)
+                if metric.metric_value != values[key]:
+                    metric.metric_value = values[key]
+                    updates.append(metric)
+        if updates:
+            await TrainingMetric.bulk_update(updates, fields=["metric_value"])
+        creations = [
+            TrainingMetric(
                 job_id=job_id,
                 metric_name=name,
                 metric_value=value,
                 epoch=epoch,
             )
+            for (name, epoch), value in values.items()
+            if (name, epoch) not in matched
+        ]
+        if creations:
+            await TrainingMetric.bulk_create(creations)
 
     async def _persist_parsed_log_lines(
         self,
@@ -801,6 +850,7 @@ class TrainingExecutorService:
         latest = await TrainingLog.filter(job_id=job.id).order_by("-sequence").first()
         sequence = latest.sequence if latest else 0
         pending_logs = []
+        pending_metrics: dict[tuple[str, int | None], float] = {}
         latest_live_progress = None
         has_final_metrics = False
         progress_updates: dict[str, Any] = {
@@ -825,7 +875,8 @@ class TrainingExecutorService:
             if parsed.total_epochs is not None:
                 progress_updates["total_epochs"] = parsed.total_epochs
             for name, value, epoch in parsed.metrics:
-                await self._upsert_metric(job.id, name, value, epoch)
+                # 同键后者覆盖，与旧逐条 upsert 的最终值语义一致。
+                pending_metrics[(name, epoch)] = value
                 if "/" not in name:
                     has_final_metrics = True
 
@@ -840,6 +891,8 @@ class TrainingExecutorService:
                 ))
             elif parsed.stream == "PROGRESS" and parsed.content.startswith("epoch:"):
                 latest_live_progress = parsed
+
+        await self._upsert_metrics(job.id, pending_metrics)
 
         if latest_live_progress is not None and not has_final_metrics:
             sequence += 1
@@ -1355,8 +1408,13 @@ class TrainingExecutorService:
                 using_db=connection,
             )
             await locked.delete(using_db=connection)
+        self._release_job_locks(job.id)
 
-    async def reconcile_job(self, job: TrainingJob) -> TrainingJob:
+    async def reconcile_job(
+        self,
+        job: TrainingJob,
+        connection=None,
+    ) -> TrainingJob:
         if job.status in TERMINAL_STATUSES or job.status == "QUEUED":
             return job
         async with self._reconcile_lock:
@@ -1393,6 +1451,7 @@ class TrainingExecutorService:
                     message="远程启动超时且未记录 launcher PID",
                     result="FAILED",
                 )
+                self._release_job_locks(job.id)
                 return await TrainingJob.get(id=job.id)
             if (
                 job.status == "RUNNING"
@@ -1412,7 +1471,9 @@ class TrainingExecutorService:
                     result="FAILED",
                 )
                 return await TrainingJob.get(id=job.id)
-            connection = await self._connect()
+            owns_connection = connection is None
+            if owns_connection:
+                connection = await self._connect()
             try:
                 sftp = await connection.start_sftp_client()
                 log_lock = self._log_sync_locks.setdefault(job.id, asyncio.Lock())
@@ -1421,22 +1482,20 @@ class TrainingExecutorService:
                     adapter = await self._adapter_for_job(job)
                     await self._sync_remote_log_with_sftp(job, sftp, adapter)
                 job = await TrainingJob.get(id=job.id)
-                manifest_text = await self._read_text(
+                manifest = _load_json_object(await self._read_text(
                     sftp,
                     posixpath.join(job.remote_run_dir or "", "manifest.json"),
-                )
-                runtime_text = await self._read_text(
+                ))
+                runtime = _load_json_object(await self._read_text(
                     sftp,
                     posixpath.join(job.remote_run_dir or "", "runtime.json"),
-                )
-                runtime = json.loads(runtime_text) if runtime_text else {}
+                )) or {}
                 runtime_updates = {
                     key: int(runtime[key])
                     for key in ("worker_pid", "process_pid", "process_pgid")
                     if runtime.get(key) is not None
                 }
-                if manifest_text:
-                    manifest = json.loads(manifest_text)
+                if manifest:
                     remote_status = manifest.get("status")
                     if remote_status in {"SUCCEEDED", "FAILED"}:
                         status = (
@@ -1488,6 +1547,7 @@ class TrainingExecutorService:
                             },
                             result="SUCCESS" if status == "SUCCEEDED" else "FAILED",
                         )
+                        self._release_job_locks(job.id)
                         return await TrainingJob.get(id=job.id)
 
                 alive = False
@@ -1498,7 +1558,7 @@ class TrainingExecutorService:
                         check=False,
                     )
                     alive = result.exit_status == 0
-                if not alive and not manifest_text:
+                if not alive and not manifest:
                     await TrainingJob.filter(id=job.id).update(
                         status="LOST",
                         failure_code="EXECUTOR_LOST",
@@ -1514,6 +1574,7 @@ class TrainingExecutorService:
                         message="远程进程已消失且未生成最终 manifest",
                         result="FAILED",
                     )
+                    self._release_job_locks(job.id)
                 else:
                     await TrainingJob.filter(id=job.id).update(
                         status="RUNNING" if job.status != "STOPPING" else "STOPPING",
@@ -1522,8 +1583,9 @@ class TrainingExecutorService:
                         **runtime_updates,
                     )
             finally:
-                connection.close()
-                await connection.wait_closed()
+                if owns_connection:
+                    connection.close()
+                    await connection.wait_closed()
             return await TrainingJob.get(id=job.id)
 
     async def stop_job(
@@ -1546,11 +1608,10 @@ class TrainingExecutorService:
         connection = await self._connect()
         try:
             sftp = await connection.start_sftp_client()
-            runtime_text = await self._read_text(
+            runtime = _load_json_object(await self._read_text(
                 sftp,
                 posixpath.join(job.remote_run_dir or "", "runtime.json"),
-            )
-            runtime = json.loads(runtime_text) if runtime_text else {}
+            )) or {}
             process_pgid = runtime.get("process_pgid") or job.process_pgid
             worker_pid = runtime.get("worker_pid") or job.worker_pid or job.launcher_pid
             if process_pgid and int(process_pgid) > 1:
@@ -1570,46 +1631,75 @@ class TrainingExecutorService:
             await connection.wait_closed()
         return await TrainingJob.get(id=job.id)
 
+    async def _record_reconcile_failure(
+        self,
+        job: TrainingJob,
+        message: str,
+        *,
+        include_traceback: bool = False,
+    ) -> None:
+        failures = int(job.reconcile_failures or 0) + 1
+        updates: dict[str, Any] = {"reconcile_failures": failures}
+        if failures >= 3:
+            updates.update({
+                "status": "LOST",
+                "failure_code": "EXECUTOR_LOST",
+                "failure_reason": "连续 3 次无法完成对账，任务标记为失联",
+                "finished_at": _utc_now(),
+            })
+        await TrainingJob.filter(id=job.id).update(**updates)
+        if failures >= 3:
+            await self._event(
+                job.id,
+                "EXECUTOR_UNREACHABLE",
+                "连续 3 次无法完成对账，任务标记为失联",
+            )
+            await self.audit(
+                job.id,
+                "PROCESS_LOST",
+                message=message,
+                payload={"consecutive_failures": failures},
+                result="FAILED",
+            )
+        if include_traceback:
+            logger.exception("Training job recovery failed: %s", job.job_no)
+        else:
+            logger.warning(
+                "Training executor unavailable for %s (%s/3): %s",
+                job.job_no,
+                failures,
+                message,
+            )
+
     async def recover_active_jobs(self) -> None:
         if not self.enabled:
             logger.info("Training executor is disabled")
             return
         jobs = await TrainingJob.filter(status__in=REMOTE_ACTIVE_STATUSES)
-        for job in jobs:
-            try:
-                await self.reconcile_job(job)
-            except TrainingExecutorError as exc:
-                failures = int(job.reconcile_failures or 0) + 1
-                updates: dict[str, Any] = {"reconcile_failures": failures}
-                if failures >= 3:
-                    updates.update({
-                        "status": "LOST",
-                        "failure_code": "EXECUTOR_LOST",
-                        "failure_reason": "连续 3 次无法连接训练执行器",
-                        "finished_at": _utc_now(),
-                    })
-                await TrainingJob.filter(id=job.id).update(**updates)
-                if failures >= 3:
-                    await self._event(
-                        job.id,
-                        "EXECUTOR_UNREACHABLE",
-                        "连续 3 次无法连接训练执行器，任务标记为失联",
+        if not jobs:
+            return
+        # 一轮监控共享一条 SSH 连接，避免每个任务每 5 秒重建 TCP+SSH 会话。
+        shared_connection = None
+        try:
+            shared_connection = await self._connect()
+        except TrainingExecutorError:
+            shared_connection = None  # 回退为逐任务独立连接，失败照常计数
+        try:
+            for job in jobs:
+                try:
+                    await self.reconcile_job(job, connection=shared_connection)
+                except TrainingExecutorError as exc:
+                    await self._record_reconcile_failure(job, str(exc))
+                except Exception as exc:
+                    # 非预期异常同样计入失败：损坏的远程产物等持续性
+                    # 故障不能无限重试，三次后按失联收敛。
+                    await self._record_reconcile_failure(
+                        job, repr(exc), include_traceback=True
                     )
-                    await self.audit(
-                        job.id,
-                        "PROCESS_LOST",
-                        message=str(exc),
-                        payload={"consecutive_failures": failures},
-                        result="FAILED",
-                    )
-                logger.warning(
-                    "Training executor unavailable for %s (%s/3): %s",
-                    job.job_no,
-                    failures,
-                    exc,
-                )
-            except Exception:
-                logger.exception("Training job recovery failed: %s", job.job_no)
+        finally:
+            if shared_connection is not None:
+                shared_connection.close()
+                await shared_connection.wait_closed()
 
     async def dispatch_queued_jobs(self) -> None:
         if not self.enabled:

@@ -6,7 +6,6 @@ import asyncio
 import random
 import time
 
-import dashscope
 import httpx
 from dashscope import Generation
 
@@ -33,7 +32,6 @@ class LLMService:
         base_url: str | None = None,
         http_client: httpx.AsyncClient | None = None,
     ):
-        dashscope.api_key = api_key
         self.model = model
         self.timeout_seconds = float(
             timeout_seconds
@@ -79,6 +77,9 @@ class LLMService:
             "messages": self._messages(messages, system_prompt),
             "result_format": "message",
             "timeout": self.timeout_seconds,
+            # 显式传参而不是写 dashscope.api_key 全局变量：
+            # chat 与 admin_chat 两个服务实例不能互相覆盖共享状态。
+            "api_key": self.api_key,
         }
         if structured:
             kwargs["response_format"] = {"type": "json_object"}

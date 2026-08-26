@@ -71,32 +71,46 @@ class LoginRateLimiter:
         username: str,
         role: str,
     ) -> None:
+        now = _utcnow()
+        window = timedelta(seconds=LOGIN_RATE_LIMIT_WINDOW_SECONDS)
+        lock_duration = timedelta(seconds=LOGIN_RATE_LIMIT_LOCK_SECONDS)
+        # 全局锁只串行化同一对 key 的读改写（单进程假设；多 worker 部署
+        # 时窗口计数可能被分摊，需另行评估）。两个 key 的落库并行执行，
+        # 锁持有时间从两次串行 DB 往返压缩为一次。
         async with self._lock:
-            now = _utcnow()
-            window = timedelta(seconds=LOGIN_RATE_LIMIT_WINDOW_SECONDS)
-            lock_duration = timedelta(seconds=LOGIN_RATE_LIMIT_LOCK_SECONDS)
-            for key in self._keys(client_ip, username, role):
-                record = await LoginThrottle.get_or_none(key=key)
-                window_started = _aware(record.window_started) if record else None
-                if record is None or window_started is None or now - window_started >= window:
-                    failures = 1
-                    window_started = now
-                else:
-                    failures = record.failures + 1
+            await asyncio.gather(*(
+                self._record_key_failure(key, now, window, lock_duration)
+                for key in self._keys(client_ip, username, role)
+            ))
 
-                locked_until = (
-                    now + lock_duration
-                    if failures >= LOGIN_RATE_LIMIT_ATTEMPTS
-                    else None
-                )
-                await LoginThrottle.update_or_create(
-                    key=key,
-                    defaults={
-                        "failures": failures,
-                        "window_started": window_started,
-                        "locked_until": locked_until,
-                    },
-                )
+    @staticmethod
+    async def _record_key_failure(
+        key: str,
+        now,
+        window: timedelta,
+        lock_duration: timedelta,
+    ) -> None:
+        record = await LoginThrottle.get_or_none(key=key)
+        window_started = _aware(record.window_started) if record else None
+        if record is None or window_started is None or now - window_started >= window:
+            failures = 1
+            window_started = now
+        else:
+            failures = record.failures + 1
+
+        locked_until = (
+            now + lock_duration
+            if failures >= LOGIN_RATE_LIMIT_ATTEMPTS
+            else None
+        )
+        await LoginThrottle.update_or_create(
+            key=key,
+            defaults={
+                "failures": failures,
+                "window_started": window_started,
+                "locked_until": locked_until,
+            },
+        )
 
     async def record_success(
         self,

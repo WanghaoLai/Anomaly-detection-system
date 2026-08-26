@@ -120,7 +120,7 @@ async def upload(
 
     try:
         # P1 阶段只构建影子 collection，此时在线检索指针未变。
-        info = await knowledge_service.astage_document_release(
+        info = await knowledge_service.stage_document_release_async(
             file_bytes,
             original_name,
             visibility=visibility,
@@ -209,7 +209,7 @@ async def delete(doc_id: int):
         raise CustomException("文档不存在")
 
     try:
-        staged = await knowledge_service.astage_delete_release(knowledge.filename)
+        staged = await knowledge_service.stage_delete_release_async(knowledge.filename)
     except ValueError as exc:
         logger.error("删除影子索引预检失败: doc_id=%s error=%s", knowledge.filename, exc)
         raise CustomException(str(exc)) from exc

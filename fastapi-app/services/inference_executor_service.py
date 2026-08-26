@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import mimetypes
 import posixpath
 import shlex
@@ -21,13 +22,22 @@ from services.training_executor_service import (
     TrainingExecutorError,
     _absolute_path,
     _isolated_output_root,
+    _load_json_object,
     training_executor_service,
 )
 from settings import INFERENCE_EXECUTOR_CONFIG
 
+try:
+    import asyncssh
+except ImportError:  # pragma: no cover - 与训练执行器一致的依赖保护
+    asyncssh = None
+
+
+logger = logging.getLogger(__name__)
 
 INFERENCE_ACTIVE = {"QUEUED", "STARTING", "RUNNING"}
 INFERENCE_TERMINAL = {"SUCCEEDED", "FAILED", "STOPPED", "LOST"}
+INFERENCE_MANIFEST_TERMINAL = {"SUCCEEDED", "FAILED"}
 
 
 def _now() -> datetime:
@@ -226,7 +236,11 @@ class InferenceExecutorService:
             )
             return await InferenceJob.get(id=job.id)
 
-    async def reconcile_job(self, job: InferenceJob) -> InferenceJob:
+    async def reconcile_job(
+        self,
+        job: InferenceJob,
+        connection=None,
+    ) -> InferenceJob:
         if job.status not in {"STARTING", "RUNNING"} or not job.remote_run_dir:
             return job
         runtime_seconds = 0.0
@@ -261,28 +275,74 @@ class InferenceExecutorService:
                 assigned_gpu=None,
             )
             return await InferenceJob.get(id=job.id)
-        connection = await training_executor_service._connect()
+        owns_connection = connection is None
+        if owns_connection:
+            connection = await training_executor_service._connect()
         try:
             sftp = await connection.start_sftp_client()
             manifest_path = posixpath.join(job.remote_run_dir, "manifest.json")
+            manifest = None
             try:
                 async with sftp.open(manifest_path, "r") as stream:
-                    manifest = json.loads(await stream.read())
-            except FileNotFoundError:
-                return job
-        finally:
-            connection.close()
-            await connection.wait_closed()
-        status = manifest.get("status")
-        if status in {"SUCCEEDED", "FAILED"}:
+                    manifest = _load_json_object(await stream.read())
+            except (FileNotFoundError, asyncssh.SFTPNoSuchFile):
+                # 远程 manifest 未生成属于运行中的正常状态，等待下一轮。
+                manifest = None
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("status") not in INFERENCE_MANIFEST_TERMINAL
+            ):
+                # manifest 缺失或停留在 RUNNING：进程仍在则等待下一轮，
+                # 进程已消失且无终态 manifest 时按失联处理（对齐训练执行器）。
+                return await self._mark_lost_if_process_gone(job, connection)
+            status = manifest.get("status")
+            # 适配器键来自任务自身的快照，避免推理层硬编码具体算法名。
+            adapter_key = str(
+                ((job.config_json or {}).get("adapter") or {}).get("key")
+                or "算法"
+            )
             await InferenceJob.filter(id=job.id).update(
                 status=status,
                 exit_code=manifest.get("exit_code"),
                 result_json=manifest.get("result"),
-                failure_reason=None if status == "SUCCEEDED" else "PBAS 推理进程执行失败，请查看日志",
+                failure_reason=(
+                    None
+                    if status == "SUCCEEDED"
+                    else f"{adapter_key} 推理进程执行失败，请查看日志"
+                ),
                 finished_at=_now(),
                 assigned_gpu=None,
             )
+            return await InferenceJob.get(id=job.id)
+        finally:
+            if owns_connection:
+                connection.close()
+                await connection.wait_closed()
+
+    async def _mark_lost_if_process_gone(
+        self,
+        job: InferenceJob,
+        connection,
+    ) -> InferenceJob:
+        """runner 在写出终态 manifest 前死亡时把任务收敛为 LOST。"""
+        if not job.launcher_pid or int(job.launcher_pid) <= 1:
+            return job
+        result = await training_executor_service._run(
+            connection,
+            f"/bin/kill -0 {int(job.launcher_pid)}",
+            check=False,
+        )
+        if result.exit_status == 0:
+            return job
+        await InferenceJob.filter(
+            id=job.id,
+            status__in={"STARTING", "RUNNING"},
+        ).update(
+            status="LOST",
+            failure_reason="推理进程已消失且未生成最终 manifest",
+            finished_at=_now(),
+            assigned_gpu=None,
+        )
         return await InferenceJob.get(id=job.id)
 
     async def dispatch_queued_jobs(self) -> None:
@@ -299,12 +359,32 @@ class InferenceExecutorService:
 
     async def _monitor_loop(self) -> None:
         while not self._stop_event.is_set():
-            for job in await InferenceJob.filter(status__in={"STARTING", "RUNNING"}):
+            active_jobs = await InferenceJob.filter(
+                status__in={"STARTING", "RUNNING"}
+            )
+            if active_jobs:
+                # 一轮监控共享一条 SSH 连接，避免逐任务重建会话。
+                shared_connection = None
                 try:
-                    await self.reconcile_job(job)
-                except Exception:
-                    # 瞬时 SSH 故障留待下一轮恢复，不能误判任务终态。
-                    pass
+                    shared_connection = await training_executor_service._connect()
+                except TrainingExecutorError:
+                    shared_connection = None  # 回退为逐任务独立连接
+                try:
+                    for job in active_jobs:
+                        try:
+                            await self.reconcile_job(
+                                job, connection=shared_connection
+                            )
+                        except Exception:
+                            # 瞬时 SSH 故障留待下一轮恢复，不能误判任务终态。
+                            logger.exception(
+                                "Inference job reconcile failed: %s",
+                                job.job_no,
+                            )
+                finally:
+                    if shared_connection is not None:
+                        shared_connection.close()
+                        await shared_connection.wait_closed()
             await self.dispatch_queued_jobs()
             try:
                 await asyncio.wait_for(
@@ -341,7 +421,7 @@ class InferenceExecutorService:
                 raise InferenceExecutorError("单个推理输出超过 20 MiB，拒绝在线读取")
             async with sftp.open(remote_path, "rb") as stream:
                 content = await stream.read()
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, asyncssh.SFTPNoSuchFile) as exc:
             raise InferenceExecutorError("推理输出不存在") from exc
         finally:
             connection.close()

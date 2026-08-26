@@ -1,30 +1,31 @@
-# 环境变量 - 包含 API 密钥，绝对不能上传
+# ==== 环境变量：包含 API 密钥 / 数据库密码，绝对不能提交 ====
 .env
 .env.*
 *.env
 *.env.*
 !.env.example
+# Vite 前端构建配置（仅含公开本机地址，无密钥，前端运行必需）
+!vue/.env.development
+!vue/.env.production
 
-# Python 缓存
+# ==== Python 缓存 ====
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 
-# 虚拟环境
+# ==== 虚拟环境 ====
 .venv/
 venv/
-env/
-.env/
 
-# IDE 配置
+# ==== IDE / 编辑器个人配置 ====
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 
-# 系统文件
+# ==== 系统文件 ====
 .DS_Store
 .DS_Store?
 ._*
@@ -33,54 +34,44 @@ env/
 ehthumbs.db
 Thumbs.db
 
-# Claude Code
+# ==== Claude Code 个人配置（MCP 端口为本机临时值）====
 .claude/
+.mcp.json
 
-# Jupyter Notebook
+# ==== Jupyter ====
 .ipynb_checkpoints/
 
-# 数据库
+# ==== 数据库本地文件与向量库 ====
 *.db
 *.sqlite
 *.sqlite3
 fastapi-app/chroma_db/
 
-# 日志
+# ==== 日志 ====
 *.log
 logs/
 
-# 上传文件和本地运行数据
-fastapi-app/files/
+# ==== 运行时上传文件与本地数据（任意层级）====
+files/
 
-# Node 依赖
+# ==== Node ====
 node_modules/
 
-# 构建产物
+# ==== 构建产物 ====
 dist/
 build/
 *.egg-info/
 
-# 测试和 Linter 缓存
+# ==== 测试 / Linter 缓存与覆盖率产物 ====
 .pytest_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 
-# Claude MCP 配置
-.mcp.json
-
-# 数据库导出和备份
+# ==== 数据库导出：默认忽略，仅保留演示数据与迁移脚本 ====
 *.sql
+!/ad_system.sql
 !fastapi-app/migrations/*.sql
 
-# 生成的报告
+# ==== RAG 评估报告（脚本生成）====
 reports/
-
-# 本地上传文件
-files/
-fastapi-app/files/
-
-# 启动脚本（Windows/Mac）
-*.bat
-*.command
-
-# 临时开发文档
-docs/

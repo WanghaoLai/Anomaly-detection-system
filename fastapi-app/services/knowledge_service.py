@@ -97,7 +97,7 @@ EMBEDDING_PROVIDER = "dashscope"
 EMBEDDING_SCHEMA_VERSION = "dashscope-text-embedding-v1"
 # 原文件哈希相同不代表预处理结果相同。分块、PDF 清理等逻辑升级时提升
 # 该版本，同名文件下次上传会重建一次，之后仍可正常命中重复上传。
-INGESTION_SCHEMA_VERSION = "markitdown-pdf-cleanup-llamaindex-node-v1"
+INGESTION_SCHEMA_VERSION = "markitdown-pdf-cleanup-llamaindex-node-v2"
 BASE_COLLECTION_METADATA = {
     "hnsw:space": "cosine",
     "embedding_provider": EMBEDDING_PROVIDER,
@@ -885,7 +885,182 @@ class KnowledgeService:
                 "previous_doc_ids": [previous_doc_id] if previous_doc_id else [],
             }
 
-    async def astage_document_release(
+    def stage_corpus_release(
+        self,
+        entries: List[Dict],
+        *,
+        preserve_existing: bool = True,
+    ) -> dict:
+        """一次性解析多篇文档并只构建一个全量影子 release。
+
+        单篇上传接口为了事务安全会为每个文件重建一次全量索引。阶段 0 的固定
+        论文集必须避免 15 次重复发布，因此本入口先写内容寻址原文件和 DocStore，
+        最后基于同一个 catalog 构建一次候选 collection；它从不切换在线指针。
+        """
+        with _P1_RELEASE_LOCK:
+            items = list(entries or [])
+            if not items:
+                raise ValueError("批量语料不能为空")
+            filenames = [
+                self._safe_filename(str(item.get("filename") or ""))
+                for item in items
+            ]
+            if any(not filename for filename in filenames):
+                raise ValueError("批量语料存在空文件名")
+            if len(filenames) != len(set(filenames)):
+                raise ValueError("批量语料文件名不唯一")
+            if self.collection.count() > 0:
+                self._ensure_consistent_or_raise("stage_corpus_release")
+
+            active_catalog, base_guard = self._active_catalog_and_guard()
+            candidate = dict(active_catalog) if preserve_existing else {}
+            access_policies = (
+                dict(base_guard.get("access_policies") or {})
+                if preserve_existing
+                else {}
+            )
+            staged_documents = []
+            for item, source_filename in zip(items, filenames):
+                raw = bytes(item.get("file_bytes") or b"")
+                extension = os.path.splitext(source_filename)[1].lower()
+                if extension not in SUPPORTED_DOCUMENT_EXTENSIONS:
+                    raise ValueError(
+                        f"不支持的文件格式: {extension or '[无扩展名]'}"
+                    )
+                if not raw:
+                    raise ValueError(f"文件内容为空: {source_filename}")
+                expected_sha256 = str(item.get("sha256") or "")
+                actual_sha256 = sha256_bytes(raw)
+                if expected_sha256 and actual_sha256 != expected_sha256:
+                    raise ValueError(f"冻结文件 SHA256 不一致: {source_filename}")
+
+                access_policy = DocumentAccessPolicy.normalize(
+                    visibility=item.get("visibility", "internal"),
+                    allowed_roles=item.get("allowed_roles", "管理员,用户"),
+                    allowed_user_ids=item.get("allowed_user_ids", ""),
+                ).as_metadata()
+                source = self.artifact_repository.files.put(
+                    raw, source_filename, extension
+                )
+                document_id = deterministic_document_id(
+                    source_filename, source.sha256, INGESTION_SCHEMA_VERSION
+                )
+                prepared = self.prepare_document(
+                    raw,
+                    source_filename,
+                    document_id=document_id,
+                    source=source,
+                )
+                work_id = str(item.get("work_id") or "")
+                frozen_document_id = str(item.get("frozen_document_id") or "")
+                try:
+                    record = self.artifact_repository.documents.get(document_id)
+                    if record["source"].get("sha256") != source.sha256:
+                        raise RuntimeError("DocStore 来源哈希冲突")
+                    metadata = dict(record.get("metadata") or {})
+                    if work_id and metadata.get("work_id") != work_id:
+                        raise RuntimeError("DocStore work_id 与冻结语料不一致")
+                    if (
+                        frozen_document_id
+                        and metadata.get("frozen_document_id")
+                        != frozen_document_id
+                    ):
+                        raise RuntimeError(
+                            "DocStore frozen_document_id 与冻结语料不一致"
+                        )
+                except FileNotFoundError:
+                    shared_metadata = {
+                        "filename": source_filename,
+                        "extension": extension,
+                        "content_format": "markdown",
+                        "converter": "markitdown",
+                        "ingestion_schema_version": INGESTION_SCHEMA_VERSION,
+                        "work_id": work_id,
+                        "frozen_document_id": frozen_document_id,
+                        "source_sha256": source.sha256,
+                        **access_policy,
+                    }
+                    document = Document(
+                        text=prepared["markdown"],
+                        metadata=shared_metadata,
+                        document_id=document_id,
+                        source=source,
+                    )
+                    nodes = []
+                    for index, chunk in enumerate(prepared["chunks"]):
+                        metadata = dict(chunk)
+                        text = str(metadata.pop("content"))
+                        node_id = str(metadata.pop("node_id") or "")
+                        metadata.update({
+                            "chunk_index": index,
+                            "work_id": work_id,
+                            "frozen_document_id": frozen_document_id,
+                            "source_sha256": source.sha256,
+                            **access_policy,
+                        })
+                        nodes.append(Node(
+                            text=text,
+                            metadata=metadata,
+                            node_id=(
+                                node_id
+                                or deterministic_node_id(
+                                    document_id, index, text, metadata
+                                )
+                            ),
+                        ))
+                    record = self.artifact_repository.documents.put(
+                        document, nodes, prepared["diagnostics"]
+                    )
+
+                previous_doc_id = candidate.get(source_filename)
+                if previous_doc_id and previous_doc_id != document_id:
+                    access_policies.pop(previous_doc_id, None)
+                candidate[source_filename] = document_id
+                access_policies[document_id] = access_policy
+                staged_documents.append({
+                    "work_id": work_id,
+                    "frozen_document_id": frozen_document_id,
+                    "runtime_document_id": document_id,
+                    "filename": source_filename,
+                    "source_sha256": source.sha256,
+                    "file_size": source.byte_size,
+                    "chunk_count": len(record["nodes"]),
+                    "node_ids": [node["node_id"] for node in record["nodes"]],
+                    "diagnostics": dict(record.get("diagnostics") or {}),
+                    "access_policy": access_policy,
+                    "replaced_existing": (
+                        previous_doc_id is not None
+                        and previous_doc_id != document_id
+                    ),
+                })
+
+            manifest = self._build_shadow_release(
+                candidate,
+                base_guard,
+                access_policies=access_policies,
+            )
+            return {
+                "release": manifest,
+                "documents": staged_documents,
+                "preserved_existing_documents": (
+                    len(active_catalog) if preserve_existing else 0
+                ),
+                "corpus_document_count": len(staged_documents),
+            }
+
+    async def stage_corpus_release_async(
+        self,
+        entries: List[Dict],
+        *,
+        preserve_existing: bool = True,
+    ) -> dict:
+        return await self.async_ingestion_executor.run(
+            self.stage_corpus_release,
+            entries,
+            preserve_existing=preserve_existing,
+        )
+
+    async def stage_document_release_async(
         self,
         file_bytes: bytes,
         filename: str,
@@ -931,7 +1106,7 @@ class KnowledgeService:
                 "removed_sources": matched,
             }
 
-    async def astage_delete_release(self, doc_id: str) -> dict:
+    async def stage_delete_release_async(self, doc_id: str) -> dict:
         return await self.async_ingestion_executor.run(
             self.stage_delete_release, doc_id
         )
@@ -1907,6 +2082,43 @@ class KnowledgeService:
             if doc_id and policy.is_allowed(item, principal):
                 allowed.add(str(doc_id))
         return allowed
+
+    def document_digest(self, principal: AccessPrincipal) -> dict:
+        """当前发布中 principal 可访问的文档清单，供元数据问答直读。"""
+
+        pointer = self.artifact_repository.releases.active()
+        allowed = self.allowed_document_ids(principal)
+        if pointer is not None:
+            manifest = self.artifact_repository.releases.get(pointer["release_id"])
+            catalog = dict(manifest.get("catalog") or {})
+            documents = [
+                {"doc_id": str(doc_id), "filename": str(filename)}
+                for filename, doc_id in sorted(catalog.items())
+                if str(doc_id) in allowed
+            ]
+            # 权限过滤后剩的文档已不能对应全量分块数，此时不披露 chunk 统计。
+            total_chunks = (
+                int(manifest.get("node_count") or 0)
+                if len(documents) == len(catalog)
+                else 0
+            )
+            return {
+                "release_id": str(pointer.get("release_id") or ""),
+                "documents": documents,
+                "total_chunks": total_chunks,
+            }
+
+        filenames: Dict[str, str] = {}
+        for item in self.list_document_chunks():
+            doc_id = str(item.get("doc_id") or "")
+            filename = str(item.get("filename") or "").strip()
+            if doc_id and doc_id in allowed and filename:
+                filenames.setdefault(doc_id, filename)
+        documents = [
+            {"doc_id": doc_id, "filename": filename}
+            for doc_id, filename in sorted(filenames.items(), key=lambda kv: kv[1])
+        ]
+        return {"release_id": "", "documents": documents, "total_chunks": 0}
 
     def _lexical_snapshot(self) -> tuple[str, list[dict]]:
         return self.current_release_id(), self.list_document_chunks()

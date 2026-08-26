@@ -1,8 +1,8 @@
 """Markdown 语义分块算法。
 
 设计上先保证语义单元完整，再追求 Token 区间：围栏代码、命令块、
-表格和缩进代码不会被拦腰切断。当它们自身超过上限时，保留完整内容并在
-metadata 中标记超限，由后续上下文构建层决定是否摘要。
+表格和缩进代码在提供方输入上限内不会被拦腰切断。超过嵌入模型的保守字符
+上限时执行确定性安全切分，避免单个异常 PDF 块使整批索引失败。
 """
 
 from __future__ import annotations
@@ -13,9 +13,12 @@ from typing import Callable, Sequence
 from .markdown import MARKDOWN_FENCE_RE, MARKDOWN_HEADING_RE
 
 
-PARSER_SCHEMA_VERSION = "llamaindex-markdown-node-v1"
+PARSER_SCHEMA_VERSION = "llamaindex-markdown-node-v2"
 DEFAULT_TARGET_RATIO = 0.8
 DEFAULT_MIN_RATIO = 0.2
+# DashScope text-embedding-v2 的单条输入上限为 2048 tokens。字符数并不等同于
+# provider token 数，因此在离线 tokenizer 的 token 上限之外再保留字符安全阈值。
+DEFAULT_EMBEDDING_SAFE_CHARS = 1800
 
 _COMMAND_RE = re.compile(
     r"^\s*(?:(?:\$|>)\s+)?(?:sudo\s+)?(?:"
@@ -234,16 +237,48 @@ def _split_by_token_budget(
     return parts or [text]
 
 
+def _split_by_character_budget(text: str, budget: int) -> list[str]:
+    """在不超过字符硬上限的前提下优先沿换行或空白确定性切分。"""
+
+    if budget <= 0:
+        raise ValueError("字符切分上限必须大于 0")
+    remaining = text
+    parts: list[str] = []
+    while len(remaining) > budget:
+        cut = budget
+        window = remaining[: budget + 1]
+        newline = window.rfind("\n", max(1, budget // 2), budget + 1)
+        whitespace = max(
+            window.rfind(" ", max(1, budget // 2), budget + 1),
+            window.rfind("\t", max(1, budget // 2), budget + 1),
+        )
+        boundary = max(newline, whitespace)
+        if boundary > 0:
+            cut = boundary + (1 if window[boundary] == "\n" else 0)
+        part = remaining[:cut].strip()
+        if part:
+            parts.append(part)
+        remaining = remaining[cut:].lstrip()
+    if remaining.strip():
+        parts.append(remaining.strip())
+    return parts or [text]
+
+
 def _split_regular_paragraph(
     paragraph: dict,
     chunk_tokens: int,
     token_counter: Callable[[str], int],
+    embedding_safe_chars: int,
 ) -> list[dict]:
-    if _paragraph_token_len(paragraph, token_counter) <= chunk_tokens:
+    rendered_len = len(_render_paragraph(paragraph))
+    if (
+        _paragraph_token_len(paragraph, token_counter) <= chunk_tokens
+        and rendered_len <= embedding_safe_chars
+    ):
         item = dict(paragraph)
         item["token_count"] = _paragraph_token_len(item, token_counter)
         return [item]
-    if paragraph.get("protected"):
+    if paragraph.get("protected") and rendered_len <= embedding_safe_chars:
         item = dict(paragraph)
         item["token_count"] = _paragraph_token_len(item, token_counter)
         item["oversized_protected"] = item["token_count"] > chunk_tokens
@@ -252,35 +287,54 @@ def _split_regular_paragraph(
     content = str(paragraph.get("content") or "")
     heading_tokens = token_counter(str(paragraph.get("heading_markdown") or ""))
     content_budget = max(1, chunk_tokens - heading_tokens)
-    sentence_parts = [
-        match.group(0) for match in _SENTENCE_UNIT_RE.finditer(content)
-        if match.group(0).strip()
-    ]
-    packed: list[str] = []
-    current = ""
-    for sentence in sentence_parts or [content]:
-        candidate = current + sentence
-        if current.strip() and token_counter(candidate) > content_budget:
+    if paragraph.get("protected"):
+        packed = [content]
+    else:
+        sentence_parts = [
+            match.group(0) for match in _SENTENCE_UNIT_RE.finditer(content)
+            if match.group(0).strip()
+        ]
+        packed = []
+        current = ""
+        for sentence in sentence_parts or [content]:
+            candidate = current + sentence
+            if current.strip() and token_counter(candidate) > content_budget:
+                packed.append(current)
+                current = sentence.lstrip()
+            elif token_counter(sentence) > content_budget and not current.strip():
+                packed.extend(
+                    _split_by_token_budget(sentence, content_budget, token_counter)
+                )
+                current = ""
+            else:
+                current = candidate
+        if current.strip():
             packed.append(current)
-            current = sentence.lstrip()
-        elif token_counter(sentence) > content_budget and not current.strip():
-            packed.extend(
-                _split_by_token_budget(sentence, content_budget, token_counter)
-            )
-            current = ""
-        else:
-            current = candidate
-    if current.strip():
-        packed.append(current)
+
+    heading_length = len(str(paragraph.get("heading_markdown") or ""))
+    content_char_budget = max(1, embedding_safe_chars - heading_length - 2)
+    char_safe_packed: list[str] = []
+    for part in packed:
+        char_safe_packed.extend(
+            _split_by_character_budget(part, content_char_budget)
+        )
+    packed = char_safe_packed
 
     located = _find_nonempty_parts(
         content, packed, int(paragraph.get("start") or 0)
     )
     result: list[dict] = []
-    for part, start, end in located:
+    fragment_count = len(located)
+    for fragment_index, (part, start, end) in enumerate(located):
         item = dict(paragraph)
         item.update({"content": part, "start": start, "end": end})
         item["token_count"] = _paragraph_token_len(item, token_counter)
+        if fragment_count > 1 and rendered_len > embedding_safe_chars:
+            item["embedding_safe_fragment"] = True
+            item["embedding_fragment_index"] = fragment_index
+            item["embedding_fragment_count"] = fragment_count
+            if paragraph.get("protected"):
+                item["oversized_protected"] = True
         result.append(item)
     return result
 
@@ -306,6 +360,7 @@ def chunk_paragraphs(
     *,
     target_ratio: float = DEFAULT_TARGET_RATIO,
     min_ratio: float = DEFAULT_MIN_RATIO,
+    embedding_safe_chars: int = DEFAULT_EMBEDDING_SAFE_CHARS,
     token_counter: Callable[[str], int] = approx_token_len,
 ) -> list[dict]:
     """按完整语义单元聚合，返回可直接构造 TextNode 的稳定记录。"""
@@ -316,13 +371,17 @@ def chunk_paragraphs(
         raise ValueError("overlap_tokens 必须满足 0 <= overlap_tokens < chunk_tokens")
     if not 0 < min_ratio <= target_ratio <= 1:
         raise ValueError("Token 比例必须满足 0 < min_ratio <= target_ratio <= 1")
+    if embedding_safe_chars <= 0:
+        raise ValueError("embedding_safe_chars 必须大于 0")
     target_tokens = max(1, round(chunk_tokens * target_ratio))
     min_tokens = max(1, round(chunk_tokens * min_ratio))
 
     normalized: list[dict] = []
     for paragraph in paragraphs:
         normalized.extend(
-            _split_regular_paragraph(paragraph, chunk_tokens, token_counter)
+            _split_regular_paragraph(
+                paragraph, chunk_tokens, token_counter, embedding_safe_chars
+            )
         )
     chunks: list[dict] = []
     start_index = 0
@@ -332,7 +391,11 @@ def chunk_paragraphs(
         while end_index < len(normalized):
             candidate = current + [normalized[end_index]]
             candidate_tokens = token_counter(_render_chunk_markdown(candidate)) or 1
-            if current and candidate_tokens > chunk_tokens:
+            candidate_chars = len(_render_chunk_markdown(candidate))
+            if current and (
+                candidate_tokens > chunk_tokens
+                or candidate_chars > embedding_safe_chars
+            ):
                 break
             current = candidate
             end_index += 1
@@ -343,7 +406,10 @@ def chunk_paragraphs(
                 next_tokens = token_counter(
                     _render_chunk_markdown(current + [normalized[end_index]])
                 )
-                if next_tokens > chunk_tokens:
+                next_chars = len(
+                    _render_chunk_markdown(current + [normalized[end_index]])
+                )
+                if next_tokens > chunk_tokens or next_chars > embedding_safe_chars:
                     break
         if not current:
             current = [normalized[start_index]]
@@ -377,6 +443,9 @@ def chunk_paragraphs(
             "oversized_protected": any(
                 bool(item.get("oversized_protected")) for item in current
             ),
+            "embedding_safe_fragment": any(
+                bool(item.get("embedding_safe_fragment")) for item in current
+            ),
         })
         if end_index >= len(normalized):
             break
@@ -399,6 +468,7 @@ def chunk_paragraphs(
 __all__ = [
     "DEFAULT_MIN_RATIO",
     "DEFAULT_TARGET_RATIO",
+    "DEFAULT_EMBEDDING_SAFE_CHARS",
     "PARSER_SCHEMA_VERSION",
     "approx_token_len",
     "chunk_paragraphs",

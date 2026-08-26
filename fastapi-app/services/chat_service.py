@@ -14,6 +14,7 @@ from .rag.answering import (
     GroundedPromptBuilder,
     GroundingValidationError,
     HistoryAwareQueryTransformer,
+    KnowledgeMetadataAnswerer,
     PromptBuilder,
     QueryModeRouter,
     RAGGenerationPipeline,
@@ -108,6 +109,7 @@ class ChatService:
         )
         self.access_policy = KnowledgeAccessPolicy()
         self.mode_router = QueryModeRouter()
+        self.metadata_answerer = KnowledgeMetadataAnswerer()
         self.grounded_prompt_builder = GroundedPromptBuilder()
         self.answer_validator = GroundedAnswerValidator(
             minimum_faithfulness=float(
@@ -191,6 +193,17 @@ class ChatService:
 
         resolved_principal = self._principal(user_id, principal)
         trace_state = dict(audit_context or {})
+        if mode == "knowledge_metadata":
+            # 语料清单问题走服务端直读，不经向量检索也不经 LLM；
+            # 清单读取失败时退回标准检索链路，维持既有拒答兜底。
+            digest = await asyncio.to_thread(
+                self._knowledge_document_digest, resolved_principal
+            )
+            if digest is not None:
+                metadata_answer = self.metadata_answerer.answer(digest)
+                if metadata_answer is not None:
+                    return metadata_answer
+            mode = "knowledge_base"
         packed = await self._aretrieve_packed_context(
             retrieval_query,
             principal=resolved_principal,
@@ -375,6 +388,21 @@ class ChatService:
         ):
             if event.get("type") == "content":
                 yield event["content"]
+
+    def _knowledge_document_digest(self, principal: AccessPrincipal):
+        """兼容替身：知识服务未提供清单能力时返回 None 走检索链路。"""
+
+        digest_method = getattr(self.knowledge, "document_digest", None)
+        if digest_method is None:
+            return None
+        try:
+            return digest_method(principal)
+        except Exception:
+            logger.warning(
+                "知识库清单读取失败，元数据问答退回检索链路",
+                exc_info=True,
+            )
+            return None
 
     async def _aretrieve_packed_context(
         self,

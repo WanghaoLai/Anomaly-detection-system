@@ -4,7 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from common.auth import get_current_admin
 from common.result import Result
@@ -39,8 +39,9 @@ class AdminConversationCreate(BaseModel):
 
 
 class AdminMessageRequest(BaseModel):
-    conversation_id: int
-    message: str
+    # 与用户聊天一致的入口限制：超长消息不得直写数据库并进入 LLM 上下文。
+    conversation_id: int = Field(ge=1)
+    message: str = Field(min_length=1, max_length=8000)
 
 
 async def _get_owned_conversation(

@@ -102,9 +102,14 @@ async def upload_file(
     return Result.success(f"{base_url}/files/download/{relative_path}")
 
 
-@router.get("/download/{file_path:path}")
+@router.get(
+    "/download/{file_path:path}",
+    dependencies=[Depends(get_current_user)],
+)
 async def download_file(file_path: str):
     """下载文件，兼容旧的扁平结构与新的分类子目录。"""
+    # 推理结果等上传产物按用户隔离，未登录请求必须在这里被拒绝；
+    # GET 请求同源 Cookie 自动携带，前端 <img> 引用不受影响。
     if ".." in file_path or file_path.startswith("/"):
         raise CustomException("非法的文件路径")
 

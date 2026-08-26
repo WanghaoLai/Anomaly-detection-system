@@ -4,7 +4,8 @@ from tortoise import fields
 # 创建Admin的Model
 class Admin(Model):
     id = fields.IntField(pk=True, null=False)
-    username = fields.CharField(max_length=255, null=True)
+    # 与 DB 中既有的 UNIQUE KEY username 对齐；ORM 侧同样声明为唯一。
+    username = fields.CharField(max_length=255, null=True, unique=True)
     password = fields.CharField(max_length=255, null=True)
     name = fields.CharField(max_length=255, null=True)
     avatar = fields.CharField(max_length=255, null=True)
@@ -18,7 +19,8 @@ class Admin(Model):
 # 创建User的Model
 class User(Model):
     id = fields.IntField(pk=True, null=False)
-    username = fields.CharField(max_length=255, null=True)
+    # 唯一索引是并发注册的最终裁决；应用层"先查后建"只是友好预检。
+    username = fields.CharField(max_length=255, null=True, unique=True)
     password = fields.CharField(max_length=255, null=True)
     name = fields.CharField(max_length=255, null=True)
     avatar = fields.CharField(max_length=255, null=True)
@@ -31,10 +33,10 @@ class User(Model):
 
 class AuthSession(Model):
     id = fields.CharField(max_length=36, pk=True)
-    user_id = fields.IntField(index=True)
-    role = fields.CharField(max_length=20, index=True)
+    user_id = fields.IntField(db_index=True)
+    role = fields.CharField(max_length=20, db_index=True)
     refresh_jti = fields.CharField(max_length=64, unique=True)
-    expires_at = fields.DatetimeField(index=True)
+    expires_at = fields.DatetimeField(db_index=True)
     revoked_at = fields.DatetimeField(null=True)
     created_at = fields.DatetimeField(auto_now_add=True)
     updated_at = fields.DatetimeField(auto_now=True)
@@ -129,14 +131,14 @@ class RagRetrievalTrace(Model):
 
     id = fields.CharField(max_length=36, pk=True)
     conversation_type = fields.CharField(max_length=16, null=True)
-    conversation_id = fields.IntField(null=True, index=True)
-    message_id = fields.IntField(null=True, index=True)
+    conversation_id = fields.IntField(null=True, db_index=True)
+    message_id = fields.IntField(null=True, db_index=True)
     principal_role = fields.CharField(max_length=20, null=True)
-    principal_id = fields.IntField(null=True, index=True)
-    query_hash = fields.CharField(max_length=64, index=True)
+    principal_id = fields.IntField(null=True, db_index=True)
+    query_hash = fields.CharField(max_length=64, db_index=True)
     mode = fields.CharField(max_length=24, default='knowledge_base')
-    release_id = fields.CharField(max_length=64, null=True, index=True)
-    status = fields.CharField(max_length=24, default='completed', index=True)
+    release_id = fields.CharField(max_length=64, null=True, db_index=True)
+    status = fields.CharField(max_length=24, default='completed', db_index=True)
     error_code = fields.CharField(max_length=64, null=True)
     embedding_provider = fields.CharField(max_length=64, null=True)
     embedding_model = fields.CharField(max_length=128, null=True)
@@ -149,7 +151,7 @@ class RagRetrievalTrace(Model):
     token_usage = fields.JSONField(null=True)
     candidates = fields.JSONField(null=True)
     citation_map = fields.JSONField(null=True)
-    created_at = fields.DatetimeField(auto_now_add=True, index=True)
+    created_at = fields.DatetimeField(auto_now_add=True, db_index=True)
     completed_at = fields.DatetimeField(null=True)
 
     class Meta:
@@ -159,7 +161,7 @@ class RagRetrievalTrace(Model):
 class Dataset(Model):
     id = fields.IntField(pk=True, null=False)
     dataset_no = fields.CharField(max_length=26, null=False, unique=True, description='数据集编号')
-    name = fields.CharField(max_length=255, null=False, index=True, description='数据集名称')
+    name = fields.CharField(max_length=255, null=False, db_index=True, description='数据集名称')
     description = fields.TextField(null=True, description='数据集描述')
     domain_type = fields.CharField(max_length=64, null=True, description='数据集领域类型')
     created_by = fields.ForeignKeyField('models.Admin', null=False, related_name='datasets', source_field='created_by', description='创建人')
@@ -187,7 +189,7 @@ class DatasetInfo(Model):
 class Algorithm(Model):
     id = fields.IntField(pk=True, null=False)
     algorithm_no = fields.CharField(max_length=26, null=False, unique=True, description='算法编号')
-    name = fields.CharField(max_length=255, null=False, index=True, description='算法名称')
+    name = fields.CharField(max_length=255, null=False, db_index=True, description='算法名称')
     abbreviation = fields.CharField(max_length=64, null=True, description='算法简称/缩写')
     description = fields.TextField(null=True, description='算法描述')
     task_category = fields.CharField(max_length=64, null=False, default='ANOMALY_DETECTION', description='任务类别')
@@ -228,8 +230,8 @@ class AlgorithmInfo(Model):
 class TrainingJob(Model):
     id = fields.BigIntField(pk=True)
     job_no = fields.CharField(max_length=36, unique=True, description='训练任务编号')
-    owner_id = fields.IntField(index=True, description='系统用户或管理员 ID')
-    owner_role = fields.CharField(max_length=20, index=True, description='任务所有者角色')
+    owner_id = fields.IntField(db_index=True, description='系统用户或管理员 ID')
+    owner_role = fields.CharField(max_length=20, db_index=True, description='任务所有者角色')
     algorithm = fields.ForeignKeyField(
         'models.Algorithm',
         related_name='training_jobs',
@@ -242,10 +244,10 @@ class TrainingJob(Model):
         source_field='dataset_id',
         on_delete=fields.RESTRICT,
     )
-    status = fields.CharField(max_length=24, index=True, default='QUEUED')
+    status = fields.CharField(max_length=24, db_index=True, default='QUEUED')
     config_json = fields.JSONField(description='用户参数与固定运行配置快照')
     runtime_snapshot_json = fields.JSONField(null=True, description='实际运行环境快照')
-    assigned_gpu = fields.IntField(null=True, index=True)
+    assigned_gpu = fields.IntField(null=True, db_index=True)
     remote_control_dir = fields.CharField(max_length=500, null=True)
     remote_run_dir = fields.CharField(max_length=500, null=True)
     launcher_pid = fields.IntField(null=True)
@@ -253,20 +255,20 @@ class TrainingJob(Model):
     process_pid = fields.IntField(null=True)
     process_pgid = fields.IntField(null=True)
     exit_code = fields.IntField(null=True)
-    failure_code = fields.CharField(max_length=40, null=True, index=True)
+    failure_code = fields.CharField(max_length=40, null=True, db_index=True)
     failure_reason = fields.CharField(max_length=1000, null=True)
-    retry_of_job_id = fields.BigIntField(null=True, index=True)
+    retry_of_job_id = fields.BigIntField(null=True, db_index=True)
     attempt = fields.IntField(default=1)
     progress_percent = fields.FloatField(default=0)
     current_epoch = fields.IntField(null=True)
     total_epochs = fields.IntField(null=True)
     log_offset = fields.BigIntField(default=0)
     timeout_seconds = fields.IntField(null=True)
-    cleanup_status = fields.CharField(max_length=20, default='RETAINED', index=True)
+    cleanup_status = fields.CharField(max_length=20, default='RETAINED', db_index=True)
     cleaned_at = fields.DatetimeField(null=True)
     reconcile_failures = fields.IntField(default=0)
-    archived_at = fields.DatetimeField(null=True, index=True)
-    archived_by = fields.IntField(null=True, index=True)
+    archived_at = fields.DatetimeField(null=True, db_index=True)
+    archived_by = fields.IntField(null=True, db_index=True)
     submitted_at = fields.DatetimeField(auto_now_add=True)
     started_at = fields.DatetimeField(null=True)
     finished_at = fields.DatetimeField(null=True)
@@ -288,10 +290,10 @@ class TrainingEvent(Model):
         on_delete=fields.CASCADE,
     )
     sequence = fields.IntField()
-    event_type = fields.CharField(max_length=40, index=True)
+    event_type = fields.CharField(max_length=40, db_index=True)
     message = fields.CharField(max_length=1000, null=True)
     payload_json = fields.JSONField(null=True)
-    created_at = fields.DatetimeField(auto_now_add=True, index=True)
+    created_at = fields.DatetimeField(auto_now_add=True, db_index=True)
 
     class Meta:
         table = 'training_events'
@@ -306,7 +308,7 @@ class TrainingMetric(Model):
         source_field='job_id',
         on_delete=fields.CASCADE,
     )
-    metric_name = fields.CharField(max_length=64, index=True)
+    metric_name = fields.CharField(max_length=64, db_index=True)
     metric_value = fields.FloatField()
     epoch = fields.IntField(null=True)
     step = fields.IntField(null=True)
@@ -329,7 +331,7 @@ class TrainingLog(Model):
     stream = fields.CharField(max_length=20, default='STDOUT')
     content = fields.TextField()
     remote_offset = fields.BigIntField(default=0)
-    created_at = fields.DatetimeField(auto_now_add=True, index=True)
+    created_at = fields.DatetimeField(auto_now_add=True, db_index=True)
 
     class Meta:
         table = 'training_logs'
@@ -345,12 +347,12 @@ class TrainingArtifact(Model):
         source_field='job_id',
         on_delete=fields.CASCADE,
     )
-    artifact_type = fields.CharField(max_length=40, index=True)
-    artifact_role = fields.CharField(max_length=40, default='OTHER', index=True)
+    artifact_type = fields.CharField(max_length=40, db_index=True)
+    artifact_role = fields.CharField(max_length=40, default='OTHER', db_index=True)
     name = fields.CharField(max_length=255)
     remote_path = fields.CharField(max_length=1000)
     size_bytes = fields.BigIntField(default=0)
-    downloadable = fields.BooleanField(default=True, index=True)
+    downloadable = fields.BooleanField(default=True, db_index=True)
     metadata_json = fields.JSONField(null=True)
     created_at = fields.DatetimeField(auto_now_add=True)
 
@@ -367,13 +369,13 @@ class TrainingAudit(Model):
         source_field='job_id',
         on_delete=fields.CASCADE,
     )
-    actor_id = fields.IntField(null=True, index=True)
-    actor_role = fields.CharField(max_length=20, default='系统', index=True)
-    action = fields.CharField(max_length=40, index=True)
+    actor_id = fields.IntField(null=True, db_index=True)
+    actor_role = fields.CharField(max_length=20, default='系统', db_index=True)
+    action = fields.CharField(max_length=40, db_index=True)
     result = fields.CharField(max_length=20, default='SUCCESS')
     message = fields.CharField(max_length=1000, null=True)
     payload_json = fields.JSONField(null=True)
-    created_at = fields.DatetimeField(auto_now_add=True, index=True)
+    created_at = fields.DatetimeField(auto_now_add=True, db_index=True)
 
     class Meta:
         table = 'training_audits'
@@ -384,18 +386,18 @@ class TrainingJobDeletion(Model):
     """物理删除后的最小审计存根，不与 training_jobs 建立外键。"""
 
     id = fields.BigIntField(pk=True)
-    original_job_id = fields.BigIntField(index=True)
+    original_job_id = fields.BigIntField(db_index=True)
     job_no = fields.CharField(max_length=36, unique=True)
-    owner_id = fields.IntField(index=True)
+    owner_id = fields.IntField(db_index=True)
     owner_role = fields.CharField(max_length=20)
     algorithm_id = fields.BigIntField()
     dataset_id = fields.BigIntField()
     terminal_status = fields.CharField(max_length=24)
-    actor_id = fields.IntField(index=True)
+    actor_id = fields.IntField(db_index=True)
     actor_role = fields.CharField(max_length=20, default='管理员')
     reason = fields.CharField(max_length=500)
     snapshot_json = fields.JSONField()
-    deleted_at = fields.DatetimeField(auto_now_add=True, index=True)
+    deleted_at = fields.DatetimeField(auto_now_add=True, db_index=True)
 
     class Meta:
         table = 'training_job_deletions'
@@ -406,18 +408,18 @@ class InferenceJob(Model):
 
     id = fields.BigIntField(pk=True)
     job_no = fields.CharField(max_length=36, unique=True)
-    owner_id = fields.IntField(index=True)
-    owner_role = fields.CharField(max_length=20, index=True)
+    owner_id = fields.IntField(db_index=True)
+    owner_role = fields.CharField(max_length=20, db_index=True)
     training_job = fields.ForeignKeyField(
         'models.TrainingJob',
         related_name='inference_jobs',
         source_field='training_job_id',
         on_delete=fields.RESTRICT,
     )
-    status = fields.CharField(max_length=24, index=True, default='QUEUED')
+    status = fields.CharField(max_length=24, db_index=True, default='QUEUED')
     config_json = fields.JSONField(description='推理参数与适配器快照')
     result_json = fields.JSONField(null=True, description='推理指标与输出清单')
-    assigned_gpu = fields.IntField(null=True, index=True)
+    assigned_gpu = fields.IntField(null=True, db_index=True)
     remote_control_dir = fields.CharField(max_length=500, null=True)
     remote_run_dir = fields.CharField(max_length=500, null=True)
     launcher_pid = fields.IntField(null=True)

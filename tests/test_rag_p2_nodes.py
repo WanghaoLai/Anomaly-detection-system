@@ -12,7 +12,10 @@ from llama_index.core.schema import NodeRelationship, TextNode  # noqa: E402
 
 from services.rag.core.contracts import Document, SourceInfo  # noqa: E402
 from services.rag.document.parsing import MarkdownNodeParser  # noqa: E402
-from services.rag.document.splitting import PARSER_SCHEMA_VERSION  # noqa: E402
+from services.rag.document.splitting import (  # noqa: E402
+    DEFAULT_EMBEDDING_SAFE_CHARS,
+    PARSER_SCHEMA_VERSION,
+)
 
 
 class RagP2NodeParserTests(unittest.TestCase):
@@ -146,6 +149,26 @@ class RagP2NodeParserTests(unittest.TestCase):
             [dict(node.metadata) for node in first],
             [dict(node.metadata) for node in second],
         )
+
+    def test_oversized_protected_and_unbroken_text_are_embedding_safe(self):
+        long_table = "| column |\n| --- |\n| " + ("formula_value " * 500) + "|"
+        unbroken = "x" * (DEFAULT_EMBEDDING_SAFE_CHARS * 2 + 73)
+        markdown = f"# Appendix\n\n{long_table}\n\n## Raw\n\n{unbroken}"
+
+        first = MarkdownNodeParser(500, 50).parse(self._document(markdown))
+        second = MarkdownNodeParser(500, 50).parse(self._document(markdown))
+
+        self.assertGreater(len(first), 2)
+        self.assertTrue(
+            all(len(node.text) <= DEFAULT_EMBEDDING_SAFE_CHARS for node in first)
+        )
+        self.assertTrue(
+            any(node.metadata["embedding_safe_fragment"] for node in first)
+        )
+        self.assertTrue(
+            any(node.metadata["oversized_protected"] for node in first)
+        )
+        self.assertEqual([node.node_id for node in first], [node.node_id for node in second])
 
 
 if __name__ == "__main__":
