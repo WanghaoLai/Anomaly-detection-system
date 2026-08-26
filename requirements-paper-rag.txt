@@ -1,0 +1,4 @@
+# 阶段 1 的可选重依赖。主应用未安装时会显式回退 MarkItDown。
+# Docling PDF 模型权重需另行预取；GROBID 使用进程外 HTTP 服务，无 Python SDK。
+-r requirements.txt
+docling==2.120.3

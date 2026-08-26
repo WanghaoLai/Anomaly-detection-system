@@ -117,6 +117,13 @@ class RagArchitectureRefactorTests(unittest.TestCase):
     def test_production_code_has_no_legacy_flat_imports(self):
         self.assertEqual(scan_production_imports(), [])
 
+    def test_paper_provider_types_do_not_leak_into_core_contracts(self):
+        core_source = (
+            BACKEND_DIR / "services" / "rag" / "core" / "contracts.py"
+        ).read_text(encoding="utf-8").casefold()
+        self.assertNotIn("docling", core_source)
+        self.assertNotIn("grobid", core_source)
+
 
 if __name__ == "__main__":
     unittest.main()

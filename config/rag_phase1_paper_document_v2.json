@@ -1,0 +1,199 @@
+{
+  "schema_version": "rag-phase1-result-v1",
+  "phase": 1,
+  "implementation_status": "complete",
+  "candidate_status": "validated_not_published_degraded",
+  "frozen_at": "2026-08-26T01:45:36+00:00",
+  "candidate_id": "f03d6b8f0eb934a3ee9cb559c36349a7",
+  "active_baseline_release_id": "b17672e25ed44ee793a8799def2d968e",
+  "paper_document_schema_version": "paper-document-v2",
+  "paper_ingestion_schema_version": "paper-pdf-docling-grobid-v3",
+  "parser_profile": "paper_pdf_v1",
+  "provider_state": {
+    "requested_parser": "docling",
+    "docling_available": false,
+    "grobid_configured": false,
+    "effective_parser": "markitdown",
+    "fallback_is_explicit": true
+  },
+  "quality": {
+    "documents": 15,
+    "blocks": 226,
+    "publish_eligible_documents": 15,
+    "degraded_documents": 15,
+    "blocked_documents": 0,
+    "manual_review_work_ids": [
+      "self-training-survey-2021"
+    ],
+    "stable_rebuild_required": true
+  },
+  "inputs": {
+    "corpus_id": "industrial_anomaly_papers_baseline_v1",
+    "corpus_manifest_sha256": "3e09f47321f161bb36785127453edfb59d2d4839b588cb875c4f2c7f93407008",
+    "candidate_report_sha256": "94536666bd0f1b6b5238346e27b7027f44380198e4006cd3c6d97f0936b1a6e8"
+  },
+  "documents": [
+    {
+      "work_id": "aluminum-multiscale-aggregation-2024",
+      "filename": "Aluminum surface defect classification based on multi-scale feature aggregation.pdf",
+      "source_sha256": "6c3e03cf8e280af064209f381dae9128db4e3071fc7ad712cbf71a7190d020dd",
+      "paper_document_id": "d7c1afdc20a096b71640f8f29496877e",
+      "normalized_markdown_sha256": "6678190334be6c59c67f7a3dd4d41b272d6a5d5921686abaef38bcf03838c36b",
+      "block_ids_sha256": "e4e1efc5d7b2333b067eb88569a25b0c3dc3696bcd74c776e95882f318fbdb4d",
+      "block_count": 45,
+      "quality_status": "degraded"
+    },
+    {
+      "work_id": "efficientad-2024",
+      "filename": "Batzner 等 - 2024 - EfficientAD Accurate Visual Anomaly Detection at Millisecond-Level Latencies.pdf",
+      "source_sha256": "d7658c53a9ccdbcd3a5bc56f1943b42c912f74c4a792c6498985a52b9135b5b6",
+      "paper_document_id": "da57fd82b194b730869740ef95ece123",
+      "normalized_markdown_sha256": "77074c5fcfb1da1012c634953d78851e0fdccbbc234b65ae7bd25ed365a90bde",
+      "block_ids_sha256": "2236eaeaa4722a4765acf21984a5b44ff88baccbc7b2c567bb29b529b164b905",
+      "block_count": 27,
+      "quality_status": "degraded"
+    },
+    {
+      "work_id": "cras-2025",
+      "filename": "Chen 等 - 2025 - Center-Aware Residual Anomaly Synthesis for Multiclass Industrial Anomaly Detection.pdf",
+      "source_sha256": "96d9270010e94caf0f15045d45005eb40808641c9e06b32f619c6eb3899e8a0d",
+      "paper_document_id": "eb22d9d78df9fe43ca8698249e99bfd1",
+      "normalized_markdown_sha256": "451566d26ad4c4486c1b22ddb550fe67881b6ae76f232d2f96c154fef6c062b6",
+      "block_ids_sha256": "5139e7a5e67b3f0f35c44b3ea208ef56b2e43bbf7291b9369f0623626295710a",
+      "block_count": 11,
+      "quality_status": "degraded"
+    },
+    {
+      "work_id": "pbas-2025",
+      "filename": "Chen 等 - 2025 - Progressive Boundary Guided Anomaly Synthesis for Industrial Anomaly Detection.pdf",
+      "source_sha256": "9d276609e1fdd189817b7006cee7f5242d9f659a8d3bac361de8cbc534f3baf3",
+      "paper_document_id": "98ff89b6cf64c75113e8b9f9c1c0dfe9",
+      "normalized_markdown_sha256": "8d6cebfd7d581ce567ae2abbaec0cbcacd697be271fe734fa9aff6998532a40a",
+      "block_ids_sha256": "27a95e4d918caea7165502187c78d520800f2284cad50a00cc65517de29017f7",
+      "block_count": 16,
+      "quality_status": "degraded"
+    },
+    {
+      "work_id": "mambaad-2025",
+      "filename": "He 等 - 2025 - MambaAD Exploring State Space Models for Multi-class Unsupervised Anomaly Detection.pdf",
+      "source_sha256": "e116bfbbfb1945d04a7f89a0e4e6f741068c42c0c89f4c1fdcaa28d5e199a3e3",
+      "paper_document_id": "8e19a57bbe44f706e4c5afb32bb07bea",
+      "normalized_markdown_sha256": "56bd6fe7a7da8d1fa5914bff0eb5b15b5bf016cda7b51a5186c137664e41e186",
+      "block_ids_sha256": "eb12ff1f857f8b75433560d36fc59a25c3705e30a942934cd4ffe1d0a2dfe092",
+      "block_count": 19,
+      "quality_status": "degraded"
+    },
+    {
+      "work_id": "visualad-2026",
+      "filename": "Hou 等 - 2026 - VisualAD Language-Free Zero-Shot Anomaly Detection via Vision Transformer.pdf",
+      "source_sha256": "15d9f9adeb136f44ba0218be87dacdc6d06643a8bb78f07449ae8e21bbfbd0fe",
+      "paper_document_id": "d9663b32805ed4437c7f9310e9b20ae1",
+      "normalized_markdown_sha256": "30c877ee9221d87822ff284d47fdcdc2a1d5db1e917d780e7b106781cb67a0c5",
+      "block_ids_sha256": "3f2896d92b7484d8b5a1a1b47a44d9ee9fc97a67db2ec07f6526555b77a682be",
+      "block_count": 11,
+      "quality_status": "degraded"
+    },
+    {
+      "work_id": "msfr-2024",
+      "filename": "Iqbal 等 - 2024 - Multi-scale feature reconstruction network for industrial anomaly detection.pdf",
+      "source_sha256": "a56b442b6380f42f24ee392f99586174fe349ca34dc5aa12f620f50c5b9976db",
+      "paper_document_id": "030b50e5d329e1908de0ae00f4294dea",
+      "normalized_markdown_sha256": "fc6fbc6502d726d5f5bf983dac30d34b82d761cd79435a270d76849f417a174a",
+      "block_ids_sha256": "947e2470be2595d189497e47d72345e6c6f85dd5bdc463d7f568d0aa305d2de2",
+      "block_count": 13,
+      "quality_status": "degraded"
+    },
+    {
+      "work_id": "simplenet-2023",
+      "filename": "Liu 等 - 2023 - SimpleNet A Simple Network for Image Anomaly Detection and Localization.pdf",
+      "source_sha256": "a423fb11b84a6fdfdce1dde1443be9daf65351d3cdc64a3f8bd6028ebf5c60dd",
+      "paper_document_id": "2b85bba7fa1a9ac4a0447d857b10b165",
+      "normalized_markdown_sha256": "5c339375b9587a5d0c208a393421d157cd17385d87f64098ddba66c978173d6d",
+      "block_ids_sha256": "55865370c4116212cd5cc3005afc0ac6ea6553d4d7a317301617d3be440a3e71",
+      "block_count": 12,
+      "quality_status": "degraded"
+    },
+    {
+      "work_id": "maskad-2026",
+      "filename": "Lu 等 - 2026 - MaskAD Parallel Masked Autoencoder for Multi-class Unsupervised Anomaly Detection.pdf",
+      "source_sha256": "df093c0b5a87a421df9d72f9127ac74220b040cf3d2af1d9468089d2b986ec37",
+      "paper_document_id": "7bb231c58fae6456b6bec69a23cb3c6f",
+      "normalized_markdown_sha256": "e9a017d20ee7be1cff0ebef2d9fd9b175a86c92b9c6460bf4345bfc4dd91a863",
+      "block_ids_sha256": "4f840d752893b30063911b02f13b79db2842e3fa80238bdadae2f01a573c7cf1",
+      "block_count": 9,
+      "quality_status": "degraded"
+    },
+    {
+      "work_id": "multi-ad-cross-domain-2026",
+      "filename": "Multi-AD cross-domain unsupervised anomaly detection for medical and  industrial applications.pdf",
+      "source_sha256": "cf11b8e5b16b1b34ef5f9b08d5388e83afb675ddaa9ccb9c573e6a2fdf164b6b",
+      "paper_document_id": "dfc1218e70afc983754af0d701fc6993",
+      "normalized_markdown_sha256": "1c5af8142b32875223e681ee620c1c7904f84c15e58b8ffefca4c84f81e136be",
+      "block_ids_sha256": "8bda76e76e2c178d89b129bb7ec3bf0ce1966603daa6daa964446193ae9cf151",
+      "block_count": 12,
+      "quality_status": "degraded"
+    },
+    {
+      "work_id": "patchcore-2022",
+      "filename": "Roth 等 - 2022 - Towards Total Recall in Industrial Anomaly Detection.pdf",
+      "source_sha256": "79c0ed753dbdd0c934b39e74c310da0ed50dbd7cc08f6577e1e29a3f4b199764",
+      "paper_document_id": "1e4610f2d00c3d6350113e4fd5e589f4",
+      "normalized_markdown_sha256": "fc309bb7da082e71ad63fe06d10c1bb3a53fb174224cd5a823e7459900bca99e",
+      "block_ids_sha256": "4a6fc24d3040c6dba673fe916aba6de58cd5a142172bec69632ca1f0bbe476cd",
+      "block_count": 11,
+      "quality_status": "degraded"
+    },
+    {
+      "work_id": "anomalyany-2025",
+      "filename": "Sun 等 - 2025 - Anomaly Anything Promptable Unseen Visual Anomaly Generation.pdf",
+      "source_sha256": "805ddb6daa190fce5c9bfbac9af2eaad596d4102dcb7a2f8476bb877adcfb0e6",
+      "paper_document_id": "771eece6e86925135746726a5f72886f",
+      "normalized_markdown_sha256": "070deaf711b0f77ec0cbeb4b6c6aa6c59c0a13a21de840eba9798792628879ae",
+      "block_ids_sha256": "50750986c3f19788f4048775e79a50bcd95c7ebf490f39fea5853d5684ac45a7",
+      "block_count": 10,
+      "quality_status": "degraded"
+    },
+    {
+      "work_id": "prn-2023",
+      "filename": "Zhang 等 - 2023 - Prototypical Residual Networks for Anomaly Detection and Localization.pdf",
+      "source_sha256": "f047228dcfc84ff7778580afa7a727c1a8751fd2aeec21c57a3374170abac813",
+      "paper_document_id": "ce22948a57eff3421b07f8f66fcc8720",
+      "normalized_markdown_sha256": "f6d3cb745368479ab595070dff30ed5f088d8580ee7f2998e14d4d689ae44996",
+      "block_ids_sha256": "1ccff600033b923b1ff47233f202b37e74234b7fe303ef04a18525e6de5d595d",
+      "block_count": 11,
+      "quality_status": "degraded"
+    },
+    {
+      "work_id": "realnet-2024",
+      "filename": "Zhang 等 - 2024 - RealNet A Feature Selection Network with Realistic Synthetic Anomaly for Anomaly Detection.pdf",
+      "source_sha256": "ebbc765d7c6e7106d72033797481f6262a68cc15c77f8937f537b08f3c23d088",
+      "paper_document_id": "df263312804654e3ce00f35fab76d26b",
+      "normalized_markdown_sha256": "d90dfe88ee9dced19126ecc4271507c85a128409b396a7ead55ec1ff3d796f51",
+      "block_ids_sha256": "66e852bdee5b8538eb0025687b6194284b96532b0a37c69e4227ac70b4a6fd65",
+      "block_count": 10,
+      "quality_status": "degraded"
+    },
+    {
+      "work_id": "self-training-survey-2021",
+      "filename": "半监督自训练方法综述.pdf",
+      "source_sha256": "cc858caa8f31528bd794628ab144f62a27bb42d182c6723554744806808761f7",
+      "paper_document_id": "083f58edfcdfbbc78bb693c5a7ca79dc",
+      "normalized_markdown_sha256": "3022b8d5e2b5ed11e0088af019e984dbcdcd51d73da971d21fb824543ac4016b",
+      "block_ids_sha256": "8f628e2903b628ad52d0079cf942b51d339ca88101b562ffeff154bd69a4f082",
+      "block_count": 9,
+      "quality_status": "degraded"
+    }
+  ],
+  "invariants": {
+    "active_release_unchanged": true,
+    "legacy_docstore_unchanged": true,
+    "online_retrieval_unchanged": true,
+    "provider_types_isolated_from_core": true
+  },
+  "known_limitations": [
+    "本机未安装 Docling 及模型权重，15 篇真实候选使用 MarkItDown 显式降级路径",
+    "本机未配置 GROBID，学术元数据由冻结目录补空，未执行 TEI 服务增强",
+    "半监督自训练方法综述存在 PDF 字体映射异常，已标记人工视觉复核",
+    "父子节点与多粒度索引属于阶段 2，本阶段不发布候选"
+  ]
+}

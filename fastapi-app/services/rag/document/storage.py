@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..core.contracts import Document, Node, SourceInfo
+from .paper_model import PAPER_DOCUMENT_SCHEMA_VERSION, PaperDocument
 
 
 DOCUMENT_SCHEMA_VERSION = "unified-document-v1"
@@ -213,6 +214,77 @@ class JsonDocumentStore:
                 raise ValueError(f"DocStore Node 正文 SHA256 不一致: {node_id}")
 
 
+class JsonPaperDocumentStore:
+    """PaperDocument v2 旁路事实源；不覆盖活动 unified-document-v1。"""
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+
+    def path_for(self, document_id: str) -> Path:
+        if not document_id or any(
+            ch not in "0123456789abcdef-" for ch in document_id
+        ):
+            raise ValueError("PaperDocument document_id 无效")
+        return _safe_storage_path(
+            self.root, f"paper_docstore_v2/{document_id}.json"
+        )
+
+    def put(self, paper_document: PaperDocument) -> dict:
+        record = paper_document.to_record()
+        self.validate_record(record)
+        path = self.path_for(paper_document.document_id)
+        payload = _canonical_json(record)
+        if path.exists() and path.read_bytes() != payload:
+            raise RuntimeError(
+                "PaperDocument v2 稳定 ID 冲突: "
+                f"{paper_document.document_id}"
+            )
+        if not path.exists():
+            _atomic_write(path, payload)
+        return record
+
+    def get(self, document_id: str) -> dict:
+        path = self.path_for(document_id)
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"PaperDocument v2 不存在: {document_id}"
+            )
+        record = json.loads(path.read_text(encoding="utf-8"))
+        self.validate_record(record)
+        return record
+
+    @staticmethod
+    def validate_record(record: dict) -> None:
+        if record.get("schema_version") != PAPER_DOCUMENT_SCHEMA_VERSION:
+            raise ValueError("PaperDocument schema_version 不一致")
+        document_id = str(record.get("document_id") or "")
+        markdown = record.get("normalized_markdown")
+        if not document_id or not isinstance(markdown, str) or not markdown.strip():
+            raise ValueError("PaperDocument 身份或正文无效")
+        if sha256_bytes(markdown.encode("utf-8")) != record.get(
+            "normalized_markdown_sha256"
+        ):
+            raise ValueError("PaperDocument 正文 SHA256 不一致")
+        block_ids = []
+        for block in record.get("blocks") or []:
+            block_id = str(block.get("block_id") or "")
+            if not block_id or block_id in block_ids:
+                raise ValueError(f"PaperDocument Block ID 缺失或重复: {block_id}")
+            block_ids.append(block_id)
+        actual_block_hash = hashlib.sha256(
+            "\n".join(block_ids).encode("utf-8")
+        ).hexdigest()
+        if actual_block_hash != record.get("block_ids_sha256"):
+            raise ValueError("PaperDocument Block 集合 SHA256 不一致")
+        valid_ids = set(block_ids)
+        for relation in record.get("relations") or []:
+            if (
+                relation.get("source_id") not in valid_ids
+                or relation.get("target_id") not in valid_ids
+            ):
+                raise ValueError("PaperDocument relation 引用未知 Block")
+
+
 class ReleaseManifestStore:
     """保存不可变候选集合与单一原子发布指针。"""
 
@@ -290,6 +362,7 @@ class KnowledgeArtifactRepository:
         self.root = Path(root)
         self.files = ContentAddressedFileStore(self.root)
         self.documents = JsonDocumentStore(self.root)
+        self.paper_documents = JsonPaperDocumentStore(self.root)
         self.releases = ReleaseManifestStore(self.root)
 
 
@@ -324,6 +397,7 @@ __all__ = [
     "ContentAddressedFileStore",
     "DOCUMENT_SCHEMA_VERSION",
     "JsonDocumentStore",
+    "JsonPaperDocumentStore",
     "KnowledgeArtifactRepository",
     "NODE_SCHEMA_VERSION",
     "RELEASE_SCHEMA_VERSION",

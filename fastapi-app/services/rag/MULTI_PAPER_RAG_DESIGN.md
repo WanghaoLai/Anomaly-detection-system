@@ -1078,6 +1078,12 @@ Embedding v4、Cross-Encoder、NLI 和 Qdrant 应分别做消融，不把多个�
 
 ### 阶段 1：论文解析与 PaperDocument v2
 
+> 实施状态（2026-08-26）：阶段 1 代码与旁路候选已完成，详见
+> `MULTI_PAPER_PHASE1.md`。15 篇冻结论文生成 226 个 PaperDocument v2
+> 结构块，0 篇阻断；活动 `baseline_v1` release 未变化。当前机器未安装
+> Docling 模型且未配置 GROBID，真实候选全部通过 MarkItDown 显式降级路径，
+> 因而候选保持 `validated_not_published_degraded`，不提前进入阶段 2 发布。
+
 - 接入 Docling 适配器和解析路由。
 - 接入 GROBID 元数据补充，保留 MarkItDown 回退。
 - 扩展 DocStore schema、解析诊断和稳定 ID。

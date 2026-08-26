@@ -89,3 +89,6 @@ release、模型/Prompt 版本、候选分数、K 到来源的映射、估算 To
 
 阶段 0 多论文最终冻结语料、黄金评测集、release 与评测基线见
 `MULTI_PAPER_BASELINE_V1.md`。
+
+阶段 1 的 PaperDocument v2、Docling/GROBID 适配边界、真实旁路候选和
+降级状态见 `MULTI_PAPER_PHASE1.md`。
