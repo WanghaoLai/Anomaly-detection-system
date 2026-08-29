@@ -26,10 +26,9 @@ class FilesDownloadAuthTests(unittest.TestCase):
 
     def test_download_with_forged_cookie_only_is_unauthorized(self):
         # 伪造的 Access Cookie 无法通过签名与会话校验，同样拒绝。
-        response = _client().get(
-            "/files/download/inference/20260822_deadbeef.png",
-            cookies={"access_token": "not-a-valid-jwt"},
-        )
+        client = _client()
+        client.cookies.set("access_token", "not-a-valid-jwt")
+        response = client.get("/files/download/inference/20260822_deadbeef.png")
         self.assertEqual(response.status_code, 401)
 
     def test_upload_route_is_unchanged_and_also_requires_auth(self):

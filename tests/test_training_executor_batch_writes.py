@@ -52,7 +52,7 @@ class TrainingExecutorBatchWritesTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     async def _shutdown_db():
         await connections.close_all(discard=True)
-        Tortoise._reset_apps()
+        await Tortoise._reset_apps()
 
     async def test_concurrent_events_get_distinct_sequences(self):
         await asyncio.gather(*[

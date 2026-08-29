@@ -193,7 +193,7 @@ class InferenceLivenessTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     async def _shutdown_db():
         await connections.close_all(discard=True)
-        Tortoise._reset_apps()
+        await Tortoise._reset_apps()
 
     async def _reconcile_with(self, sftp, *, run_exit_status):
         connection = _FakeConnection(sftp, run_exit_status=run_exit_status)

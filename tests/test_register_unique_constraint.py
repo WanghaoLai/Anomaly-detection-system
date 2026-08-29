@@ -37,7 +37,7 @@ class RegisterUniqueConstraintTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     async def _shutdown_db():
         await connections.close_all(discard=True)
-        Tortoise._reset_apps()
+        await Tortoise._reset_apps()
 
     async def test_duplicate_precheck_returns_friendly_error(self):
         first = await self.register(
@@ -76,7 +76,7 @@ class RegisterUniqueConstraintTests(unittest.IsolatedAsyncioTestCase):
     async def test_unique_index_exists_in_schema(self):
         # ORM 侧声明与 DB 侧迁移（011）必须一致；schema 由声明生成，
         # 此处同时守住"未来有人移除 unique=True"的回归。
-        described = Tortoise.describe_model(User)
+        described = User.describe()
         unique_fields = {
             field["name"]
             for field in described["data_fields"]

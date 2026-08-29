@@ -49,7 +49,7 @@ class CatalogNumberingAndDeleteTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     async def _shutdown_db():
         await connections.close_all(discard=True)
-        Tortoise._reset_apps()
+        await Tortoise._reset_apps()
 
     async def test_next_number_is_max_plus_one_not_count_plus_one(self):
         async with in_transaction() as connection:
@@ -116,7 +116,7 @@ class UserDeleteGuardTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     async def _shutdown_db():
         await connections.close_all(discard=True)
-        Tortoise._reset_apps()
+        await Tortoise._reset_apps()
 
     async def test_running_training_job_blocks_user_delete(self):
         await TrainingJob.create(

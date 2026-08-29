@@ -13,7 +13,6 @@ from .grounding import (
     QueryModeRouter,
     VerifiedAnswer,
 )
-from .metadata import KnowledgeMetadataAnswerer
 from .rendering import AnswerRenderer
 from .llm_types import (
     CircuitBreaker,
@@ -34,7 +33,6 @@ __all__ = [
     "GroundedPromptBuilder",
     "GroundingValidationError",
     "HistoryAwareQueryTransformer",
-    "KnowledgeMetadataAnswerer",
     "LLMCircuitOpenError",
     "LLMError",
     "LLMGenerationError",

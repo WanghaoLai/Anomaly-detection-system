@@ -59,36 +59,12 @@ class QueryModeRouter:
         r"隐藏文档|管理员文档|全部文档)",
         re.IGNORECASE,
     )
-    # 元数据意图要求"知识库容器词"与"文档聚合词"同时命中，
-    # 避免"这篇论文提出了几个模块"这类内容问题被误路由。
-    _METADATA_CONTAINER_RE = re.compile(
-        r"(?:知识库|语料库|资料库|库里|库中|库内)",
-        re.IGNORECASE,
-    )
-    _METADATA_AGGREGATION_RE = re.compile(
-        r"(?:"
-        r"(?:几篇|几份|多少篇|多少份|有多少|多少个|几个).{0,6}(?:论文|文档|资料|文件)"
-        r"|(?:论文|文档|资料|文件).{0,4}(?:数量|总数|个数)"
-        r"|有哪些(?:论文|文档|资料|文件)"
-        r"|(?:论文|文档|资料|文件)(?:列表|清单)"
-        r"|(?:列出|枚举|罗列).{0,10}(?:论文|文档|资料|文件)"
-        r"|(?:收录|上传|导入)了?.{0,10}(?:论文|文档|资料|文件)"
-        r")",
-        re.IGNORECASE,
-    )
 
     def route(self, query: str) -> str:
         text = str(query or "")
-        if self._BYPASS_RE.search(text):
-            return "knowledge_base"
-        if (
-            self._METADATA_CONTAINER_RE.search(text)
-            and self._METADATA_AGGREGATION_RE.search(text)
-        ):
-            return "knowledge_metadata"
         return (
             "knowledge_base"
-            if self._INTERNAL_RE.search(text)
+            if self._INTERNAL_RE.search(text) or self._BYPASS_RE.search(text)
             else "general"
         )
 
