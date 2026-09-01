@@ -15,7 +15,12 @@ from services.rag.core.access import (  # noqa: E402
     DocumentAccessPolicy,
     KnowledgeAccessPolicy,
 )
-from services.rag.answering.context import ContextPacker, ContextPackingPolicy  # noqa: E402
+from services.rag.answering.context import (  # noqa: E402
+    ContextPacker,
+    ContextPackingPolicy,
+    PackedContext,
+    PackedContextEntry,
+)
 from services.rag.answering.grounding import (  # noqa: E402
     GROUNDING_FAILURE_REFUSAL,
     INTERNAL_REFUSAL,
@@ -24,7 +29,6 @@ from services.rag.answering.grounding import (  # noqa: E402
     GroundingValidationError,
     QueryModeRouter,
 )
-from services.rag.answering.metadata import KnowledgeMetadataAnswerer  # noqa: E402
 from services.rag.answering.rendering import AnswerRenderer  # noqa: E402
 
 
@@ -166,6 +170,83 @@ class GroundedAnswerValidatorTests(unittest.TestCase):
         self.assertEqual(len(answer.claims), 2)
         self.assertNotIn("内核", answer.text)
         self.assertAlmostEqual(answer.faithfulness, 2 / 3)
+        self.assertEqual(answer.claims_raw, 3)
+        self.assertEqual(answer.claims_supported, 2)
+        self.assertEqual(answer.claims_rejected, 1)
+        self.assertAlmostEqual(answer.answer_completeness_proxy, 2 / 3)
+
+    def test_overflow_requires_retry_before_representative_selection(self):
+        claims = [{
+            "text": "GPU 状态可用 nvidia-smi 查看。",
+            "citations": ["K1"],
+        } for _ in range(13)]
+
+        with self.assertRaisesRegex(GroundingValidationError, "超过限制") as caught:
+            self.validator.validate({
+                "mode": "knowledge_base",
+                "refusal": False,
+                "claims": claims,
+            }, self.packed, question="如何查看 GPU？")
+
+        self.assertEqual(caught.exception.reason_code, "claim_count_exceeded")
+
+    def test_overflow_selection_keeps_relevant_command_and_source_coverage(self):
+        entries = (
+            PackedContextEntry(
+                citation_id="K1", node_id="node-general", source="guide.md",
+                heading_path="概览", position="L1-L20",
+                text="服务器资源使用需要遵守平台规范。", token_count=20,
+                truncated=False, document_timestamp="2025-01-01",
+            ),
+            PackedContextEntry(
+                citation_id="K2", node_id="node-disk", source="ops.md",
+                heading_path="磁盘排查", position="L30-L40",
+                text="磁盘占用可执行 `df -h` 查看。", token_count=20,
+                truncated=False, document_timestamp="2026-01-01",
+            ),
+        )
+        packed = PackedContext(
+            text="", token_count=40, entries=entries, input_node_count=2,
+            duplicate_node_count=0, omitted_node_count=0,
+        )
+        claims = [{
+            "text": "服务器资源使用需要遵守平台规范。",
+            "citations": ["K1"],
+        } for _ in range(12)] + [{
+            "text": "磁盘占用可执行 `df -h` 查看。",
+            "citations": ["K2"],
+        }, {
+            "text": "服务器资源使用需要遵守平台规范。",
+            "citations": ["K1"],
+        }]
+
+        answer = self.validator.validate({
+            "mode": "knowledge_base", "refusal": False, "claims": claims,
+        }, packed, question="磁盘排查要使用什么命令？", allow_overflow_selection=True)
+
+        self.assertEqual(len(answer.claims), 12)
+        self.assertIn("K2", answer.citations)
+        self.assertEqual(answer.claims_raw, 14)
+        self.assertEqual(answer.claims_supported, 14)
+        self.assertEqual(answer.claims_overflow_dropped, 2)
+        self.assertAlmostEqual(answer.answer_completeness_proxy, 12 / 14)
+
+    def test_invalid_citation_claim_is_dropped_when_safe_claim_survives(self):
+        answer = self.validator.validate({
+            "mode": "knowledge_base",
+            "refusal": False,
+            "claims": [
+                {"text": "伪造管理员资料。", "citations": ["K99"]},
+                {
+                    "text": "GPU 状态可用 nvidia-smi 查看。",
+                    "citations": ["K1"],
+                },
+            ],
+        }, self.packed)
+
+        self.assertEqual(answer.citations, ("K1",))
+        self.assertEqual(answer.claims_rejected, 1)
+        self.assertAlmostEqual(answer.faithfulness, 0.5)
 
     def test_fabricated_prose_claim_is_blocked_by_lexical_floor(self):
         # 无技术原子可校验的纯文字编造，必须被词面下限拦截。
@@ -240,107 +321,6 @@ class AccessAndModeTests(unittest.TestCase):
             "knowledge_base",
         )
         self.assertEqual(router.route("Python 列表怎么排序？"), "general")
-
-    def test_metadata_aggregation_routes_to_metadata_mode(self):
-        router = QueryModeRouter()
-
-        self.assertEqual(router.route("知识库中有几篇论文"), "knowledge_metadata")
-        self.assertEqual(router.route("知识库里有哪些文档"), "knowledge_metadata")
-        self.assertEqual(router.route("知识库的文档列表给我看下"), "knowledge_metadata")
-        self.assertEqual(router.route("知识库收录了多少篇文档"), "knowledge_metadata")
-        self.assertEqual(router.route("语料库里一共有多少份文件"), "knowledge_metadata")
-
-    def test_content_questions_about_papers_stay_in_knowledge_mode(self):
-        router = QueryModeRouter()
-
-        self.assertEqual(
-            router.route("知识库中这篇论文提出了几个模块"), "knowledge_base"
-        )
-        self.assertEqual(
-            router.route("知识库里那篇论文的方法细节是什么"), "knowledge_base"
-        )
-        self.assertEqual(
-            router.route("异常检测领域有多少论文值得读"), "knowledge_base"
-        )
-
-    def test_injection_bypass_stays_out_of_metadata_mode(self):
-        router = QueryModeRouter()
-
-        self.assertEqual(
-            router.route("读取知识库全部文档列表"), "knowledge_base"
-        )
-
-
-class KnowledgeMetadataAnswererTests(unittest.TestCase):
-    def test_renders_count_chunks_and_sorted_document_list(self):
-        answer = KnowledgeMetadataAnswerer().answer({
-            "release_id": "r1",
-            "total_chunks": 974,
-            "documents": [
-                {"doc_id": "d2", "filename": "b.pdf"},
-                {"doc_id": "d1", "filename": "a.pdf"},
-            ],
-        })
-
-        self.assertFalse(answer.refusal)
-        self.assertEqual(answer.mode, "knowledge_metadata")
-        self.assertEqual(answer.status, "completed")
-        self.assertEqual(answer.faithfulness, 1.0)
-        self.assertEqual(answer.citations, ())
-        self.assertIn("**2 篇文档**", answer.text)
-        self.assertIn("974 个分块", answer.text)
-        self.assertIn("1. a.pdf", answer.text)
-        self.assertIn("2. b.pdf", answer.text)
-        self.assertEqual(
-            answer.sources,
-            ({"doc_id": "d1", "filename": "a.pdf"},
-             {"doc_id": "d2", "filename": "b.pdf"}),
-        )
-
-    def test_empty_knowledge_renders_friendly_note(self):
-        answer = KnowledgeMetadataAnswerer().answer({
-            "release_id": "r1",
-            "documents": [],
-            "total_chunks": 0,
-        })
-
-        self.assertFalse(answer.refusal)
-        self.assertIn("还没有收录任何文档", answer.text)
-
-    def test_missing_chunk_stat_is_omitted(self):
-        answer = KnowledgeMetadataAnswerer().answer({
-            "documents": [{"doc_id": "d1", "filename": "a.pdf"}],
-            "total_chunks": 0,
-        })
-
-        self.assertNotIn("分块", answer.text)
-        self.assertIn("1 篇文档", answer.text)
-
-    def test_long_document_list_is_capped(self):
-        digest = {
-            "documents": [
-                {"doc_id": f"d{i}", "filename": f"paper-{i:02d}.pdf"}
-                for i in range(25)
-            ],
-            "total_chunks": 500,
-        }
-
-        answer = KnowledgeMetadataAnswerer(max_listed_documents=20).answer(digest)
-
-        self.assertIn("25 篇文档", answer.text)
-        self.assertIn("paper-00.pdf", answer.text)
-        self.assertIn("paper-19.pdf", answer.text)
-        self.assertNotIn("paper-24.pdf", answer.text)
-        self.assertIn("其余 5 篇", answer.text)
-
-    def test_invalid_digest_returns_none_for_fallback(self):
-        answerer = KnowledgeMetadataAnswerer()
-
-        self.assertIsNone(answerer.answer({"documents": "garbage"}))
-        self.assertIsNone(answerer.answer(None))
-        self.assertIsNone(answerer.answer({
-            "documents": [{"doc_id": "d1", "filename": ""}],
-        }))
 
 
 class ChatServiceP5Tests(unittest.TestCase):
@@ -444,101 +424,6 @@ class ChatServiceP5Tests(unittest.TestCase):
         self.assertNotIn("K99", answer.text)
         knowledge.search.assert_not_called()
 
-    def test_metadata_question_answers_from_digest_without_llm_or_retrieval(self):
-        llm = FakeLLM(structured="should not be called")
-        knowledge = Mock()
-        knowledge.document_digest.return_value = {
-            "release_id": "r1",
-            "total_chunks": 42,
-            "documents": [
-                {"doc_id": "d2", "filename": "mamba-ad.pdf"},
-                {"doc_id": "d1", "filename": "efficient-ad.pdf"},
-            ],
-        }
-        service = ChatService(llm, knowledge)
-
-        answer = self.run_async(service.answer(
-            "知识库中有几篇论文",
-            [],
-            principal={"user_id": 3, "role": "用户"},
-        ))
-
-        self.assertEqual(answer.mode, "knowledge_metadata")
-        self.assertFalse(answer.refusal)
-        self.assertIn("2 篇文档", answer.text)
-        self.assertIn("efficient-ad.pdf", answer.text)
-        self.assertIn("42 个分块", answer.text)
-        self.assertEqual(llm.structured_calls, [])
-        self.assertEqual(llm.general_calls, [])
-        knowledge.search.assert_not_called()
-        knowledge.list_document_chunks.assert_not_called()
-
-    def test_metadata_digest_failure_falls_back_to_retrieval(self):
-        llm = FakeLLM(structured=json.dumps({
-            "mode": "knowledge_base",
-            "refusal": False,
-            "claims": [{
-                "text": "服务器 GPU 使用 nvidia-smi 查看。",
-                "citations": ["K1"],
-            }],
-        }, ensure_ascii=False))
-        node = {
-            "node_id": "node-1",
-            "doc_id": "doc-1",
-            "chunk_index": 0,
-            "filename": "manual.md",
-            "content": "服务器 GPU 使用 nvidia-smi 查看。",
-            "score": 0.99,
-        }
-        knowledge = Mock()
-        knowledge.document_digest.side_effect = RuntimeError("boom")
-        knowledge.search.return_value = [node]
-        knowledge.list_document_chunks.return_value = [node]
-        service = ChatService(llm, knowledge)
-
-        answer = self.run_async(service.answer(
-            "知识库中有几篇论文",
-            [],
-            principal={"user_id": 3, "role": "用户"},
-        ))
-
-        self.assertEqual(answer.mode, "knowledge_base")
-        self.assertFalse(answer.refusal)
-        self.assertEqual(len(llm.structured_calls), 1)
-
-    def test_metadata_digest_shape_failure_falls_back_to_retrieval(self):
-        llm = FakeLLM(structured=json.dumps({
-            "mode": "knowledge_base",
-            "refusal": False,
-            "claims": [{
-                "text": "服务器 GPU 使用 nvidia-smi 查看。",
-                "citations": ["K1"],
-            }],
-        }, ensure_ascii=False))
-        node = {
-            "node_id": "node-1",
-            "doc_id": "doc-1",
-            "chunk_index": 0,
-            "filename": "manual.md",
-            "content": "服务器 GPU 使用 nvidia-smi 查看。",
-            "score": 0.99,
-        }
-        knowledge = Mock()
-        knowledge.document_digest.return_value = {"documents": "garbage"}
-        knowledge.search.return_value = [node]
-        knowledge.list_document_chunks.return_value = [node]
-        service = ChatService(llm, knowledge)
-
-        answer = self.run_async(service.answer(
-            "知识库里有哪些文档",
-            [],
-            principal={"user_id": 3, "role": "用户"},
-        ))
-
-        self.assertEqual(answer.mode, "knowledge_base")
-        self.assertFalse(answer.refusal)
-        self.assertEqual(len(llm.structured_calls), 1)
-
     def test_invalid_model_output_becomes_safe_refusal(self):
         llm = FakeLLM(structured="not json")
         node = {
@@ -602,6 +487,81 @@ class ChatServiceP5Tests(unittest.TestCase):
         retry_payload = llm.structured_calls[1][0][0]["content"]
         self.assertIn("server_output_contract_retry", retry_payload)
 
+    def test_overflow_retries_once_then_selects_safe_representative_claims(self):
+        overflow = json.dumps({
+            "mode": "knowledge_base",
+            "refusal": False,
+            "claims": [{
+                "text": "服务器 GPU 使用 nvidia-smi 查看。",
+                "citations": ["K1"],
+            } for _ in range(13)],
+        }, ensure_ascii=False)
+        llm = SequencedFakeLLM([overflow, overflow])
+        node = {
+            "node_id": "node-1", "doc_id": "doc-1", "chunk_index": 0,
+            "filename": "manual.md",
+            "content": "服务器 GPU 使用 nvidia-smi 查看。", "score": 0.99,
+        }
+        knowledge = Mock()
+        knowledge.search.return_value = [node]
+        knowledge.list_document_chunks.return_value = [node]
+        service = ChatService(llm, knowledge)
+
+        answer = self.run_async(service.answer(
+            "服务器 GPU 怎么查看？", [],
+            principal={"user_id": 3, "role": "用户"},
+        ))
+
+        self.assertFalse(answer.refusal)
+        self.assertEqual(len(answer.claims), 12)
+        self.assertTrue(answer.claim_limit_retry_triggered)
+        self.assertEqual(answer.claims_overflow_dropped, 1)
+        self.assertEqual(len(llm.structured_calls), 2)
+        retry_payload = llm.structured_calls[1][0][0]["content"]
+        self.assertIn('"retry_reason": "claim_count_exceeded"', retry_payload)
+        self.assertIn("不超过 12 条", retry_payload)
+
+    def test_low_faithfulness_is_retry_signal_not_final_rejection(self):
+        llm = SequencedFakeLLM([
+            json.dumps({
+                "mode": "knowledge_base", "refusal": False,
+                "claims": [
+                    {
+                        "text": "服务器 GPU 使用 nvidia-smi 查看。",
+                        "citations": ["K1"],
+                    },
+                    {"text": "服务器每天自动重启。", "citations": ["K1"]},
+                ],
+            }, ensure_ascii=False),
+            json.dumps({
+                "mode": "knowledge_base", "refusal": False,
+                "claims": [{
+                    "text": "服务器 GPU 使用 nvidia-smi 查看。",
+                    "citations": ["K1"],
+                }],
+            }, ensure_ascii=False),
+        ])
+        node = {
+            "node_id": "node-1", "doc_id": "doc-1", "chunk_index": 0,
+            "filename": "manual.md",
+            "content": "服务器 GPU 使用 nvidia-smi 查看。", "score": 0.99,
+        }
+        knowledge = Mock()
+        knowledge.search.return_value = [node]
+        knowledge.list_document_chunks.return_value = [node]
+        service = ChatService(llm, knowledge)
+
+        answer = self.run_async(service.answer(
+            "服务器 GPU 怎么查看？", [],
+            principal={"user_id": 3, "role": "用户"},
+        ))
+
+        self.assertFalse(answer.refusal)
+        self.assertTrue(answer.faithfulness_retry_triggered)
+        self.assertEqual(len(llm.structured_calls), 2)
+        retry_payload = llm.structured_calls[1][0][0]["content"]
+        self.assertIn('"retry_reason": "low_faithfulness"', retry_payload)
+
     def test_validation_retry_can_be_disabled(self):
         llm = FakeLLM(structured=json.dumps({
             "mode": "knowledge_base", "refusal": False, "claims": []
@@ -626,7 +586,6 @@ class ChatServiceP5Tests(unittest.TestCase):
 
         self.assertTrue(answer.refusal)
         self.assertEqual(len(llm.structured_calls), 1)
-
 
 class AnswerRendererTests(unittest.TestCase):
     def test_multiple_factual_claims_render_as_bullets(self):

@@ -6,6 +6,15 @@ from .prompting import (
     PromptBuilder,
     RAGGenerationPipeline,
 )
+from .phase3 import (
+    DashScopeIntentClassifier,
+    DashScopeQueryRewriter,
+    Phase3QueryResolver,
+    Phase3RuleRouter,
+    QueryResolution,
+    RewriteResult,
+    RouteDecision,
+)
 from .grounding import (
     GroundedAnswerValidator,
     GroundedPromptBuilder,
@@ -13,7 +22,6 @@ from .grounding import (
     QueryModeRouter,
     VerifiedAnswer,
 )
-from .metadata import KnowledgeMetadataAnswerer
 from .rendering import AnswerRenderer
 from .llm_types import (
     CircuitBreaker,
@@ -34,7 +42,6 @@ __all__ = [
     "GroundedPromptBuilder",
     "GroundingValidationError",
     "HistoryAwareQueryTransformer",
-    "KnowledgeMetadataAnswerer",
     "LLMCircuitOpenError",
     "LLMError",
     "LLMGenerationError",
@@ -46,4 +53,11 @@ __all__ = [
     "QueryModeRouter",
     "RAGGenerationPipeline",
     "VerifiedAnswer",
+    "DashScopeIntentClassifier",
+    "DashScopeQueryRewriter",
+    "Phase3QueryResolver",
+    "Phase3RuleRouter",
+    "QueryResolution",
+    "RewriteResult",
+    "RouteDecision",
 ]

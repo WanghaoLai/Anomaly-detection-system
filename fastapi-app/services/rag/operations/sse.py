@@ -7,6 +7,7 @@ import json
 
 
 PUBLIC_FAILURE_MESSAGES = {
+    "request_deadline_exceeded": "本次请求处理超时，未经完整校验的回答未发布，请稍后重试。",
     "llm_timeout": "模型响应超时，请稍后重试。",
     "generation_failed": "模型生成失败，请稍后重试。",
     "llm_protocol_error": "模型返回格式异常，本次回答未发布。",

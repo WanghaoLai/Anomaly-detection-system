@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -11,7 +12,6 @@ from common.result import Result
 from models import Conversation, Message
 from services import LLMService, ChatService
 from services.knowledge_service import knowledge_service
-from services.llm_service import LLMError
 from services.rag.operations import (
     PUBLIC_FAILURE_MESSAGES,
     encode_sse,
@@ -136,6 +136,7 @@ async def send_message(
         conversation_id=conversation.id
     ).order_by("created_at")
     history_list = [{"role": msg.role, "content": msg.content} for msg in history]
+    request_id = str(uuid.uuid4())
 
     async def generate():
         full_response = ""
@@ -147,6 +148,7 @@ async def send_message(
                 current_user["user_id"],
                 principal=current_user,
                 audit_context={
+                    "_trace_id": request_id,
                     "conversation_type": "user",
                     "conversation_id": conversation.id,
                     "message_id": user_message.id,
@@ -195,7 +197,7 @@ async def send_message(
             logger.info("SSE 客户端断开: conversation=%s status=disconnected", conversation.id)
             raise
         except Exception as exc:
-            code = exc.code if isinstance(exc, LLMError) else "generation_failed"
+            code = str(getattr(exc, "code", "generation_failed"))
             message = PUBLIC_FAILURE_MESSAGES.get(
                 code, PUBLIC_FAILURE_MESSAGES["generation_failed"]
             )
@@ -231,7 +233,8 @@ async def send_message(
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
+            "X-Accel-Buffering": "no",
+            "X-Request-ID": request_id,
         }
     )
 

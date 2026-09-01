@@ -3,6 +3,8 @@ import hashlib
 import logging
 import re
 import time
+import uuid
+from dataclasses import replace
 
 from .llm_service import LLMService
 from .knowledge_service import KnowledgeService
@@ -14,14 +16,16 @@ from .rag.answering import (
     GroundedPromptBuilder,
     GroundingValidationError,
     HistoryAwareQueryTransformer,
-    KnowledgeMetadataAnswerer,
-    PromptBuilder,
+    DashScopeIntentClassifier,
+    DashScopeQueryRewriter,
+    Phase3QueryResolver,
+    Phase3RuleRouter,
+    QueryResolution,
     QueryModeRouter,
-    RAGGenerationPipeline,
     VerifiedAnswer,
 )
 from .rag.core import AccessPrincipal, KnowledgeAccessPolicy
-from .rag.operations import RagAuditRecorder
+from .rag.operations import RagAuditRecorder, RagRequestDeadlineExceeded
 from .rag.search import (
     AuthorizedRetrievalPipeline,
     CrossEncoderReranker,
@@ -101,15 +105,43 @@ class ChatService:
             min(5, int(AI_CONFIG.get("rag_query_history_turns", 2))),
         )
         self.system_prompt = self.SYSTEM_PROMPT
-        self.prompt_builder = PromptBuilder(history_limit=6)
-        self.generation_pipeline = RAGGenerationPipeline(
-            self.llm,
-            self.prompt_builder,
-            self.system_prompt,
-        )
         self.access_policy = KnowledgeAccessPolicy()
         self.mode_router = QueryModeRouter()
-        self.metadata_answerer = KnowledgeMetadataAnswerer()
+        self.rag_phase3_router_enabled = bool(
+            AI_CONFIG.get("rag_phase3_router_enabled", False)
+        )
+        self.rag_phase3_rewrite_enabled = bool(
+            AI_CONFIG.get("rag_phase3_rewrite_enabled", False)
+        )
+        self.phase3_rule_router = Phase3RuleRouter()
+        self.phase3_intent_classifier = DashScopeIntentClassifier(
+            self.llm,
+            confidence_threshold=float(
+                AI_CONFIG.get("rag_phase3_classifier_confidence", 0.75)
+            ),
+            timeout_seconds=float(
+                AI_CONFIG.get("rag_phase3_classifier_timeout_seconds", 8.0)
+            ),
+            history_turn_limit=min(2, self.rag_query_history_turns),
+        )
+        self.phase3_query_rewriter = DashScopeQueryRewriter(
+            self.llm,
+            timeout_seconds=float(
+                AI_CONFIG.get("rag_phase3_rewrite_timeout_seconds", 8.0)
+            ),
+            history_turn_limit=min(2, self.rag_query_history_turns),
+        )
+        self.query_resolver = Phase3QueryResolver(
+            enabled=self.rag_phase3_router_enabled,
+            rewrite_enabled=self.rag_phase3_rewrite_enabled,
+            legacy_router=self.mode_router,
+            legacy_transformer_factory=lambda: HistoryAwareQueryTransformer(
+                self.rag_query_history_turns
+            ),
+            rule_router=self.phase3_rule_router,
+            classifier=self.phase3_intent_classifier,
+            rewriter=self.phase3_query_rewriter,
+        )
         self.grounded_prompt_builder = GroundedPromptBuilder()
         self.answer_validator = GroundedAnswerValidator(
             minimum_faithfulness=float(
@@ -133,14 +165,24 @@ class ChatService:
         self.rag_rerank_final_k = max(
             4, min(8, int(AI_CONFIG.get("rag_rerank_final_k", 6)))
         )
+        self.rag_rerank_input_k = max(
+            self.rag_rerank_final_k,
+            min(100, int(AI_CONFIG.get("rag_rerank_input_k", 50))),
+        )
         self.reranker = CrossEncoderReranker(
             model_name=str(AI_CONFIG.get("rag_reranker_model") or ""),
             enabled=bool(AI_CONFIG.get("rag_reranker_enabled", False)),
             timeout_seconds=float(
                 AI_CONFIG.get("rag_reranker_timeout_seconds", 2.0)
             ),
+            max_length=int(AI_CONFIG.get("rag_reranker_max_length", 0)) or None,
         )
         self.audit_recorder = RagAuditRecorder()
+        self.rag_request_deadline_seconds = float(
+            AI_CONFIG.get("rag_request_deadline_seconds", 75.0)
+        )
+        if self.rag_request_deadline_seconds <= 0:
+            raise ValueError("AI_RAG_REQUEST_DEADLINE_SECONDS 必须大于 0")
 
     def _retrieval_selector(self) -> HybridResultSelector:
         """从兼容配置字段构建无状态策略，确保运行期调参立即生效。"""
@@ -166,21 +208,58 @@ class ChatService:
         user_id: int | None = None,
         principal: dict | None = None,
         audit_context: dict | None = None,
+        resolution: QueryResolution | None = None,
     ) -> VerifiedAnswer:
         """服务端决定模式并验证最终输出，模型没有发布权限。"""
 
-        retrieval_query = self._build_retrieval_query(user_message, history)
-        mode = self.mode_router.route(retrieval_query)
+        resolution = resolution or await self._aresolve_query(
+            user_message, history
+        )
+        retrieval_query = resolution.retrieval_query
+        mode = resolution.route.mode
         if mode == "general":
             messages = self.grounded_prompt_builder.general_messages(
                 user_message, history
             )
+            llm_started = time.perf_counter()
             text = await self.llm.chat(
-                messages,
-                self.grounded_prompt_builder.GENERAL_SYSTEM_PROMPT,
+                messages, self.grounded_prompt_builder.GENERAL_SYSTEM_PROMPT
+            )
+            llm_elapsed_ms = round(
+                (time.perf_counter() - llm_started) * 1000, 1
             )
             # 普通知识模式不具有 K 引用，移除模型自行生成的伪引用。
             text = re.sub(r"\s*\[K\d+]", "", str(text)).strip()
+            if audit_context is not None:
+                resolved_principal = self._principal(user_id, principal)
+                public_context = {
+                    key: value
+                    for key, value in dict(audit_context or {}).items()
+                    if not str(key).startswith("_")
+                }
+                await self.audit_recorder.record({
+                    "id": dict(audit_context or {}).get("_trace_id"),
+                    **public_context,
+                    "principal_role": resolved_principal.role,
+                    "principal_id": resolved_principal.user_id,
+                    "query_hash": hashlib.sha256(
+                        retrieval_query.encode("utf-8")
+                    ).hexdigest(),
+                    "mode": "general",
+                    "status": "completed",
+                    "prompt_version": (
+                        self.grounded_prompt_builder.GENERAL_PROMPT_VERSION
+                    ),
+                    "retrieval_config": {
+                        "route": resolution.route.trace(),
+                        "rewrite": resolution.rewrite.trace(user_message),
+                    },
+                    "stage_durations_ms": {
+                        "router": resolution.route.elapsed_ms,
+                        "rewrite": resolution.rewrite.elapsed_ms,
+                        "llm": llm_elapsed_ms,
+                    },
+                })
             return VerifiedAnswer(
                 mode="general",
                 text=text,
@@ -190,26 +269,21 @@ class ChatService:
                 faithfulness=1.0,
                 status="completed",
             )
-
         resolved_principal = self._principal(user_id, principal)
         trace_state = dict(audit_context or {})
-        if mode == "knowledge_metadata":
-            # 语料清单问题走服务端直读，不经向量检索也不经 LLM；
-            # 清单读取失败时退回标准检索链路，维持既有拒答兜底。
-            digest = await asyncio.to_thread(
-                self._knowledge_document_digest, resolved_principal
-            )
-            if digest is not None:
-                metadata_answer = self.metadata_answerer.answer(digest)
-                if metadata_answer is not None:
-                    return metadata_answer
-            mode = "knowledge_base"
+        trace_state["_route_trace"] = resolution.route.trace()
+        trace_state["_rewrite_trace"] = resolution.rewrite.trace(user_message)
         packed = await self._aretrieve_packed_context(
             retrieval_query,
             principal=resolved_principal,
             audit_context=trace_state,
         )
         if not packed.entries:
+            await self.audit_recorder.update(
+                trace_state.get("_trace_id"),
+                status="refused",
+                error_code="no_knowledge",
+            )
             return self.answer_validator.refusal("no_knowledge")
         structured_method = getattr(self.llm, "chat_structured", None)
         structured_metadata_method = getattr(
@@ -217,12 +291,16 @@ class ChatService:
         )
         try:
             llm_results = []
+            validator_elapsed_ms = 0.0
+            retry_reason: str | None = None
+            retry_reasons: set[str] = set()
             for attempt in range(self.rag_grounding_validation_retries + 1):
                 messages = self.grounded_prompt_builder.knowledge_messages(
                     user_message,
                     history,
                     packed,
                     validation_retry=attempt > 0,
+                    retry_reason=retry_reason,
                 )
                 raw = await (
                     structured_metadata_method(
@@ -244,11 +322,52 @@ class ChatService:
                     llm_results.append(raw)
                     raw = raw.text
                 try:
-                    answer = self.answer_validator.validate(raw, packed)
+                    validator_started = time.perf_counter()
+                    answer = self.answer_validator.validate(
+                        raw,
+                        packed,
+                        question=user_message,
+                        allow_overflow_selection=attempt > 0,
+                    )
+                    validator_elapsed_ms += (
+                        time.perf_counter() - validator_started
+                    ) * 1000
+                    if (
+                        answer.faithfulness
+                        < self.answer_validator.minimum_faithfulness
+                        and attempt < self.rag_grounding_validation_retries
+                    ):
+                        retry_reason = "low_faithfulness"
+                        retry_reasons.add(retry_reason)
+                        logger.info(
+                            "知识回答 Faithfulness 偏低，执行受控重生成: "
+                            "query_id=%s attempt=%s actual=%.4f required=%.4f",
+                            hashlib.sha256(
+                                retrieval_query.encode("utf-8")
+                            ).hexdigest()[:12],
+                            attempt + 1,
+                            answer.faithfulness,
+                            self.answer_validator.minimum_faithfulness,
+                        )
+                        continue
+                    answer = replace(
+                        answer,
+                        claim_limit_retry_triggered=(
+                            "claim_count_exceeded" in retry_reasons
+                        ),
+                        faithfulness_retry_triggered=(
+                            "low_faithfulness" in retry_reasons
+                        ),
+                    )
                     break
                 except GroundingValidationError as exc:
+                    validator_elapsed_ms += (
+                        time.perf_counter() - validator_started
+                    ) * 1000
                     if attempt >= self.rag_grounding_validation_retries:
                         raise
+                    retry_reason = exc.reason_code
+                    retry_reasons.add(retry_reason)
                     logger.info(
                         "知识回答候选校验失败，执行受控重生成: "
                         "query_id=%s attempt=%s reason=%s",
@@ -258,6 +377,7 @@ class ChatService:
                         attempt + 1,
                         str(exc),
                     )
+            token_usage = None
             if llm_results:
                 token_usage = {
                     "context_tokens_estimated": packed.token_count,
@@ -265,6 +385,24 @@ class ChatService:
                         bool(result.usage) for result in llm_results
                     ),
                     "generation_attempts": len(llm_results),
+                    "grounding": {
+                        "claims_raw": answer.claims_raw,
+                        "claims_supported": answer.claims_supported,
+                        "claims_rejected": answer.claims_rejected,
+                        "claims_selected": answer.claims_selected,
+                        "claims_overflow_dropped": (
+                            answer.claims_overflow_dropped
+                        ),
+                        "answer_completeness_proxy": (
+                            answer.answer_completeness_proxy
+                        ),
+                        "claim_limit_retry_triggered": (
+                            answer.claim_limit_retry_triggered
+                        ),
+                        "faithfulness_retry_triggered": (
+                            answer.faithfulness_retry_triggered
+                        ),
+                    },
                 }
                 for result in llm_results:
                     for key, value in dict(result.usage).items():
@@ -272,19 +410,23 @@ class ChatService:
                             value, bool
                         ):
                             token_usage[key] = token_usage.get(key, 0) + value
-                await self.audit_recorder.update(
-                    trace_state.get("_trace_id"),
-                    status=answer.status,
-                    token_usage=token_usage,
-                    stage_durations_ms={
-                        "retrieval_total": trace_state.get(
-                            "_retrieval_elapsed_ms"
-                        ),
-                        "llm": round(sum(
-                            result.latency_ms for result in llm_results
-                        ), 1),
-                    },
-                )
+            audit_values = {
+                "status": answer.status,
+                "stage_durations_ms": {
+                    "retrieval_total": trace_state.get(
+                        "_retrieval_elapsed_ms"
+                    ),
+                    "llm": round(sum(
+                        result.latency_ms for result in llm_results
+                    ), 1) if llm_results else None,
+                    "validator": round(validator_elapsed_ms, 1),
+                },
+            }
+            if token_usage is not None:
+                audit_values["token_usage"] = token_usage
+            await self.audit_recorder.update(
+                trace_state.get("_trace_id"), **audit_values
+            )
             return answer
         except asyncio.CancelledError:
             await self.audit_recorder.update(
@@ -312,23 +454,6 @@ class ChatService:
             )
             raise
 
-    async def process_message(
-        self,
-        user_message: str,
-        history: list,
-        user_id: int = None,
-        principal: dict | None = None,
-        audit_context: dict | None = None,
-    ) -> str:
-        answer = await self.answer(
-            user_message,
-            history,
-            user_id=user_id,
-            principal=principal,
-            audit_context=audit_context,
-        )
-        return answer.text
-
     async def process_message_events(
         self,
         user_message: str,
@@ -337,72 +462,129 @@ class ChatService:
         principal: dict | None = None,
         audit_context: dict | None = None,
     ):
-        mode = self.mode_router.route(
-            self._build_retrieval_query(user_message, history)
-        )
-        yield {"type": "status", "status": "generating", "mode": mode}
-        answer = await self.answer(
-            user_message,
-            history,
-            user_id=user_id,
-            principal=principal,
-            audit_context=audit_context,
-        )
-        yield {
-            "type": "status",
-            "status": answer.status,
-            "mode": answer.mode,
-            "reason_code": answer.reason_code,
-            "faithfulness": answer.faithfulness,
-            "citations": list(answer.citations),
-            "sources": [dict(source) for source in answer.sources],
+        started_at = time.perf_counter()
+        trace_state = dict(audit_context or {})
+        trace_id = str(trace_state.get("_trace_id") or uuid.uuid4())
+        trace_state["_trace_id"] = trace_id
+        resolved_principal = self._principal(user_id, principal)
+        public_context = {
+            key: value for key, value in trace_state.items()
+            if not str(key).startswith("_")
         }
-        for chunk in AnswerRenderer.chunk_answer(answer.text):
-            yield {"type": "content", "content": chunk}
-        yield {
-            "type": "status",
-            "status": "completed",
-            "mode": answer.mode,
-            "refusal": answer.refusal,
-            "faithfulness": answer.faithfulness,
-            "citations": list(answer.citations),
-            "sources": [dict(source) for source in answer.sources],
-        }
-
-    async def process_message_stream(
-        self,
-        user_message: str,
-        history: list,
-        user_id: int = None,
-        principal: dict | None = None,
-        audit_context: dict | None = None,
-    ):
-        """P0 兼容内容流；HTTP API 使用带状态的 process_message_events。"""
-
-        async for event in self.process_message_events(
-            user_message,
-            history,
-            user_id=user_id,
-            principal=principal,
-            audit_context=audit_context,
-        ):
-            if event.get("type") == "content":
-                yield event["content"]
-
-    def _knowledge_document_digest(self, principal: AccessPrincipal):
-        """兼容替身：知识服务未提供清单能力时返回 None 走检索链路。"""
-
-        digest_method = getattr(self.knowledge, "document_digest", None)
-        if digest_method is None:
-            return None
+        await self.audit_recorder.record({
+            "id": trace_id,
+            **public_context,
+            "principal_role": resolved_principal.role,
+            "principal_id": resolved_principal.user_id,
+            "query_hash": hashlib.sha256(
+                (user_message or "").encode("utf-8")
+            ).hexdigest(),
+            "mode": "pending",
+            "status": "started",
+        })
         try:
-            return digest_method(principal)
-        except Exception:
-            logger.warning(
-                "知识库清单读取失败，元数据问答退回检索链路",
-                exc_info=True,
+            async with asyncio.timeout(self.rag_request_deadline_seconds):
+                resolution = await self._aresolve_query(user_message, history)
+                route_trace = resolution.route.trace()
+                rewrite_trace = resolution.rewrite.trace(user_message)
+                await self.audit_recorder.update(
+                    trace_id,
+                    mode=resolution.route.mode,
+                    retrieval_config={
+                        "route": route_trace,
+                        "rewrite": rewrite_trace,
+                    },
+                    stage_durations_ms={
+                        "router": resolution.route.elapsed_ms,
+                        "rewrite": resolution.rewrite.elapsed_ms,
+                    },
+                )
+                yield {
+                    "type": "status",
+                    "status": "generating",
+                    "request_id": trace_id,
+                    "mode": resolution.route.mode,
+                    **route_trace,
+                    **rewrite_trace,
+                }
+                answer = await self.answer(
+                    user_message,
+                    history,
+                    user_id=user_id,
+                    principal=principal,
+                    audit_context=trace_state,
+                    resolution=resolution,
+                )
+                yield {
+                    "type": "status",
+                    "status": answer.status,
+                    "request_id": trace_id,
+                    "mode": answer.mode,
+                    "reason_code": answer.reason_code,
+                    "faithfulness": answer.faithfulness,
+                    "citations": list(answer.citations),
+                    "sources": [dict(source) for source in answer.sources],
+                    **route_trace,
+                    **rewrite_trace,
+                }
+                for chunk in AnswerRenderer.chunk_answer(answer.text):
+                    yield {"type": "content", "content": chunk}
+                yield {
+                    "type": "status",
+                    "status": "completed",
+                    "request_id": trace_id,
+                    "mode": answer.mode,
+                    "refusal": answer.refusal,
+                    "faithfulness": answer.faithfulness,
+                    "citations": list(answer.citations),
+                    "sources": [dict(source) for source in answer.sources],
+                    **route_trace,
+                    **rewrite_trace,
+                }
+            await self.audit_recorder.update(
+                trace_id,
+                stage_durations_ms={
+                    "request_total": round(
+                        (time.perf_counter() - started_at) * 1000, 1
+                    )
+                },
             )
-            return None
+        except TimeoutError as exc:
+            await self.audit_recorder.update(
+                trace_id,
+                status="failed",
+                error_code="request_deadline_exceeded",
+                stage_durations_ms={
+                    "request_total": round(
+                        (time.perf_counter() - started_at) * 1000, 1
+                    )
+                },
+            )
+            raise RagRequestDeadlineExceeded(
+                f"RAG 请求超过 {self.rag_request_deadline_seconds:g} 秒"
+            ) from exc
+        except asyncio.CancelledError:
+            await self.audit_recorder.update(
+                trace_id,
+                status="stream_disconnected",
+                error_code="stream_disconnected",
+                stage_durations_ms={
+                    "request_total": round(
+                        (time.perf_counter() - started_at) * 1000, 1
+                    )
+                },
+            )
+            raise
+        except Exception:
+            await self.audit_recorder.update(
+                trace_id,
+                stage_durations_ms={
+                    "request_total": round(
+                        (time.perf_counter() - started_at) * 1000, 1
+                    )
+                },
+            )
+            raise
 
     async def _aretrieve_packed_context(
         self,
@@ -433,6 +615,7 @@ class ChatService:
                 dense_k=self.rag_dense_candidate_k,
                 lexical_k=self.rag_lexical_candidate_k,
                 union_limit=self.rag_candidate_union_limit,
+                rerank_input_k=self.rag_rerank_input_k,
                 final_k=self.rag_rerank_final_k,
                 score_threshold=self.rag_score_threshold,
                 hybrid_enabled=self.rag_hybrid_enabled,
@@ -444,11 +627,6 @@ class ChatService:
             ),
             audit_context=audit_context,
         )
-
-    @staticmethod
-    def _audit_candidate(item: dict) -> dict:
-        """兼容旧测试/调用；实际实现归属 search pipeline。"""
-        return AuthorizedRetrievalPipeline.audit_candidate(item)
 
     def _retrieve_packed_context(
         self,
@@ -505,7 +683,7 @@ class ChatService:
                 return self._pack_context([])
 
             packed = self._pack_context(results, query=query)
-            context, used_tokens = packed.text, packed.token_count
+            used_tokens = packed.token_count
             logger.info(
                 "RAG 检索完成: query_id=%s query_chars=%s elapsed_ms=%s "
                 "mode=%s candidates=%s threshold_passed=%s lexical_candidates=%s "
@@ -554,9 +732,11 @@ class ChatService:
             self.rag_query_history_turns
         ).transform(user_message, history)
 
-    @staticmethod
-    def _normalized_content(content: str) -> str:
-        return HybridResultSelector.normalized_content(content)
+    async def _aresolve_query(
+        self, user_message: str, history: list
+    ) -> QueryResolution:
+        """Resolve route and retrieval-only rewrite exactly once per request."""
+        return await self.query_resolver.resolve(user_message, history)
 
     @staticmethod
     def _result_score(result: dict) -> float:
@@ -570,18 +750,9 @@ class ChatService:
         """按分数过滤并移除相同或高度重叠的分块。"""
         return self._retrieval_selector().select_dense(candidates)
 
-    @staticmethod
-    def _query_features(text: str) -> set[str]:
-        """提取命令/路径等英文标识符与中文二元组，不依赖新分词框架。"""
-        return HybridResultSelector.query_features(text)
-
     @classmethod
     def _lexical_score(cls, query: str, document: str) -> float:
         return HybridResultSelector.lexical_score(query, document)
-
-    @staticmethod
-    def _result_key(item: dict) -> str:
-        return HybridResultSelector.result_key(item)
 
     def _select_hybrid_results(
         self,
@@ -593,11 +764,6 @@ class ChatService:
         return self._retrieval_selector().select_hybrid(
             query, dense_candidates, all_chunks
         )
-
-    @staticmethod
-    def _truncate_to_token_budget(text: str, token_budget: int) -> str:
-        """兼容入口；仅可用于不含命令的普通文本。"""
-        return ContextPacker.truncate(text, token_budget)
 
     def _pack_context(self, results: list, *, query: str = ""):
         """每次读取运行期配置，支持灰度调参且不缓存跨请求状态。"""
@@ -616,7 +782,3 @@ class ChatService:
         """生成可引用的 [K1] 上下文，并严格执行总 Token 预算。"""
         packed = self._pack_context(results)
         return packed.text, packed.token_count
-
-    def _build_messages(self, history: list, user_message: str, context: str = "") -> list:
-        """构建消息列表"""
-        return self.prompt_builder.build(history, user_message, context)

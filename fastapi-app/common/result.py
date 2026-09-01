@@ -2,7 +2,6 @@ from typing import Any, List
 
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
-from tortoise import Model
 
 
 class Result(BaseModel):

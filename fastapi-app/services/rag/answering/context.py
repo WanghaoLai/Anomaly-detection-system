@@ -68,6 +68,7 @@ class PackedContextEntry:
     text: str
     token_count: int
     truncated: bool
+    document_timestamp: str = ""
 
 
 @dataclass(frozen=True)
@@ -352,6 +353,13 @@ class ContextPacker:
                 text=body,
                 token_count=approx_token_len(rendered),
                 truncated=truncated,
+                document_timestamp=_safe_label(
+                    result.get("document_updated_at")
+                    or result.get("updated_at")
+                    or result.get("published_at")
+                    or result.get("created_at")
+                    or result.get("document_version")
+                ),
             )
             entries.append(entry)
             rendered_entries.append(rendered)

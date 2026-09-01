@@ -3,40 +3,27 @@
 from .storage import (
     DOCUMENT_SCHEMA_VERSION,
     RELEASE_SCHEMA_VERSION,
+    RELEASE_SMOKE_SCHEMA_VERSION,
     KnowledgeArtifactRepository,
-    JsonPaperDocumentStore,
     deterministic_document_id,
     deterministic_node_id,
     sha256_bytes,
     utc_now_iso,
 )
-from .docling_loader import (
-    DoclingLoadResult,
-    DoclingPaperLoader,
-    DoclingUnavailableError,
+from .pipeline import (
+    AsyncIngestionExecutor,
+    DocumentIngestionPipeline,
+    ProcessIsolatedDocumentParser,
 )
-from .grobid import GrobidEnrichmentResult, GrobidMetadataEnricher, parse_grobid_tei
-from .paper_ingestion import PaperCorpusCandidateBuilder
-from .paper_model import (
-    PAPER_DOCUMENT_SCHEMA_VERSION,
-    PAPER_INGESTION_SCHEMA_VERSION,
-    PAPER_PARSER_PROFILE,
-    PaperBlock,
-    PaperDocument,
-    PaperDocumentNormalizer,
-    deterministic_paper_block_id,
-    deterministic_paper_document_id,
-)
-from .routing import PaperParseResult, ParserRouter, probe_pdf
-from .pipeline import AsyncIngestionExecutor, DocumentIngestionPipeline
+from .security import LocalClamAvScanner, UploadSecurityPolicy, validate_upload_content
 from .parsing import MarkdownNodeParser
 from .loading import (
     DefaultDocumentPreprocessor,
     MarkItDownDocumentLoader,
-    PaperDocumentPreprocessor,
     SUPPORTED_DOCUMENT_EXTENSIONS,
     preprocess_pdf_markdown,
 )
+from .ocr import LocalTesseractPdfOcr, PdfOcrResult
 from .splitting import (
     PARSER_SCHEMA_VERSION,
     approx_token_len,
@@ -48,38 +35,25 @@ __all__ = [
     "AsyncIngestionExecutor",
     "DOCUMENT_SCHEMA_VERSION",
     "DefaultDocumentPreprocessor",
-    "PaperDocumentPreprocessor",
     "DocumentIngestionPipeline",
     "KnowledgeArtifactRepository",
-    "JsonPaperDocumentStore",
+    "LocalTesseractPdfOcr",
     "MarkdownNodeParser",
     "MarkItDownDocumentLoader",
-    "DoclingLoadResult",
-    "DoclingPaperLoader",
-    "DoclingUnavailableError",
-    "GrobidEnrichmentResult",
-    "GrobidMetadataEnricher",
-    "PAPER_DOCUMENT_SCHEMA_VERSION",
-    "PAPER_INGESTION_SCHEMA_VERSION",
-    "PAPER_PARSER_PROFILE",
-    "PaperBlock",
-    "PaperCorpusCandidateBuilder",
-    "PaperDocument",
-    "PaperDocumentNormalizer",
-    "PaperParseResult",
-    "ParserRouter",
+    "LocalClamAvScanner",
     "PARSER_SCHEMA_VERSION",
+    "PdfOcrResult",
+    "ProcessIsolatedDocumentParser",
     "RELEASE_SCHEMA_VERSION",
+    "RELEASE_SMOKE_SCHEMA_VERSION",
+    "UploadSecurityPolicy",
+    "validate_upload_content",
     "SUPPORTED_DOCUMENT_EXTENSIONS",
     "approx_token_len",
     "chunk_paragraphs",
     "deterministic_document_id",
-    "deterministic_paper_block_id",
-    "deterministic_paper_document_id",
     "deterministic_node_id",
     "preprocess_pdf_markdown",
-    "probe_pdf",
-    "parse_grobid_tei",
     "sha256_bytes",
     "split_paragraphs_with_headings",
     "utc_now_iso",

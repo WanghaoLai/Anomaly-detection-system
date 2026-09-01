@@ -1,14 +1,12 @@
 # RAG 模块结构
 
 当前分层、重构前后目录和迁移规则见
-[`ARCHITECTURE_REFACTOR.md`](./ARCHITECTURE_REFACTOR.md)。新代码应优先从
-`core`、`document`、`indexing`、`search`、`answering`、`operations` 六个功能包
-导入；根目录平铺模块只作为兼容路径保留。
+[`ARCHITECTURE_REFACTOR.md`](./ARCHITECTURE_REFACTOR.md)。所有代码从
+`core`、`document`、`indexing`、`search`、`answering`、`operations` 六个
+功能包导入；旧平铺路径已删除。
 
 P0 已冻结行为、应用接口和分层规则；变更本模块前先阅读
 [`P0_BASELINE.md`](./P0_BASELINE.md)，并运行离线契约检查。
-多论文改进阶段 0 的冻结语料、黄金评测集和校验方式见
-[`MULTI_PAPER_BASELINE_V1.md`](./MULTI_PAPER_BASELINE_V1.md)。
 文档上传、DocStore 和影子索引发布见
 [`P1_INGESTION.md`](./P1_INGESTION.md)；LlamaIndex TextNode 解析见
 [`P2_NODES.md`](./P2_NODES.md)；LlamaIndex Embedding 与蓝绿向量写入见
@@ -38,24 +36,27 @@ P0 已冻结行为、应用接口和分层规则；变更本模块前先阅读
 
 ## 文件职责
 
-- `contracts.py`：`Document`、`Node`、检索结果及各阶段 Protocol。
-- `loaders.py`：MarkItDown 加载适配器和格式相关的 PDF 清洗。
-- `splitters.py`：纯 Markdown 语义分块和 Token 预算算法。
-- `llamaindex_parser.py`：LlamaIndex `NodeParser` 适配、稳定 TextNode ID、
+- `core/contracts.py`：`Document`、`Node`、检索结果及各阶段 Protocol。
+- `core/access.py`：可信身份、规范化文档 ACL 和服务端 Node 权限过滤。
+- `document/loading.py`：MarkItDown 加载适配器和格式相关的 PDF 清洗。
+- `document/splitting.py`：纯 Markdown 语义分块和 Token 预算算法。
+- `document/parsing.py`：LlamaIndex `NodeParser` 适配、稳定 TextNode ID、
   引用与位置 metadata。
-- `embeddings.py`：DashScope 文档/查询向量适配器。
-- `llamaindex_indexing.py`：LlamaIndex `VectorStoreIndex` 与 Chroma 的蓝绿写入适配器。
-- `vector_store.py`：Chroma collection 的最薄读写适配层。
-- `retrieval.py`：dense 阈值过滤、去重、字面召回和 RRF 融合。
-- `lexical.py`：按 release 缓存的 BM25 倒排索引，支持授权 doc_id 过滤。
-- `reranking.py`：可选本地 Cross-Encoder 精排，超时/依赖失败回退 RRF。
-- `audit.py`：检索 release、候选分数、引用映射、Token 和耗时的 MySQL 审计。
-- `context.py`：查询感知 Context Packing、硬预算、引用映射和原子命令保护。
-- `access.py`：可信身份、规范化文档 ACL 和服务端 Node 权限过滤。
-- `grounding.py`：模式路由、知识提示、结构化 Claim 契约与引用/忠实度门禁。
-- `sse.py`：SSE 编码和超时、生成失败、协议失败、连接断开的公开状态。
-- `generation.py`：历史查询补全、P0 上下文兼容入口、提示组装和生成编排。
-- `ingestion.py`：加载、清洗、切分三个纯阶段的组合编排。
+- `document/pipeline.py`：加载、清洗、切分三个纯阶段的组合编排。
+- `document/storage.py`：原始文件、DocStore 与发布清单的本地持久化。
+- `indexing/embedding.py`：DashScope 文档/查询向量适配器。
+- `indexing/writer.py`：LlamaIndex `VectorStoreIndex` 与 Chroma 的蓝绿写入适配器。
+- `indexing/vector_store.py`：Chroma collection 的最薄读写适配层。
+- `search/retrieval.py`：dense 阈值过滤、去重、字面召回和 RRF 融合。
+- `search/lexical.py`：按 release 缓存的 BM25 倒排索引，支持授权 doc_id 过滤。
+- `search/reranking.py`：可选本地 Cross-Encoder 精排，超时/依赖失败回退 RRF。
+- `search/pipeline.py`：授权下推、Dense/BM25 粗召回、精排与审计的在线编排。
+- `answering/context.py`：查询感知 Context Packing、硬预算、引用映射和原子命令保护。
+- `answering/grounding.py`：模式路由、知识提示、结构化 Claim 契约与引用/忠实度门禁。
+- `answering/prompting.py`：提示组装和生成编排。
+- `operations/sse.py`：SSE 编码和超时、生成失败、协议失败、连接断开的公开状态。
+- `operations/audit.py`：检索 release、候选分数、引用映射、Token 和耗时的 MySQL 审计。
+- `layers.py`：分层声明与厂商 SDK 依赖守卫。
 
 `KnowledgeService` 继续负责上传替换、Chroma/MySQL 补偿和索引迁移等应用事务；
 `ChatService` 继续作为 API 调用方的兼容门面。两者不再实现核心算法，而是委托
@@ -86,9 +87,3 @@ SDK 调用移入 `asyncio.to_thread`，Qwen 客户端复用连接池并具备
 开启审计前应用 `migrations/010_rag_retrieval_audit.sql`；每次检索保存
 release、模型/Prompt 版本、候选分数、K 到来源的映射、估算 Token
 和分阶段耗时。
-
-阶段 0 多论文最终冻结语料、黄金评测集、release 与评测基线见
-`MULTI_PAPER_BASELINE_V1.md`。
-
-阶段 1 的 PaperDocument v2、Docling/GROBID 适配边界、真实旁路候选和
-降级状态见 `MULTI_PAPER_PHASE1.md`。

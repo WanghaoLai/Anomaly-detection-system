@@ -3,7 +3,7 @@ from tortoise import fields
 
 # 创建Admin的Model
 class Admin(Model):
-    id = fields.IntField(pk=True, null=False)
+    id = fields.IntField(primary_key=True, null=False)
     # 与 DB 中既有的 UNIQUE KEY username 对齐；ORM 侧同样声明为唯一。
     username = fields.CharField(max_length=255, null=True, unique=True)
     password = fields.CharField(max_length=255, null=True)
@@ -18,7 +18,7 @@ class Admin(Model):
 
 # 创建User的Model
 class User(Model):
-    id = fields.IntField(pk=True, null=False)
+    id = fields.IntField(primary_key=True, null=False)
     # 唯一索引是并发注册的最终裁决；应用层"先查后建"只是友好预检。
     username = fields.CharField(max_length=255, null=True, unique=True)
     password = fields.CharField(max_length=255, null=True)
@@ -32,7 +32,7 @@ class User(Model):
 
 
 class AuthSession(Model):
-    id = fields.CharField(max_length=36, pk=True)
+    id = fields.CharField(max_length=36, primary_key=True)
     user_id = fields.IntField(db_index=True)
     role = fields.CharField(max_length=20, db_index=True)
     refresh_jti = fields.CharField(max_length=64, unique=True)
@@ -46,7 +46,7 @@ class AuthSession(Model):
 
 
 class LoginThrottle(Model):
-    key = fields.CharField(max_length=64, pk=True)
+    key = fields.CharField(max_length=64, primary_key=True)
     failures = fields.IntField(default=0)
     window_started = fields.DatetimeField()
     locked_until = fields.DatetimeField(null=True)
@@ -57,7 +57,7 @@ class LoginThrottle(Model):
 
 
 class Notice(Model):
-    id = fields.IntField(pk=True, null=False)
+    id = fields.IntField(primary_key=True, null=False)
     name = fields.CharField(max_length=255, null=True)
     content = fields.CharField(max_length=255, null=True)
     time = fields.CharField(max_length=255, null=True)
@@ -67,7 +67,7 @@ class Notice(Model):
 
 
 class Conversation(Model):
-    id = fields.IntField(pk=True, null=False)
+    id = fields.IntField(primary_key=True, null=False)
     user = fields.ForeignKeyField('models.User', related_name='conversations')
     title = fields.CharField(max_length=255, default='新对话')
     created_at = fields.DatetimeField(auto_now_add=True)
@@ -78,7 +78,7 @@ class Conversation(Model):
 
 
 class Message(Model):
-    id = fields.IntField(pk=True, null=False)
+    id = fields.IntField(primary_key=True, null=False)
     conversation = fields.ForeignKeyField('models.Conversation', related_name='messages')
     role = fields.CharField(max_length=20)  # 'user' 或 'assistant'
     content = fields.TextField()
@@ -91,7 +91,7 @@ class Message(Model):
 # 管理员的会话与消息独立存储：Admin.id 与 User.id 是两套独立主键序列，
 # 直接复用 Conversation 会造成不同管理员与用户之间的会话相互串扰。
 class AdminConversation(Model):
-    id = fields.IntField(pk=True, null=False)
+    id = fields.IntField(primary_key=True, null=False)
     admin = fields.ForeignKeyField('models.Admin', related_name='conversations')
     title = fields.CharField(max_length=255, default='新对话')
     created_at = fields.DatetimeField(auto_now_add=True)
@@ -102,7 +102,7 @@ class AdminConversation(Model):
 
 
 class AdminMessage(Model):
-    id = fields.IntField(pk=True, null=False)
+    id = fields.IntField(primary_key=True, null=False)
     conversation = fields.ForeignKeyField(
         'models.AdminConversation', related_name='messages'
     )
@@ -115,7 +115,7 @@ class AdminMessage(Model):
 
 
 class Knowledge(Model):
-    id = fields.IntField(pk=True, null=False)
+    id = fields.IntField(primary_key=True, null=False)
     filename = fields.CharField(max_length=255, null=True)
     original_name = fields.CharField(max_length=255, null=True)
     file_size = fields.IntField(null=True)
@@ -129,7 +129,7 @@ class Knowledge(Model):
 class RagRetrievalTrace(Model):
     """RAG 请求的版本化检索、引用和耗时审计。"""
 
-    id = fields.CharField(max_length=36, pk=True)
+    id = fields.CharField(max_length=36, primary_key=True)
     conversation_type = fields.CharField(max_length=16, null=True)
     conversation_id = fields.IntField(null=True, db_index=True)
     message_id = fields.IntField(null=True, db_index=True)
@@ -159,7 +159,7 @@ class RagRetrievalTrace(Model):
 
 
 class Dataset(Model):
-    id = fields.IntField(pk=True, null=False)
+    id = fields.IntField(primary_key=True, null=False)
     dataset_no = fields.CharField(max_length=26, null=False, unique=True, description='数据集编号')
     name = fields.CharField(max_length=255, null=False, db_index=True, description='数据集名称')
     description = fields.TextField(null=True, description='数据集描述')
@@ -174,7 +174,7 @@ class Dataset(Model):
 
 
 class DatasetInfo(Model):
-    id = fields.IntField(pk=True, null=False)
+    id = fields.IntField(primary_key=True, null=False)
     dataset = fields.ForeignKeyField('models.Dataset', null=False, related_name='dataset_infos', description='关联所属数据集')
     root_directory = fields.CharField(max_length=500, null=True, description='数据根目录路径')
     class_count = fields.IntField(default=0, null=False, description='类别数量')
@@ -187,7 +187,7 @@ class DatasetInfo(Model):
 
 
 class Algorithm(Model):
-    id = fields.IntField(pk=True, null=False)
+    id = fields.IntField(primary_key=True, null=False)
     algorithm_no = fields.CharField(max_length=26, null=False, unique=True, description='算法编号')
     name = fields.CharField(max_length=255, null=False, db_index=True, description='算法名称')
     abbreviation = fields.CharField(max_length=64, null=True, description='算法简称/缩写')
@@ -203,7 +203,7 @@ class Algorithm(Model):
 
 
 class AlgorithmInfo(Model):
-    id = fields.IntField(pk=True, null=False)
+    id = fields.IntField(primary_key=True, null=False)
     algorithm = fields.ForeignKeyField('models.Algorithm', null=False, related_name='algorithm_infos', source_field='algorithm_id', description='关联所属算法')
     framework = fields.CharField(max_length=64, null=False, description='所使用的框架')
     framework_version = fields.CharField(max_length=64, null=True, description='框架版本号')
@@ -228,7 +228,7 @@ class AlgorithmInfo(Model):
 
 
 class TrainingJob(Model):
-    id = fields.BigIntField(pk=True)
+    id = fields.BigIntField(primary_key=True)
     job_no = fields.CharField(max_length=36, unique=True, description='训练任务编号')
     owner_id = fields.IntField(db_index=True, description='系统用户或管理员 ID')
     owner_role = fields.CharField(max_length=20, db_index=True, description='任务所有者角色')
@@ -282,7 +282,7 @@ class TrainingJob(Model):
 
 
 class TrainingEvent(Model):
-    id = fields.BigIntField(pk=True)
+    id = fields.BigIntField(primary_key=True)
     job = fields.ForeignKeyField(
         'models.TrainingJob',
         related_name='events',
@@ -301,7 +301,7 @@ class TrainingEvent(Model):
 
 
 class TrainingMetric(Model):
-    id = fields.BigIntField(pk=True)
+    id = fields.BigIntField(primary_key=True)
     job = fields.ForeignKeyField(
         'models.TrainingJob',
         related_name='metrics',
@@ -320,7 +320,7 @@ class TrainingMetric(Model):
 
 
 class TrainingLog(Model):
-    id = fields.BigIntField(pk=True)
+    id = fields.BigIntField(primary_key=True)
     job = fields.ForeignKeyField(
         'models.TrainingJob',
         related_name='logs',
@@ -340,7 +340,7 @@ class TrainingLog(Model):
 
 
 class TrainingArtifact(Model):
-    id = fields.BigIntField(pk=True)
+    id = fields.BigIntField(primary_key=True)
     job = fields.ForeignKeyField(
         'models.TrainingJob',
         related_name='artifacts',
@@ -362,7 +362,7 @@ class TrainingArtifact(Model):
 
 
 class TrainingAudit(Model):
-    id = fields.BigIntField(pk=True)
+    id = fields.BigIntField(primary_key=True)
     job = fields.ForeignKeyField(
         'models.TrainingJob',
         related_name='audits',
@@ -385,7 +385,7 @@ class TrainingAudit(Model):
 class TrainingJobDeletion(Model):
     """物理删除后的最小审计存根，不与 training_jobs 建立外键。"""
 
-    id = fields.BigIntField(pk=True)
+    id = fields.BigIntField(primary_key=True)
     original_job_id = fields.BigIntField(db_index=True)
     job_no = fields.CharField(max_length=36, unique=True)
     owner_id = fields.IntField(db_index=True)
@@ -406,7 +406,7 @@ class TrainingJobDeletion(Model):
 class InferenceJob(Model):
     """由成功训练产物驱动的算法推理/评估任务。"""
 
-    id = fields.BigIntField(pk=True)
+    id = fields.BigIntField(primary_key=True)
     job_no = fields.CharField(max_length=36, unique=True)
     owner_id = fields.IntField(db_index=True)
     owner_role = fields.CharField(max_length=20, db_index=True)

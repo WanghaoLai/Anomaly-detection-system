@@ -148,21 +148,18 @@ services/rag/
 7. **移除兼容层**：至少经过两个发布周期、确认没有外部旧导入后再删除平铺文件；删除
    前加入弃用日志和导入扫描。
 
-当前已完成步骤 1～6。真实实现已按 loading、splitting、indexing、retrieval、
-answering 顺序迁移；旧平铺文件不再定义业务类或函数，只通过 `_compat.reexport` 暴露
-同一个对象。`llamaindex_indexing.py` 使用模块级别名，继续兼容既有故障注入路径。
-
-步骤 7 尚未执行：旧文件仍服务于外部脚本和历史扩展，必须经过发布观察期后删除。
+步骤 1～7 已全部完成。真实实现按 loading、splitting、indexing、retrieval、
+answering 顺序迁移；全部生产代码、测试与脚本均已改用新分层路径，旧平铺
+shim 文件与 `_compat.py` 已删除，旧路径导入会直接 ModuleNotFoundError。
 
 ## 兼容性规则
 
 - `services.chat_service.ChatService`、`services.knowledge_service.KnowledgeService`、
   `services.llm_service.LLMService` 的公开签名不得改变。
-- `services.rag.contracts` 等旧路径在兼容期仍返回同一个类/函数对象。
+- 新代码只允许从 `core`、`document`、`indexing`、`search`、`answering`、
+  `operations` 六个子包导入；旧平铺路径已不存在。
 - 不修改 Document/Node ID 算法、Manifest Schema、Collection 名称或 active pointer。
-- 兼容别名必须使用对象别名，禁止复制实现。
 - 新目录中的应用模块继续受 `layers.py` 的厂商 SDK 禁止导入检查约束。
-- `python scripts/check_rag_legacy_imports.py` 必须保持通过，防止生产代码重新依赖旧路径。
 
 ## 验证命令
 
@@ -171,5 +168,4 @@ python -m pytest -q
 python scripts/check_rag_p0_contract.py --check-index
 python scripts/evaluate_rag_context.py
 python scripts/evaluate_rag_grounding.py
-python scripts/check_rag_legacy_imports.py
 ```

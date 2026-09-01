@@ -7,7 +7,6 @@ import random
 import time
 
 import httpx
-from dashscope import Generation
 
 from settings import AI_CONFIG
 from .rag.answering.llm_types import (
@@ -64,59 +63,6 @@ class LLMService:
             full_messages.append({"role": "system", "content": system_prompt})
         full_messages.extend(messages)
         return full_messages
-
-    def _request_kwargs(
-        self,
-        messages: list,
-        system_prompt: str | None,
-        *,
-        structured: bool,
-    ) -> dict:
-        kwargs = {
-            "model": self.model,
-            "messages": self._messages(messages, system_prompt),
-            "result_format": "message",
-            "timeout": self.timeout_seconds,
-            # 显式传参而不是写 dashscope.api_key 全局变量：
-            # chat 与 admin_chat 两个服务实例不能互相覆盖共享状态。
-            "api_key": self.api_key,
-        }
-        if structured:
-            kwargs["response_format"] = {"type": "json_object"}
-        return kwargs
-
-    @staticmethod
-    def _response_content(response) -> str:
-        status_code = getattr(response, "status_code", None)
-        if status_code != 200:
-            message = getattr(response, "message", "未知错误")
-            request_id = getattr(response, "request_id", "")
-            raise LLMGenerationError(
-                f"Qwen 返回失败: status={status_code}, message={message}"
-                + (f", request_id={request_id}" if request_id else "")
-            )
-        try:
-            content = response.output.choices[0].message.content
-        except (AttributeError, IndexError, TypeError) as exc:
-            raise LLMProtocolError("Qwen 响应缺少 message.content") from exc
-        if not isinstance(content, str) or not content.strip():
-            raise LLMProtocolError("Qwen 返回空内容")
-        return content
-
-    def _call_sync(
-        self,
-        messages: list,
-        system_prompt: str | None,
-        *,
-        structured: bool,
-    ) -> str:
-        try:
-            response = Generation.call(**self._request_kwargs(
-                messages, system_prompt, structured=structured
-            ))
-        except Exception as exc:
-            raise LLMGenerationError("Qwen 调用失败") from exc
-        return self._response_content(response)
 
     async def _call_result(
         self,
@@ -271,11 +217,6 @@ class LLMService:
         content = await self.chat(messages, system_prompt)
         for start in range(0, len(content), 96):
             yield content[start:start + 96]
-
-    def chat_llm(self, messages: list, system_prompt: str = None) -> str:
-        """保留同步兼容入口；新应用代码应使用异步方法。"""
-
-        return self._call_sync(messages, system_prompt, structured=False)
 
 
 __all__ = [

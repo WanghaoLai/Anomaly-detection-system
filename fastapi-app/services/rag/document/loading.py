@@ -10,7 +10,7 @@ import re
 from collections import Counter
 from typing import Callable, Optional
 
-from ..core.contracts import Document
+from ..core.contracts import Document, SourceInfo
 from .markdown import MARKDOWN_FENCE_RE, MARKDOWN_HEADING_RE
 
 logger = logging.getLogger(__name__)
@@ -45,9 +45,72 @@ class MarkItDownDocumentLoader:
         self,
         converter_provider: Callable[[], object],
         stream_info_factory: Optional[Callable[..., object]] = None,
+        pdf_ocr=None,
+        pdf_ocr_min_chars: int = 200,
+        pdf_ocr_min_chars_per_page: int = 20,
     ):
         self._converter_provider = converter_provider
         self._stream_info_factory = stream_info_factory
+        self._pdf_ocr = pdf_ocr
+        self._pdf_ocr_min_chars = int(pdf_ocr_min_chars)
+        self._pdf_ocr_min_chars_per_page = int(pdf_ocr_min_chars_per_page)
+
+    @staticmethod
+    def _visible_chars(text: str) -> int:
+        return len(re.sub(r"\s+", "", text or ""))
+
+    def _maybe_ocr_pdf(
+        self, file_bytes: bytes, markdown: str, source_filename: str
+    ) -> tuple[str, dict]:
+        metadata = {
+            "ocr_attempted": False,
+            "ocr_status": "not_needed",
+            "ocr_pages": 0,
+        }
+        if self._pdf_ocr is None:
+            return markdown, metadata
+        try:
+            page_count = self._pdf_ocr.page_count(file_bytes)
+        except Exception as exc:
+            logger.warning(
+                "PDF 页数检查失败，保持 MarkItDown 结果: filename=%s error=%s",
+                source_filename,
+                exc,
+            )
+            metadata.update({"ocr_status": "inspection_failed"})
+            return markdown, metadata
+        metadata["page_count"] = page_count
+        minimum_chars = max(
+            self._pdf_ocr_min_chars,
+            page_count * self._pdf_ocr_min_chars_per_page,
+        )
+        if self._visible_chars(markdown) >= minimum_chars:
+            return markdown, metadata
+        metadata["ocr_attempted"] = True
+        try:
+            result = self._pdf_ocr.extract(file_bytes)
+        except Exception as exc:
+            logger.warning(
+                "本地 PDF OCR 失败: filename=%s error=%s",
+                source_filename,
+                exc,
+            )
+            metadata.update({"ocr_status": "failed", "ocr_error": type(exc).__name__})
+            return markdown, metadata
+        ocr_text = str(result.text or "").strip()
+        if self._visible_chars(ocr_text) <= self._visible_chars(markdown):
+            metadata.update({"ocr_status": "no_improvement", "ocr_pages": result.ocr_pages})
+            return markdown, metadata
+        metadata.update({
+            "ocr_status": "applied",
+            "ocr_pages": result.ocr_pages,
+            "page_count": result.page_count,
+            "ocr_engine": getattr(self._pdf_ocr, "engine", "local"),
+            "ocr_engine_version": getattr(self._pdf_ocr, "engine_version", "unknown"),
+            "ocr_model_family": getattr(self._pdf_ocr, "model_family", "unknown"),
+            "ocr_model_version": getattr(self._pdf_ocr, "model_version", "unknown"),
+        })
+        return ocr_text, metadata
 
     def load(self, file_bytes: bytes, filename: str) -> Document:
         source_filename = safe_filename(filename)
@@ -64,6 +127,7 @@ class MarkItDownDocumentLoader:
             )}
         else:
             kwargs = {"file_extension": extension}
+        conversion_error = None
         try:
             result = self._converter_provider().convert_stream(
                 io.BytesIO(bytes(file_bytes)),
@@ -71,20 +135,39 @@ class MarkItDownDocumentLoader:
             )
         except Exception as exc:
             logger.warning("MarkItDown 转换失败: filename=%s error=%s", source_filename, exc)
-            raise ValueError(f"文档转换失败: {source_filename}") from exc
+            if extension != ".pdf" or self._pdf_ocr is None:
+                raise ValueError(f"文档转换失败: {source_filename}") from exc
+            conversion_error = exc
+            result = None
 
-        markdown = getattr(result, "markdown", None)
-        if markdown is None:
+        markdown = getattr(result, "markdown", None) if result is not None else None
+        if markdown is None and result is not None:
             markdown = getattr(result, "text_content", None)
-        if not isinstance(markdown, str) or not markdown.strip():
-            raise ValueError(f"文档转换后无有效 Markdown 内容: {source_filename}")
+        markdown = markdown if isinstance(markdown, str) else ""
+        ocr_metadata = {}
+        if extension == ".pdf":
+            markdown, ocr_metadata = self._maybe_ocr_pdf(
+                file_bytes, markdown, source_filename
+            )
+        if not markdown.strip():
+            error = ValueError(
+                f"文档转换后无有效 Markdown 内容: {source_filename}"
+            )
+            if conversion_error is not None:
+                raise error from conversion_error
+            raise error
         return Document(
             text=markdown.strip(),
             metadata={
                 "filename": source_filename,
                 "extension": extension,
                 "content_format": "markdown",
-                "converter": "markitdown",
+                "converter": (
+                    "tesseract_ocr"
+                    if ocr_metadata.get("ocr_status") == "applied"
+                    else "markitdown"
+                ),
+                **ocr_metadata,
             },
         )
 
@@ -235,6 +318,8 @@ class DefaultDocumentPreprocessor:
         raw_markdown = document.text
         if extension == ".pdf":
             markdown, diagnostics = preprocess_pdf_markdown(raw_markdown)
+            if document.metadata.get("page_count"):
+                diagnostics["page_count"] = int(document.metadata["page_count"])
         else:
             markdown = raw_markdown.strip()
             titles = [
@@ -255,6 +340,36 @@ class DefaultDocumentPreprocessor:
             }
         if not markdown.strip():
             raise ValueError("文档清理后无有效内容")
+        raw_chars = max(1, int(diagnostics.get("raw_char_count") or 0))
+        cleaned_chars = int(diagnostics.get("cleaned_char_count") or 0)
+        page_count = max(1, int(diagnostics.get("page_count") or 1))
+        retention = min(1.0, cleaned_chars / raw_chars)
+        # Phase 4A 只观测：每页 200 个清洗字符视作充分文本覆盖，不改变生产拒绝。
+        text_coverage = (
+            min(1.0, cleaned_chars / (page_count * 200))
+            if extension == ".pdf" else 1.0
+        )
+        minimum_observed_chars = max(200, page_count * 20)
+        quality_would_pass = cleaned_chars >= minimum_observed_chars
+        quality_warnings = []
+        if not quality_would_pass:
+            quality_warnings.append("low_text_coverage")
+        if extension == ".pdf" and diagnostics.get("detected_title_count") == 0:
+            quality_warnings.append("no_detected_titles")
+        diagnostics.update({
+            "parse_status": "parsed",
+            "parse_quality_score": round(
+                0.7 * text_coverage + 0.3 * retention, 4
+            ),
+            "text_coverage": round(text_coverage, 4),
+            "text_retention": round(retention, 4),
+            "ocr_pages": int(document.metadata.get("ocr_pages") or 0),
+            "ocr_status": document.metadata.get("ocr_status", "not_configured"),
+            "quality_gate_mode": "observe_only",
+            "quality_passed": True,
+            "quality_would_pass": quality_would_pass,
+            "quality_warnings": quality_warnings,
+        })
         # 清洗只允许改变正文，不能丢失 P1 已固化的文档身份和原始来源。
         return Document(
             text=markdown,
@@ -264,43 +379,68 @@ class DefaultDocumentPreprocessor:
         ), diagnostics
 
 
-class PaperDocumentPreprocessor(DefaultDocumentPreprocessor):
-    """论文回退清洗：保留显式 Markdown 标题，不把公式编号猜成章节。"""
+def prepare_document_worker_payload(payload: dict) -> dict:
+    """基础设施 Worker：把 MarkItDown/OCR/LlamaIndex 收敛为纯字典结果。"""
+    from markitdown import MarkItDown, StreamInfo
 
-    def process(self, document: Document) -> tuple[Document, dict]:
-        extension = str(document.metadata.get("extension") or "").lower()
-        if extension != ".pdf":
-            return super().process(document)
-        raw_markdown = document.text
-        pages, page_markers = _split_pdf_pages(raw_markdown)
-        pages, removed_headers, removed_footers = _remove_repeated_pdf_boundaries(
-            pages
+    from .ocr import LocalTesseractPdfOcr
+    from .parsing import MarkdownNodeParser
+
+    ocr_config = dict(payload.get("ocr") or {})
+    pdf_ocr = None
+    if ocr_config.get("enabled"):
+        pdf_ocr = LocalTesseractPdfOcr(
+            tesseract_path=str(ocr_config["tesseract_path"]),
+            pdftoppm_path=str(ocr_config["pdftoppm_path"]),
+            pdfinfo_path=str(ocr_config["pdfinfo_path"]),
+            tessdata_path=str(ocr_config["tessdata_path"]),
+            languages=str(ocr_config["languages"]),
+            dpi=int(ocr_config["dpi"]),
+            timeout_seconds=float(ocr_config["timeout_seconds"]),
         )
-        markdown = "\n\n".join(
-            "\n".join(page).strip()
-            for page in pages if any(line.strip() for line in page)
-        ).strip()
-        if not markdown:
-            raise ValueError("论文清理后无有效内容")
-        headings = [
-            line.strip() for line in markdown.splitlines()
-            if MARKDOWN_HEADING_RE.match(line)
-        ]
-        diagnostics = {
-            "page_count": len(pages),
-            "page_markers_removed": page_markers,
-            "headers_removed": len(removed_headers),
-            "footers_removed": len(removed_footers),
-            "removed_header_samples": list(dict.fromkeys(removed_headers))[:5],
-            "removed_footer_samples": list(dict.fromkeys(removed_footers))[:5],
-            "detected_title_count": len(headings),
-            "detected_titles": headings[:20],
-            "raw_char_count": len(raw_markdown),
-            "cleaned_char_count": len(markdown),
-        }
-        return Document(
-            text=markdown,
-            metadata=document.metadata,
-            document_id=document.document_id,
-            source=document.source,
-        ), diagnostics
+    loader = MarkItDownDocumentLoader(
+        lambda: MarkItDown(enable_plugins=False),
+        StreamInfo,
+        pdf_ocr=pdf_ocr,
+        pdf_ocr_min_chars=int(payload["ocr_min_chars"]),
+        pdf_ocr_min_chars_per_page=int(payload["ocr_min_chars_per_page"]),
+    )
+    source_payload = payload.get("source")
+    source = SourceInfo(**source_payload) if source_payload else None
+    filename = str(payload["filename"])
+    extension = os.path.splitext(filename)[1].lower()
+    loaded = loader.load(bytes(payload["file_bytes"]), filename)
+    document, diagnostics = DefaultDocumentPreprocessor().process(Document(
+        text=loaded.text,
+        metadata={
+            **dict(loaded.metadata),
+            "filename": filename,
+            "extension": extension,
+            "content_format": "markdown",
+            "ingestion_schema_version": str(payload["ingestion_schema_version"]),
+        },
+        document_id=payload.get("document_id"),
+        source=source,
+    ))
+    nodes = MarkdownNodeParser(
+        int(payload["chunk_tokens"]), int(payload["overlap_tokens"])
+    ).parse(document)
+    if not nodes:
+        raise ValueError("文档分块后无有效内容")
+    chunks = [
+        {"content": node.text, "node_id": node.node_id, **dict(node.metadata)}
+        for node in nodes
+    ]
+    diagnostics = dict(diagnostics)
+    diagnostics["chunk_count"] = len(chunks)
+    diagnostics["average_chunk_tokens"] = round(
+        sum(int(chunk.get("token_count") or 0) for chunk in chunks) / len(chunks),
+        1,
+    )
+    return {
+        "filename": filename,
+        "extension": extension,
+        "markdown": document.text,
+        "chunks": chunks,
+        "diagnostics": diagnostics,
+    }

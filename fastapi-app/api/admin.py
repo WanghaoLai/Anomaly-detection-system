@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, create_model
@@ -114,24 +114,6 @@ async def delete(
     await AuthSession.filter(user_id=admin_id, role="管理员").delete()
     await Admin.filter(id=admin_id).delete()
     return Result.success()
-
-
-@router.delete("/deleteBatch")
-async def delete_batch(
-    ids: List[int],
-    current_admin: dict = Depends(get_current_admin),
-):
-    if current_admin["user_id"] in ids:
-        raise CustomException("不能删除当前登录的管理员账号")
-    await AuthSession.filter(user_id__in=ids, role="管理员").delete()
-    await Admin.filter(id__in=ids).delete()
-    return Result.success()
-
-
-@router.get("/selectById/{admin_id}")
-async def select_one(admin_id: int):
-    admin = await Admin.get(id=admin_id)
-    return Result.success(AdminReadPydantic.model_validate(admin).model_dump())
 
 
 @router.get("/selectAll")

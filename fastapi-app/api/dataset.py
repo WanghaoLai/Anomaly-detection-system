@@ -150,9 +150,3 @@ async def update_info(info_pydantic: DatasetInfoCreatePydantic):
     update_data = info_pydantic.model_dump(exclude_unset=True, exclude={'id'})
     await DatasetInfo.filter(id=info_pydantic.id).update(**update_data)
     return Result.success()
-
-
-@router.delete("/info/delete/{id}", dependencies=[Depends(get_current_admin)])
-async def delete_info(id: int):
-    await DatasetInfo.filter(id=id).delete()
-    return Result.success()

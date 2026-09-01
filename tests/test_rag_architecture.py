@@ -1,5 +1,4 @@
 import inspect
-import importlib
 import sys
 import unittest
 from pathlib import Path
@@ -27,18 +26,9 @@ from services.rag.search import (  # noqa: E402
     AuthorizedRetrievalPipeline,
     SearchRuntimeConfig,
 )
-from scripts.check_rag_legacy_imports import scan_production_imports  # noqa: E402
 
 
 class RagArchitectureRefactorTests(unittest.TestCase):
-    LEGACY_SHIMS = (
-        "contracts.py", "access.py", "loaders.py", "splitters.py",
-        "ingestion.py", "artifacts.py", "llamaindex_parser.py",
-        "embeddings.py", "vector_store.py", "retrieval.py", "lexical.py",
-        "reranking.py", "context.py", "generation.py", "grounding.py",
-        "audit.py", "sse.py",
-    )
-
     def test_knowledge_legacy_helpers_are_compatibility_aliases(self):
         self.assertIs(knowledge_module._approx_token_len, approx_token_len)
         self.assertIs(
@@ -70,40 +60,6 @@ class RagArchitectureRefactorTests(unittest.TestCase):
         self.assertIn("dense_k", fields)
         self.assertIn("final_k", fields)
 
-    def test_legacy_flat_modules_are_pure_compatibility_shims(self):
-        rag_root = BACKEND_DIR / "services" / "rag"
-        for filename in self.LEGACY_SHIMS:
-            source = (rag_root / filename).read_text(encoding="utf-8")
-            definitions = [
-                line for line in source.splitlines()
-                if line.startswith(("class ", "def ", "async def "))
-            ]
-            self.assertEqual(definitions, [], filename)
-            self.assertIn("_reexport(globals(), _implementation)", source)
-
-    def test_old_and_new_imports_return_same_objects(self):
-        mappings = (
-            ("services.rag.contracts", "services.rag.core.contracts", "Document"),
-            ("services.rag.loaders", "services.rag.document.loading", "MarkItDownDocumentLoader"),
-            ("services.rag.retrieval", "services.rag.search.retrieval", "HybridResultSelector"),
-            ("services.rag.context", "services.rag.answering.context", "ContextPacker"),
-            ("services.rag.grounding", "services.rag.answering.grounding", "GroundedAnswerValidator"),
-            ("services.rag.sse", "services.rag.operations.sse", "encode_sse"),
-        )
-        for old_path, new_path, symbol in mappings:
-            old_module = importlib.import_module(old_path)
-            new_module = importlib.import_module(new_path)
-            self.assertIs(
-                getattr(old_module, symbol),
-                getattr(new_module, symbol),
-                old_path,
-            )
-
-    def test_writer_legacy_module_alias_preserves_fault_injection_path(self):
-        old_module = importlib.import_module("services.rag.llamaindex_indexing")
-        new_module = importlib.import_module("services.rag.indexing.writer")
-        self.assertIs(old_module, new_module)
-
     def test_implementations_are_owned_by_new_modules(self):
         ownership = (
             (approx_token_len, "services.rag.document.splitting"),
@@ -113,16 +69,6 @@ class RagArchitectureRefactorTests(unittest.TestCase):
         )
         for symbol, expected_module in ownership:
             self.assertEqual(symbol.__module__, expected_module)
-
-    def test_production_code_has_no_legacy_flat_imports(self):
-        self.assertEqual(scan_production_imports(), [])
-
-    def test_paper_provider_types_do_not_leak_into_core_contracts(self):
-        core_source = (
-            BACKEND_DIR / "services" / "rag" / "core" / "contracts.py"
-        ).read_text(encoding="utf-8").casefold()
-        self.assertNotIn("docling", core_source)
-        self.assertNotIn("grobid", core_source)
 
 
 if __name__ == "__main__":

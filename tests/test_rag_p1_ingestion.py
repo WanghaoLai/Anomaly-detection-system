@@ -16,8 +16,10 @@ from services.knowledge_service import (  # noqa: E402
     KnowledgeService,
 )
 from services.rag.document.storage import (  # noqa: E402
+    RELEASE_SMOKE_SCHEMA_VERSION,
     deterministic_document_id,
     deterministic_node_id,
+    sha256_bytes,
 )
 from services.rag.core.contracts import Document, Node  # noqa: E402
 from services.rag.document.splitting import PARSER_SCHEMA_VERSION  # noqa: E402
@@ -82,6 +84,37 @@ class RagP1IngestionTests(unittest.TestCase):
         self.assertIsNone(previous)
         return staged
 
+    def test_required_release_smoke_blocks_publish_until_20_of_20_attested(self):
+        staged = self.service.stage_document_release(b"raw-v1", "manual.md")
+        smoke_set_path = (
+            Path(__file__).parents[1]
+            / "config"
+            / "rag_phase4_release_smoke_v0.json"
+        )
+        configured = {
+            "rag_release_smoke_required": True,
+            "rag_release_smoke_set_path": str(smoke_set_path),
+        }
+        with patch.dict(knowledge_module.AI_CONFIG, configured, clear=False):
+            with self.assertRaisesRegex(FileNotFoundError, "证明不存在"):
+                self.service.publish_staged_release(staged["release_id"])
+
+            manifest_path = self.service.artifact_repository.releases.release_path(
+                staged["release_id"]
+            )
+            self.service.artifact_repository.release_smokes.put({
+                "schema_version": RELEASE_SMOKE_SCHEMA_VERSION,
+                "release_id": staged["release_id"],
+                "manifest_sha256": sha256_bytes(manifest_path.read_bytes()),
+                "smoke_set_sha256": sha256_bytes(smoke_set_path.read_bytes()),
+                "question_count": 20,
+                "evidence_hits": 20,
+                "passed": True,
+            })
+            previous = self.service.publish_staged_release(staged["release_id"])
+
+        self.assertIsNone(previous)
+
     def test_original_file_document_nodes_and_source_are_preserved(self):
         staged = self.service.stage_document_release(b"raw-v1", "folder\\manual.md")
 
@@ -103,6 +136,7 @@ class RagP1IngestionTests(unittest.TestCase):
 
     def test_shadow_can_be_fully_rebuilt_with_stable_non_duplicate_nodes(self):
         first = self._publish_first()
+        calls_after_first = self.embedding.document_calls
         active_manifest = self.service.artifact_repository.releases.get(
             first["release_id"]
         )
@@ -118,6 +152,13 @@ class RagP1IngestionTests(unittest.TestCase):
         self.assertEqual(len(rebuilt_ids), len(set(rebuilt_ids)))
         self.assertEqual(rebuilt_collection.count(), rebuilt["node_count"])
         self.assertEqual(self.service.active_collection_name(), first["collection_name"])
+        self.assertEqual(self.embedding.document_calls, calls_after_first)
+        self.assertEqual(
+            rebuilt["indexing"]["reused_embeddings"], rebuilt["node_count"]
+        )
+        self.assertEqual(rebuilt["indexing"]["generated_embeddings"], 0)
+        self.assertEqual(rebuilt["indexing"]["embedding_cache_hit_rate"], 1.0)
+        self.assertEqual(rebuilt["indexing"]["embedding_api_calls"], 0)
 
     def test_same_upload_is_idempotent_and_does_not_rebuild_or_duplicate(self):
         first = self._publish_first()

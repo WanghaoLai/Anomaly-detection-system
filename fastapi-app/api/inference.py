@@ -1,11 +1,9 @@
 """由已训练模型驱动的通用算法推理 API。"""
 
 from typing import Any
-from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
-from starlette.responses import Response
 
 from common.auth import get_current_user
 from common.result import PageInfo, Result
@@ -174,20 +172,3 @@ async def get_job(job_id: int, current_user: dict = Depends(get_current_user)):
         pass
     metadata = await _metadata([job])
     return Result.success(_data(job, metadata.get(job.id)))
-
-
-@router.get("/jobs/{job_id}/outputs/{output_path:path}")
-async def output(
-    job_id: int,
-    output_path: str,
-    current_user: dict = Depends(get_current_user),
-):
-    job = await _accessible(job_id, current_user)
-    try:
-        content, media_type = await inference_executor_service.read_output(
-            job,
-            unquote(output_path),
-        )
-    except InferenceExecutorError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return Response(content=content, media_type=media_type, headers={"Cache-Control": "private, no-store"})
