@@ -15,7 +15,12 @@ from services.rag.core.access import (  # noqa: E402
     DocumentAccessPolicy,
     KnowledgeAccessPolicy,
 )
-from services.rag.answering.context import ContextPacker, ContextPackingPolicy  # noqa: E402
+from services.rag.answering.context import (  # noqa: E402
+    ContextPacker,
+    ContextPackingPolicy,
+    PackedContext,
+    PackedContextEntry,
+)
 from services.rag.answering.grounding import (  # noqa: E402
     GROUNDING_FAILURE_REFUSAL,
     INTERNAL_REFUSAL,
@@ -165,6 +170,83 @@ class GroundedAnswerValidatorTests(unittest.TestCase):
         self.assertEqual(len(answer.claims), 2)
         self.assertNotIn("内核", answer.text)
         self.assertAlmostEqual(answer.faithfulness, 2 / 3)
+        self.assertEqual(answer.claims_raw, 3)
+        self.assertEqual(answer.claims_supported, 2)
+        self.assertEqual(answer.claims_rejected, 1)
+        self.assertAlmostEqual(answer.answer_completeness_proxy, 2 / 3)
+
+    def test_overflow_requires_retry_before_representative_selection(self):
+        claims = [{
+            "text": "GPU 状态可用 nvidia-smi 查看。",
+            "citations": ["K1"],
+        } for _ in range(13)]
+
+        with self.assertRaisesRegex(GroundingValidationError, "超过限制") as caught:
+            self.validator.validate({
+                "mode": "knowledge_base",
+                "refusal": False,
+                "claims": claims,
+            }, self.packed, question="如何查看 GPU？")
+
+        self.assertEqual(caught.exception.reason_code, "claim_count_exceeded")
+
+    def test_overflow_selection_keeps_relevant_command_and_source_coverage(self):
+        entries = (
+            PackedContextEntry(
+                citation_id="K1", node_id="node-general", source="guide.md",
+                heading_path="概览", position="L1-L20",
+                text="服务器资源使用需要遵守平台规范。", token_count=20,
+                truncated=False, document_timestamp="2025-01-01",
+            ),
+            PackedContextEntry(
+                citation_id="K2", node_id="node-disk", source="ops.md",
+                heading_path="磁盘排查", position="L30-L40",
+                text="磁盘占用可执行 `df -h` 查看。", token_count=20,
+                truncated=False, document_timestamp="2026-01-01",
+            ),
+        )
+        packed = PackedContext(
+            text="", token_count=40, entries=entries, input_node_count=2,
+            duplicate_node_count=0, omitted_node_count=0,
+        )
+        claims = [{
+            "text": "服务器资源使用需要遵守平台规范。",
+            "citations": ["K1"],
+        } for _ in range(12)] + [{
+            "text": "磁盘占用可执行 `df -h` 查看。",
+            "citations": ["K2"],
+        }, {
+            "text": "服务器资源使用需要遵守平台规范。",
+            "citations": ["K1"],
+        }]
+
+        answer = self.validator.validate({
+            "mode": "knowledge_base", "refusal": False, "claims": claims,
+        }, packed, question="磁盘排查要使用什么命令？", allow_overflow_selection=True)
+
+        self.assertEqual(len(answer.claims), 12)
+        self.assertIn("K2", answer.citations)
+        self.assertEqual(answer.claims_raw, 14)
+        self.assertEqual(answer.claims_supported, 14)
+        self.assertEqual(answer.claims_overflow_dropped, 2)
+        self.assertAlmostEqual(answer.answer_completeness_proxy, 12 / 14)
+
+    def test_invalid_citation_claim_is_dropped_when_safe_claim_survives(self):
+        answer = self.validator.validate({
+            "mode": "knowledge_base",
+            "refusal": False,
+            "claims": [
+                {"text": "伪造管理员资料。", "citations": ["K99"]},
+                {
+                    "text": "GPU 状态可用 nvidia-smi 查看。",
+                    "citations": ["K1"],
+                },
+            ],
+        }, self.packed)
+
+        self.assertEqual(answer.citations, ("K1",))
+        self.assertEqual(answer.claims_rejected, 1)
+        self.assertAlmostEqual(answer.faithfulness, 0.5)
 
     def test_fabricated_prose_claim_is_blocked_by_lexical_floor(self):
         # 无技术原子可校验的纯文字编造，必须被词面下限拦截。
@@ -405,6 +487,81 @@ class ChatServiceP5Tests(unittest.TestCase):
         retry_payload = llm.structured_calls[1][0][0]["content"]
         self.assertIn("server_output_contract_retry", retry_payload)
 
+    def test_overflow_retries_once_then_selects_safe_representative_claims(self):
+        overflow = json.dumps({
+            "mode": "knowledge_base",
+            "refusal": False,
+            "claims": [{
+                "text": "服务器 GPU 使用 nvidia-smi 查看。",
+                "citations": ["K1"],
+            } for _ in range(13)],
+        }, ensure_ascii=False)
+        llm = SequencedFakeLLM([overflow, overflow])
+        node = {
+            "node_id": "node-1", "doc_id": "doc-1", "chunk_index": 0,
+            "filename": "manual.md",
+            "content": "服务器 GPU 使用 nvidia-smi 查看。", "score": 0.99,
+        }
+        knowledge = Mock()
+        knowledge.search.return_value = [node]
+        knowledge.list_document_chunks.return_value = [node]
+        service = ChatService(llm, knowledge)
+
+        answer = self.run_async(service.answer(
+            "服务器 GPU 怎么查看？", [],
+            principal={"user_id": 3, "role": "用户"},
+        ))
+
+        self.assertFalse(answer.refusal)
+        self.assertEqual(len(answer.claims), 12)
+        self.assertTrue(answer.claim_limit_retry_triggered)
+        self.assertEqual(answer.claims_overflow_dropped, 1)
+        self.assertEqual(len(llm.structured_calls), 2)
+        retry_payload = llm.structured_calls[1][0][0]["content"]
+        self.assertIn('"retry_reason": "claim_count_exceeded"', retry_payload)
+        self.assertIn("不超过 12 条", retry_payload)
+
+    def test_low_faithfulness_is_retry_signal_not_final_rejection(self):
+        llm = SequencedFakeLLM([
+            json.dumps({
+                "mode": "knowledge_base", "refusal": False,
+                "claims": [
+                    {
+                        "text": "服务器 GPU 使用 nvidia-smi 查看。",
+                        "citations": ["K1"],
+                    },
+                    {"text": "服务器每天自动重启。", "citations": ["K1"]},
+                ],
+            }, ensure_ascii=False),
+            json.dumps({
+                "mode": "knowledge_base", "refusal": False,
+                "claims": [{
+                    "text": "服务器 GPU 使用 nvidia-smi 查看。",
+                    "citations": ["K1"],
+                }],
+            }, ensure_ascii=False),
+        ])
+        node = {
+            "node_id": "node-1", "doc_id": "doc-1", "chunk_index": 0,
+            "filename": "manual.md",
+            "content": "服务器 GPU 使用 nvidia-smi 查看。", "score": 0.99,
+        }
+        knowledge = Mock()
+        knowledge.search.return_value = [node]
+        knowledge.list_document_chunks.return_value = [node]
+        service = ChatService(llm, knowledge)
+
+        answer = self.run_async(service.answer(
+            "服务器 GPU 怎么查看？", [],
+            principal={"user_id": 3, "role": "用户"},
+        ))
+
+        self.assertFalse(answer.refusal)
+        self.assertTrue(answer.faithfulness_retry_triggered)
+        self.assertEqual(len(llm.structured_calls), 2)
+        retry_payload = llm.structured_calls[1][0][0]["content"]
+        self.assertIn('"retry_reason": "low_faithfulness"', retry_payload)
+
     def test_validation_retry_can_be_disabled(self):
         llm = FakeLLM(structured=json.dumps({
             "mode": "knowledge_base", "refusal": False, "claims": []
@@ -429,7 +586,6 @@ class ChatServiceP5Tests(unittest.TestCase):
 
         self.assertTrue(answer.refusal)
         self.assertEqual(len(llm.structured_calls), 1)
-
 
 class AnswerRendererTests(unittest.TestCase):
     def test_multiple_factual_claims_render_as_bullets(self):

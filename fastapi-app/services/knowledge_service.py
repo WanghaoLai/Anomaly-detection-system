@@ -4,8 +4,10 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import threading
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -28,9 +30,11 @@ from .rag.document import (
     DefaultDocumentPreprocessor,
     RELEASE_SCHEMA_VERSION,
     KnowledgeArtifactRepository,
+    LocalTesseractPdfOcr,
     MarkdownNodeParser,
     MarkItDownDocumentLoader,
     PARSER_SCHEMA_VERSION,
+    ProcessIsolatedDocumentParser,
     SUPPORTED_DOCUMENT_EXTENSIONS as RAG_SUPPORTED_DOCUMENT_EXTENSIONS,
     approx_token_len as _rag_approx_token_len,
     chunk_paragraphs as _rag_chunk_paragraphs,
@@ -42,11 +46,13 @@ from .rag.document import (
     utc_now_iso,
 )
 from .rag.indexing import (
+    CachedNodeEmbedder,
     ChromaVectorStore,
     DashScopeEmbeddingModel,
     INDEX_WRITER_SCHEMA_VERSION,
     LlamaIndexChromaIndexWriter,
     LlamaIndexEmbeddingAdapter,
+    SQLiteEmbeddingCache,
 )
 from .rag.search import ReleaseBM25Cache
 
@@ -130,7 +136,9 @@ class KnowledgeService:
         embedding=None,
         vector_store=None,
         index_writer=None,
+        embedding_cache=None,
         async_ingestion_executor=None,
+        isolated_document_parser=None,
         artifact_root: str = None,
         artifact_repository=None,
     ):
@@ -191,9 +199,48 @@ class KnowledgeService:
             raise ValueError("embedding_retry_backoff_seconds 不能小于 0")
 
         # RAG 各阶段均为可替换组件；KnowledgeService 只保留兼容门面和跨存储事务。
+        pdf_ocr = None
+        if bool(AI_CONFIG.get("rag_ocr_enabled", False)):
+            tessdata_path = str(
+                AI_CONFIG.get("rag_ocr_tessdata_path") or ""
+            ).strip() or str(self._artifact_root / "ocr" / "tessdata")
+            pdf_ocr = LocalTesseractPdfOcr(
+                tesseract_path=str(
+                    AI_CONFIG.get("rag_ocr_tesseract_path")
+                    or shutil.which("tesseract")
+                    or "/opt/homebrew/bin/tesseract"
+                ),
+                pdftoppm_path=str(
+                    AI_CONFIG.get("rag_ocr_pdftoppm_path")
+                    or shutil.which("pdftoppm")
+                    or "/opt/homebrew/bin/pdftoppm"
+                ),
+                pdfinfo_path=str(
+                    AI_CONFIG.get("rag_ocr_pdfinfo_path")
+                    or shutil.which("pdfinfo")
+                    or "/opt/homebrew/bin/pdfinfo"
+                ),
+                tessdata_path=tessdata_path,
+                languages=str(AI_CONFIG.get("rag_ocr_languages", "chi_sim+eng")),
+                dpi=int(AI_CONFIG.get("rag_ocr_dpi", 300)),
+                timeout_seconds=float(
+                    AI_CONFIG.get("rag_ocr_timeout_seconds", 120.0)
+                ),
+            )
+        custom_parser_components = any(
+            component is not None
+            for component in (document_loader, document_preprocessor, node_parser)
+        )
         self.document_loader = document_loader or MarkItDownDocumentLoader(
             lambda: self.markdown_converter,
             StreamInfo,
+            pdf_ocr=pdf_ocr,
+            pdf_ocr_min_chars=int(
+                AI_CONFIG.get("rag_ocr_min_chars", 200)
+            ),
+            pdf_ocr_min_chars_per_page=int(
+                AI_CONFIG.get("rag_ocr_min_chars_per_page", 20)
+            ),
         )
         self.document_preprocessor = document_preprocessor or DefaultDocumentPreprocessor()
         self.node_parser = node_parser or MarkdownNodeParser(
@@ -214,23 +261,64 @@ class KnowledgeService:
             getattr(self.embedding, "schema_version", EMBEDDING_SCHEMA_VERSION)
         )
         self.embedding_normalized = bool(
-            getattr(self.embedding, "normalized", True)
+            getattr(self.embedding, "normalized", False)
         )
         self.llama_embedding = LlamaIndexEmbeddingAdapter(
             self.embedding,
             model_name=self.embedding_model,
             embed_batch_size=self.embedding_batch_size,
         )
+        configured_cache_path = str(
+            AI_CONFIG.get("rag_embedding_cache_path") or ""
+        ).strip()
+        cache_path = (
+            Path(configured_cache_path)
+            if configured_cache_path
+            else self._artifact_root / "cache" / "document_embeddings.sqlite3"
+        )
+        self.embedding_cache = embedding_cache or SQLiteEmbeddingCache(
+            cache_path,
+            enabled=bool(AI_CONFIG.get("rag_embedding_cache_enabled", True)),
+        )
+        self.node_embedder = CachedNodeEmbedder(
+            embedding_adapter=self.llama_embedding,
+            cache=self.embedding_cache,
+            provider=self.embedding_provider,
+            model=self.embedding_model,
+            schema_version=self.embedding_schema_version,
+            normalized=self.embedding_normalized,
+        )
         self.vector_store = vector_store or ChromaVectorStore(lambda: self.collection)
         self.index_writer = index_writer or LlamaIndexChromaIndexWriter(
             client_provider=lambda: self.client,
             embedding_adapter=self.llama_embedding,
+            node_embedder=self.node_embedder,
             insert_batch_size=100,
         )
         self.async_ingestion_executor = (
             async_ingestion_executor
             or AsyncIngestionExecutor(
                 AI_CONFIG.get("rag_ingestion_concurrency", 1)
+            )
+        )
+        self._parser_semaphore = asyncio.Semaphore(
+            int(AI_CONFIG.get("rag_ingestion_concurrency", 1))
+        )
+        self.parser_isolation_enabled = bool(
+            AI_CONFIG.get("rag_parser_isolation_enabled", True)
+        ) and not custom_parser_components
+        self.isolated_document_parser = (
+            isolated_document_parser
+            or ProcessIsolatedDocumentParser(
+                wall_timeout_seconds=float(
+                    AI_CONFIG.get("rag_parser_wall_timeout_seconds", 120.0)
+                ),
+                memory_limit_bytes=int(
+                    AI_CONFIG.get("rag_parser_memory_limit_bytes", 1024 * 1024 * 1024)
+                ),
+                cpu_limit_seconds=int(
+                    AI_CONFIG.get("rag_parser_cpu_limit_seconds", 60)
+                ),
             )
         )
         self._bm25_cache = ReleaseBM25Cache(self._lexical_snapshot)
@@ -307,10 +395,6 @@ class KnowledgeService:
         """
         return self.document_loader.load(file_bytes, filename).text
 
-    def parse_file(self, file_bytes: bytes, filename: str) -> str:
-        """兼容旧调用方；所有文件解析统一委托给 MarkItDown。"""
-        return self.convert_to_markdown(file_bytes, filename)
-
     def prepare_document(
         self,
         file_bytes: bytes,
@@ -322,14 +406,14 @@ class KnowledgeService:
         """转换并清理文档，返回入库 Markdown、分块和质量诊断。"""
         source_filename = self._safe_filename(filename)
         extension = os.path.splitext(source_filename)[1].lower()
-        raw_markdown = self.convert_to_markdown(file_bytes, source_filename)
+        loaded = self.document_loader.load(file_bytes, source_filename)
         document, diagnostics = self.document_preprocessor.process(Document(
-            text=raw_markdown,
+            text=loaded.text,
             metadata={
+                **dict(loaded.metadata),
                 "filename": source_filename,
                 "extension": extension,
                 "content_format": "markdown",
-                "converter": "markitdown",
                 "ingestion_schema_version": INGESTION_SCHEMA_VERSION,
             },
             document_id=document_id,
@@ -361,9 +445,84 @@ class KnowledgeService:
             "diagnostics": diagnostics,
         }
 
-    def preview_document(self, file_bytes: bytes, filename: str) -> dict:
-        """只解析不入库，供管理员在 PDF 向量化前确认清理效果。"""
-        prepared = self.prepare_document(file_bytes, filename)
+    def _isolated_parser_payload(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        *,
+        document_id: str | None = None,
+        source: SourceInfo | None = None,
+    ) -> dict:
+        tessdata_path = str(
+            AI_CONFIG.get("rag_ocr_tessdata_path") or ""
+        ).strip() or str(self._artifact_root / "ocr" / "tessdata")
+        return {
+            "file_bytes": bytes(file_bytes),
+            "filename": self._safe_filename(filename),
+            "document_id": document_id,
+            "source": asdict(source) if source is not None else None,
+            "chunk_tokens": self.chunk_tokens,
+            "overlap_tokens": self.overlap_tokens,
+            "ingestion_schema_version": INGESTION_SCHEMA_VERSION,
+            "ocr_min_chars": int(AI_CONFIG.get("rag_ocr_min_chars", 200)),
+            "ocr_min_chars_per_page": int(
+                AI_CONFIG.get("rag_ocr_min_chars_per_page", 20)
+            ),
+            "ocr": {
+                "enabled": bool(AI_CONFIG.get("rag_ocr_enabled", False)),
+                "tesseract_path": str(
+                    AI_CONFIG.get("rag_ocr_tesseract_path")
+                    or shutil.which("tesseract")
+                    or "/opt/homebrew/bin/tesseract"
+                ),
+                "pdftoppm_path": str(
+                    AI_CONFIG.get("rag_ocr_pdftoppm_path")
+                    or shutil.which("pdftoppm")
+                    or "/opt/homebrew/bin/pdftoppm"
+                ),
+                "pdfinfo_path": str(
+                    AI_CONFIG.get("rag_ocr_pdfinfo_path")
+                    or shutil.which("pdfinfo")
+                    or "/opt/homebrew/bin/pdfinfo"
+                ),
+                "tessdata_path": tessdata_path,
+                "languages": str(AI_CONFIG.get("rag_ocr_languages", "chi_sim+eng")),
+                "dpi": int(AI_CONFIG.get("rag_ocr_dpi", 300)),
+                "timeout_seconds": float(
+                    AI_CONFIG.get("rag_ocr_timeout_seconds", 120.0)
+                ),
+            },
+        }
+
+    async def prepare_document_async(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        *,
+        document_id: str | None = None,
+        source: SourceInfo | None = None,
+    ) -> dict:
+        if not self.parser_isolation_enabled:
+            return await asyncio.to_thread(
+                self.prepare_document,
+                file_bytes,
+                filename,
+                document_id=document_id,
+                source=source,
+            )
+        payload = self._isolated_parser_payload(
+            file_bytes,
+            filename,
+            document_id=document_id,
+            source=source,
+        )
+        async with self._parser_semaphore:
+            return await asyncio.to_thread(
+                self.isolated_document_parser.prepare, **payload
+            )
+
+    @staticmethod
+    def _preview_from_prepared(prepared: dict) -> dict:
         diagnostics = dict(prepared["diagnostics"])
         warnings = []
         if prepared["extension"] == ".pdf":
@@ -391,6 +550,14 @@ class KnowledgeService:
             ],
         }
 
+    def preview_document(self, file_bytes: bytes, filename: str) -> dict:
+        """同步兼容入口；生产 API 使用独立解析进程的异步版本。"""
+        return self._preview_from_prepared(self.prepare_document(file_bytes, filename))
+
+    async def preview_document_async(self, file_bytes: bytes, filename: str) -> dict:
+        prepared = await self.prepare_document_async(file_bytes, filename)
+        return self._preview_from_prepared(prepared)
+
     def split_markdown(
         self,
         markdown: str,
@@ -410,10 +577,6 @@ class KnowledgeService:
             {"content": node.text, "node_id": node.node_id, **dict(node.metadata)}
             for node in nodes
         ]
-
-    def split_text(self, text: str) -> list:
-        """兼容旧调用方，仅返回分块正文；正文仍来自 Markdown 分块器。"""
-        return [chunk["content"] for chunk in self.split_markdown(text)]
 
     def _get_embeddings(self, texts: list, *, text_type: str = "document") -> list:
         """兼容入口：由 LlamaIndex 管理批处理并保留文档/查询区分。"""
@@ -709,6 +872,10 @@ class KnowledgeService:
                 ),
             )
             written_ids = list(write_result.node_ids)
+            embedding_total = (
+                write_result.reused_embedding_count
+                + write_result.generated_embedding_count
+            )
             manifest = {
                 "schema_version": RELEASE_SCHEMA_VERSION,
                 "release_id": release_id,
@@ -747,6 +914,29 @@ class KnowledgeService:
                     "written_node_count": write_result.written_node_count,
                     "duplicate_node_count": write_result.duplicate_node_count,
                     "embedding_batches": write_result.embedding_batches,
+                    "new_nodes": write_result.generated_embedding_count,
+                    "reused_embeddings": write_result.reused_embedding_count,
+                    "generated_embeddings": write_result.generated_embedding_count,
+                    "embedding_cache_hit_rate": round(
+                        write_result.reused_embedding_count / embedding_total, 6
+                    ) if embedding_total else 0.0,
+                    "embedding_api_calls": write_result.embedding_api_calls,
+                    "embedding_retry_count": write_result.embedding_retry_count,
+                    "embedding_cache_invalid_entries": (
+                        write_result.cache_invalid_entries
+                    ),
+                    "embedding_cache_read_failures": (
+                        write_result.cache_read_failures
+                    ),
+                    "embedding_cache_write_failures": (
+                        write_result.cache_write_failures
+                    ),
+                    "embedding_seconds": write_result.embedding_seconds,
+                    "index_write_seconds": write_result.index_write_seconds,
+                    "index_validation_seconds": (
+                        write_result.index_validation_seconds
+                    ),
+                    "index_build_seconds": write_result.index_build_seconds,
                     "write_batches": write_result.write_batches,
                     "asynchronous": write_result.asynchronous,
                     "async_capable": hasattr(self.index_writer, "abuild"),
@@ -770,6 +960,9 @@ class KnowledgeService:
         visibility: str = "internal",
         allowed_roles: object = "管理员,用户",
         allowed_user_ids: object = "",
+        _prepared: dict | None = None,
+        _source: SourceInfo | None = None,
+        _document_id: str | None = None,
     ) -> dict:
         """保存原文件/Document/Node 并构建全量影子索引。"""
         with _P1_RELEASE_LOCK:
@@ -787,18 +980,26 @@ class KnowledgeService:
             if self.collection.count() > 0:
                 self._ensure_consistent_or_raise("stage_document_release")
 
-            source = self.artifact_repository.files.put(
+            source = _source or self.artifact_repository.files.put(
                 bytes(file_bytes), source_filename, extension
             )
+            if source.sha256 != sha256_bytes(bytes(file_bytes)):
+                raise RuntimeError("隔离解析来源哈希不一致")
             document_id = deterministic_document_id(
                 source_filename, source.sha256, INGESTION_SCHEMA_VERSION
             )
-            prepared = self.prepare_document(
-                file_bytes,
-                source_filename,
-                document_id=document_id,
-                source=source,
+            if _document_id is not None and _document_id != document_id:
+                raise RuntimeError("隔离解析 Document ID 不一致")
+            prepared = _prepared or self.prepare_document(
+                file_bytes, source_filename, document_id=document_id, source=source
             )
+            if (
+                prepared.get("filename") != source_filename
+                or prepared.get("extension") != extension
+                or not str(prepared.get("markdown") or "").strip()
+                or not list(prepared.get("chunks") or [])
+            ):
+                raise RuntimeError("隔离解析结果契约无效")
             try:
                 record = self.artifact_repository.documents.get(document_id)
                 if record["source"].get("sha256") != source.sha256:
@@ -896,6 +1097,27 @@ class KnowledgeService:
     ) -> dict:
         """有界异步入库：不阻塞 FastAPI 事件循环，仍等待安全影子版完成。"""
 
+        source_filename = self._safe_filename(filename)
+        extension = os.path.splitext(source_filename)[1].lower()
+        if extension not in SUPPORTED_DOCUMENT_EXTENSIONS:
+            raise ValueError(f"不支持的文件格式: {extension or '[无扩展名]'}")
+        if not file_bytes:
+            raise ValueError("文件内容为空")
+        source = await asyncio.to_thread(
+            self.artifact_repository.files.put,
+            bytes(file_bytes),
+            source_filename,
+            extension,
+        )
+        document_id = deterministic_document_id(
+            source_filename, source.sha256, INGESTION_SCHEMA_VERSION
+        )
+        prepared = await self.prepare_document_async(
+            file_bytes,
+            source_filename,
+            document_id=document_id,
+            source=source,
+        )
         return await self.async_ingestion_executor.run(
             self.stage_document_release,
             file_bytes,
@@ -903,6 +1125,9 @@ class KnowledgeService:
             visibility=visibility,
             allowed_roles=allowed_roles,
             allowed_user_ids=allowed_user_ids,
+            _prepared=prepared,
+            _source=source,
+            _document_id=document_id,
         )
 
     def stage_delete_release(self, doc_id: str) -> dict:
@@ -1067,11 +1292,6 @@ class KnowledgeService:
             catalog, base_guard = self._active_catalog_and_guard()
             return self._build_shadow_release(catalog, base_guard)
 
-    async def arebuild_shadow_from_active(self) -> dict:
-        return await self.async_ingestion_executor.run(
-            self.rebuild_shadow_from_active
-        )
-
     def _validate_shadow_manifest(self, manifest: Dict) -> None:
         names = {item.name for item in self.client.list_collections()}
         collection_name = manifest["collection_name"]
@@ -1129,17 +1349,53 @@ class KnowledgeService:
                 }
                 if actual_policy != expected_policy:
                     raise RuntimeError("影子索引权限元数据与 Manifest 不一致")
-        sample = collection.peek(limit=1)
-        embeddings = sample.get("embeddings")
-        if embeddings is not None and len(embeddings) > 0:
-            if len(embeddings[0]) != int(embedding["dimension"]):
-                raise RuntimeError("影子索引实际向量维度不一致，已阻断发布")
+        validator = getattr(self.index_writer, "validate_collection", None)
+        if validator is not None:
+            validator(
+                collection_name=collection_name,
+                expected_node_ids=ids,
+                expected_dimension=int(embedding["dimension"]),
+            )
+        else:
+            sample = collection.peek(limit=1)
+            embeddings = sample.get("embeddings")
+            if embeddings is not None and len(embeddings) > 0:
+                if len(embeddings[0]) != int(embedding["dimension"]):
+                    raise RuntimeError(
+                        "影子索引实际向量维度不一致，已阻断发布"
+                    )
 
     def publish_staged_release(self, release_id: str) -> Optional[Dict]:
         """比较并交换发布指针；只有此方法会改变在线检索版本。"""
         with _P1_RELEASE_LOCK:
             manifest = self.artifact_repository.releases.get(release_id)
             self._validate_shadow_manifest(manifest)
+            if bool(AI_CONFIG.get("rag_release_smoke_required", False)):
+                attestation = self.artifact_repository.release_smokes.get(
+                    release_id
+                )
+                manifest_path = self.artifact_repository.releases.release_path(
+                    release_id
+                )
+                smoke_set_path = Path(
+                    AI_CONFIG["rag_release_smoke_set_path"]
+                )
+                expected_manifest_hash = sha256_bytes(
+                    manifest_path.read_bytes()
+                )
+                expected_smoke_set_hash = sha256_bytes(
+                    smoke_set_path.read_bytes()
+                )
+                if attestation.get("manifest_sha256") != expected_manifest_hash:
+                    raise RuntimeError("Release Smoke 未绑定当前 Manifest")
+                if attestation.get("smoke_set_sha256") != expected_smoke_set_hash:
+                    raise RuntimeError("Release Smoke Set 已变化，禁止发布")
+                if (
+                    attestation.get("passed") is not True
+                    or int(attestation.get("question_count") or 0) != 20
+                    or int(attestation.get("evidence_hits") or 0) != 20
+                ):
+                    raise RuntimeError("Release Smoke 未达到 20/20，禁止发布")
             guard = manifest.get("base_guard") or {}
             current_pointer = self.artifact_repository.releases.active()
             if current_pointer != guard.get("active_pointer"):
@@ -1340,11 +1596,6 @@ class KnowledgeService:
             "unchanged": False,
             "previous_doc_ids": self._snapshot_doc_ids(replacement_snapshot),
         }
-
-    def count_document_chunks(self, doc_id: str) -> int:
-        """只读统计指定文档的实际分块数。"""
-        results = self.collection.get(where={"doc_id": doc_id}, include=[])
-        return len(list(results.get("ids") or []))
 
     def snapshot_document(self, doc_id: str, expected_count: int = None) -> dict:
         """删除前建立文档快照，并在数量不符时保持索引不变。"""

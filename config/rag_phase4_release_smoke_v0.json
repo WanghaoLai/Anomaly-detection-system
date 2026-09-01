@@ -1,0 +1,43 @@
+{
+  "schema_version": "rag-release-smoke-set-v1",
+  "name": "industrial-anomaly-release-smoke-v0",
+  "version": "V0",
+  "status": "fixed_from_signed_golden_v0",
+  "golden": {
+    "version": "V0",
+    "question_fingerprint": "27ee131712eb2b41f69c9c0a02f3a9445bf6607feab78ed1d92c8969e551b4f4",
+    "file_sha256": "86e541b28f63288a6c4421e59c95afd3aa1be289ae0467afc5229e0e6639f7ba"
+  },
+  "gate": {
+    "required_questions": 20,
+    "required_evidence_hit_rate": 1.0,
+    "retrieval_final_k": 8,
+    "active_publish_requires_human": true
+  },
+  "selection": {
+    "method": "fixed_exact_fact_coverage",
+    "rationale": "覆盖接入、账户、资源、环境、数据、网络、SSH、数据集、方法、评测、实验、故障与知识更新；每题绑定独立 Golden Evidence Node。"
+  },
+  "case_ids": [
+    "rag_v0_001_1",
+    "rag_v0_002_1",
+    "rag_v0_003_1",
+    "rag_v0_004_1",
+    "rag_v0_005_1",
+    "rag_v0_006_1",
+    "rag_v0_007_1",
+    "rag_v0_008_1",
+    "rag_v0_010_1",
+    "rag_v0_014_1",
+    "rag_v0_016_1",
+    "rag_v0_020_1",
+    "rag_v0_025_1",
+    "rag_v0_027_1",
+    "rag_v0_028_1",
+    "rag_v0_030_1",
+    "rag_v0_031_1",
+    "rag_v0_036_1",
+    "rag_v0_042_1",
+    "rag_v0_050_1"
+  ]
+}

@@ -1,0 +1,1889 @@
+{
+  "schema_version": "rag-phase3-candidate-v1",
+  "name": "industrial-anomaly-rag-phase3-candidate",
+  "version": "P3-CANDIDATE-V1",
+  "status": "signed_phase3_dataset",
+  "base_dataset": {
+    "name": "industrial-anomaly-rag-golden-v0",
+    "version": "V0",
+    "release_id": "fda85a12df284a61af4a13fd6d50ede8",
+    "question_fingerprint": "27ee131712eb2b41f69c9c0a02f3a9445bf6607feab78ed1d92c8969e551b4f4"
+  },
+  "policy": {
+    "ambiguous_fallback": "knowledge_base",
+    "classifier_failure_fallback": "knowledge_base",
+    "history_user_turn_limit": 2,
+    "production_model_features_default_enabled": false
+  },
+  "coverage": {
+    "total": 80,
+    "set_counts": {
+      "ambiguous": 20,
+      "follow_up": 20,
+      "general": 20,
+      "pronoun": 20
+    },
+    "expected_mode_counts": {
+      "general": 30,
+      "knowledge_base": 50
+    },
+    "route_stage_counts": {
+      "intent_classifier": 60,
+      "rule_general": 20
+    }
+  },
+  "candidate_fingerprint": "12968d2ec06af8a2f7c47b5d12ec5092f2f7d9f04a643e5308fbeb6df6b2bbd2",
+  "review_requirements": {
+    "all_cases_must_be_reviewed": true,
+    "required_case_fields": [
+      "route_label_approved",
+      "rewrite_target_approved",
+      "evidence_approved"
+    ],
+    "signoff_status": "signed_phase3_dataset"
+  },
+  "cases": [
+    {
+      "id": "rag_p3_general_001",
+      "set": "general",
+      "question": "请解释二分查找的基本原理。",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "请解释二分查找的基本原理。",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_002",
+      "set": "general",
+      "question": "Python 列表推导式适合什么场景？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "Python 列表推导式适合什么场景？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_003",
+      "set": "general",
+      "question": "HTTP 404 和 500 状态码有什么区别？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "HTTP 404 和 500 状态码有什么区别？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_004",
+      "set": "general",
+      "question": "Git rebase 与 merge 的主要区别是什么？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "Git rebase 与 merge 的主要区别是什么？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_005",
+      "set": "general",
+      "question": "Docker 容器和虚拟机有什么区别？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "Docker 容器和虚拟机有什么区别？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_006",
+      "set": "general",
+      "question": "SQL 索引为什么能提高查询速度？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "SQL 索引为什么能提高查询速度？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_007",
+      "set": "general",
+      "question": "JSON 和 YAML 各有什么特点？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "JSON 和 YAML 各有什么特点？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_008",
+      "set": "general",
+      "question": "如何计算一组数字的算术平均值？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "如何计算一组数字的算术平均值？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_009",
+      "set": "general",
+      "question": "什么是公钥加密？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "什么是公钥加密？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_010",
+      "set": "general",
+      "question": "Linux 文件权限中的 rwx 分别表示什么？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "Linux 文件权限中的 rwx 分别表示什么？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_011",
+      "set": "general",
+      "question": "TCP 和 UDP 的主要区别是什么？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "TCP 和 UDP 的主要区别是什么？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_012",
+      "set": "general",
+      "question": "什么是 REST API？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "什么是 REST API？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_013",
+      "set": "general",
+      "question": "时间复杂度 O(n log n) 表示什么？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "时间复杂度 O(n log n) 表示什么？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_014",
+      "set": "general",
+      "question": "如何理解机器学习中的过拟合？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "如何理解机器学习中的过拟合？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_015",
+      "set": "general",
+      "question": "训练集、验证集和测试集分别有什么作用？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "训练集、验证集和测试集分别有什么作用？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_016",
+      "set": "general",
+      "question": "精确率和召回率有什么区别？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "精确率和召回率有什么区别？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_017",
+      "set": "general",
+      "question": "什么是标准差？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "什么是标准差？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_018",
+      "set": "general",
+      "question": "进程和线程有什么区别？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "进程和线程有什么区别？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_019",
+      "set": "general",
+      "question": "HTTPS 为什么比 HTTP 更安全？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "HTTPS 为什么比 HTTP 更安全？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_general_020",
+      "set": "general",
+      "question": "什么是数据库事务的原子性？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "rule_general",
+      "expected_retrieval_query": "什么是数据库事务的原子性？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_general_001",
+      "set": "ambiguous",
+      "question": "CUDA 和 GPU 有什么区别？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "CUDA 和 GPU 有什么区别？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_general_002",
+      "set": "ambiguous",
+      "question": "PyTorch 中自动求导的原理是什么？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "PyTorch 中自动求导的原理是什么？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_general_003",
+      "set": "ambiguous",
+      "question": "SSH 公钥认证的原理是什么？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "SSH 公钥认证的原理是什么？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_general_004",
+      "set": "ambiguous",
+      "question": "ZeroTier 主要用来做什么？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "ZeroTier 主要用来做什么？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_general_005",
+      "set": "ambiguous",
+      "question": "异常检测常见的评价指标有哪些？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "异常检测常见的评价指标有哪些？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_general_006",
+      "set": "ambiguous",
+      "question": "Conda 环境有什么作用？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "Conda 环境有什么作用？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_general_007",
+      "set": "ambiguous",
+      "question": "nvidia-smi 会显示哪些信息？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "nvidia-smi 会显示哪些信息？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_general_008",
+      "set": "ambiguous",
+      "question": "GPU 显存与普通内存有什么区别？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "GPU 显存与普通内存有什么区别？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_general_009",
+      "set": "ambiguous",
+      "question": "数据集如何划分训练集和测试集？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "数据集如何划分训练集和测试集？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_general_010",
+      "set": "ambiguous",
+      "question": "管理员权限意味着什么？",
+      "history": [],
+      "expected_mode": "general",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "管理员权限意味着什么？",
+      "expected_evidence": [],
+      "source_case_id": null,
+      "source_locator": null,
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_kb_001",
+      "set": "ambiguous",
+      "question": "第一次接入时应该先做哪一步？",
+      "history": [],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "第一次接入时应该先做哪一步？",
+      "expected_evidence": [
+        "9bc2ac25d20f28f22aefa9f6066510f078c7680918b058228cd74996d425969a"
+      ],
+      "source_case_id": "rag_v0_001_1",
+      "source_locator": "KB-SRV-01",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_kb_002",
+      "set": "ambiguous",
+      "question": "Windows 上第二种接入方式怎么配置？",
+      "history": [],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "Windows 上第二种接入方式怎么配置？",
+      "expected_evidence": [
+        "5b2e190218edb3c5ec82d7bc0de61486eccecec048fbdab513ebdb1bf4e758b4"
+      ],
+      "source_case_id": "rag_v0_002_1",
+      "source_locator": "KB-SRV-02",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_kb_003",
+      "set": "ambiguous",
+      "question": "Mac 上那个网络工具要怎么设置？",
+      "history": [],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "Mac 上那个网络工具要怎么设置？",
+      "expected_evidence": [
+        "33881bad733f0d8ca511a56c922b5b6c42acef3623b920ffe6f73edd8ef73dd8",
+        "242730a89fa750926954488d2707afa64fc08e4d719531d052af4771535ab22e"
+      ],
+      "source_case_id": "rag_v0_003_1",
+      "source_locator": "KB-SRV-03",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_kb_004",
+      "set": "ambiguous",
+      "question": "第一次登录后需要修改什么？",
+      "history": [],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "第一次登录后需要修改什么？",
+      "expected_evidence": [
+        "33881bad733f0d8ca511a56c922b5b6c42acef3623b920ffe6f73edd8ef73dd8",
+        "242730a89fa750926954488d2707afa64fc08e4d719531d052af4771535ab22e"
+      ],
+      "source_case_id": "rag_v0_004_1",
+      "source_locator": "KB-SRV-04",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_kb_005",
+      "set": "ambiguous",
+      "question": "机器资源不够时这里应该怎么处理？",
+      "history": [],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "机器资源不够时这里应该怎么处理？",
+      "expected_evidence": [
+        "5ff334a8225a973605ad38ae9ac1628c6cab0391c288404f955d26fc6af16560",
+        "a738103079b7f826afe92727466abbe60c34249ba7c076a38ec5c4920696c8cc"
+      ],
+      "source_case_id": "rag_v0_005_1",
+      "source_locator": "KB-SRV-05",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_kb_006",
+      "set": "ambiguous",
+      "question": "当前环境里的版本要怎么配套？",
+      "history": [],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "当前环境里的版本要怎么配套？",
+      "expected_evidence": [
+        "0bcc7ea055b9c0d4a9f48a67ce3200ce9d516dc6538c74ed5327f8fb6577f4d4",
+        "242730a89fa750926954488d2707afa64fc08e4d719531d052af4771535ab22e"
+      ],
+      "source_case_id": "rag_v0_006_1",
+      "source_locator": "KB-SRV-06",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_kb_007",
+      "set": "ambiguous",
+      "question": "文件应该放到哪个共享位置？",
+      "history": [],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "文件应该放到哪个共享位置？",
+      "expected_evidence": [
+        "828ceda48e07ac19f9f4a781dad35fffe630cf678ff1172c50a58e21151f901b"
+      ],
+      "source_case_id": "rag_v0_007_1",
+      "source_locator": "KB-SRV-07",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_kb_008",
+      "set": "ambiguous",
+      "question": "代码拉不下来时这里要怎么处理？",
+      "history": [],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "代码拉不下来时这里要怎么处理？",
+      "expected_evidence": [
+        "828ceda48e07ac19f9f4a781dad35fffe630cf678ff1172c50a58e21151f901b"
+      ],
+      "source_case_id": "rag_v0_008_1",
+      "source_locator": "KB-SRV-08",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_kb_009",
+      "set": "ambiguous",
+      "question": "任务失败以后到哪里找记录？",
+      "history": [],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "任务失败以后到哪里找记录？",
+      "expected_evidence": [
+        "8ca573fe6a7da46ed8e8229d221597c8ab1e98a764caf66ba929f01d39e55f9d"
+      ],
+      "source_case_id": "rag_v0_009_1",
+      "source_locator": "KB-SRV-09",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_ambiguous_kb_010",
+      "set": "ambiguous",
+      "question": "免密登录在这里要准备什么？",
+      "history": [],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "免密登录在这里要准备什么？",
+      "expected_evidence": [
+        "8ca573fe6a7da46ed8e8229d221597c8ab1e98a764caf66ba929f01d39e55f9d"
+      ],
+      "source_case_id": "rag_v0_010_1",
+      "source_locator": "KB-SRV-10",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_001",
+      "set": "pronoun",
+      "question": "关于它，还有哪些容易被忽略的限制？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，工业异常检测是什么有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“工业异常检测是什么”，关于它，还有哪些容易被忽略的限制？",
+      "expected_evidence": [
+        "2df79e96110cb81e4cb96d2a32d95dc36efa050b84fe0b6d728a4a75409a56c6"
+      ],
+      "source_case_id": "rag_v0_011_1",
+      "source_locator": "KB-IAD-01",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_002",
+      "set": "pronoun",
+      "question": "那部分的适用边界是什么？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，工业异常的常见类型有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“工业异常的常见类型”，那部分的适用边界是什么？",
+      "expected_evidence": [
+        "2df79e96110cb81e4cb96d2a32d95dc36efa050b84fe0b6d728a4a75409a56c6",
+        "242730a89fa750926954488d2707afa64fc08e4d719531d052af4771535ab22e"
+      ],
+      "source_case_id": "rag_v0_012_1",
+      "source_locator": "KB-IAD-02",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_003",
+      "set": "pronoun",
+      "question": "这个主题还需要满足哪些前置条件？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，研究设定与术语有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“研究设定与术语”，这个主题还需要满足哪些前置条件？",
+      "expected_evidence": [
+        "27f8885afd6bc8a39d1f56c8bfd4b7ab29247c44e0a5694a87e1d492ea031baa"
+      ],
+      "source_case_id": "rag_v0_013_1",
+      "source_locator": "KB-IAD-03",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_004",
+      "set": "pronoun",
+      "question": "它与常见做法相比有什么不同？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，数据集选择原则有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“数据集选择原则”，它与常见做法相比有什么不同？",
+      "expected_evidence": [
+        "eed64240c359a63c39ff18964c2928371b9fec960a72575ab93d5788daf7c5fb"
+      ],
+      "source_case_id": "rag_v0_014_1",
+      "source_locator": "KB-DATA-01",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_005",
+      "set": "pronoun",
+      "question": "其中最关键的注意事项是什么？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，代表性公开数据集有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“代表性公开数据集”，其中最关键的注意事项是什么？",
+      "expected_evidence": [
+        "eed64240c359a63c39ff18964c2928371b9fec960a72575ab93d5788daf7c5fb",
+        "242730a89fa750926954488d2707afa64fc08e4d719531d052af4771535ab22e"
+      ],
+      "source_case_id": "rag_v0_015_1",
+      "source_locator": "KB-DATA-02",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_006",
+      "set": "pronoun",
+      "question": "关于它，还有哪些容易被忽略的限制？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，数据集许可与使用边界有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“数据集许可与使用边界”，关于它，还有哪些容易被忽略的限制？",
+      "expected_evidence": [
+        "52a4511feceef29d42d0fd53b4d63a74a11af02f5da153d2430dc59b72869d96"
+      ],
+      "source_case_id": "rag_v0_016_1",
+      "source_locator": "KB-DATA-03",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_007",
+      "set": "pronoun",
+      "question": "那部分的适用边界是什么？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，实验室推荐的数据目录规范有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“实验室推荐的数据目录规范”，那部分的适用边界是什么？",
+      "expected_evidence": [
+        "52a4511feceef29d42d0fd53b4d63a74a11af02f5da153d2430dc59b72869d96"
+      ],
+      "source_case_id": "rag_v0_017_1",
+      "source_locator": "KB-DATA-04",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_008",
+      "set": "pronoun",
+      "question": "这个主题还需要满足哪些前置条件？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，方法分类总览有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“方法分类总览”，这个主题还需要满足哪些前置条件？",
+      "expected_evidence": [
+        "f2059a5da6191e1949e0e1cbe984414063a76932e6efe2965d5ab25e870cb06f"
+      ],
+      "source_case_id": "rag_v0_018_1",
+      "source_locator": "KB-METHOD-01",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_009",
+      "set": "pronoun",
+      "question": "它与常见做法相比有什么不同？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，PaDiM：位置相关的正常特征分布有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“PaDiM：位置相关的正常特征分布”，它与常见做法相比有什么不同？",
+      "expected_evidence": [
+        "f2059a5da6191e1949e0e1cbe984414063a76932e6efe2965d5ab25e870cb06f"
+      ],
+      "source_case_id": "rag_v0_019_1",
+      "source_locator": "KB-METHOD-02",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_010",
+      "set": "pronoun",
+      "question": "其中最关键的注意事项是什么？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，PatchCore：正常 Patch 记忆库与 Coreset有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“PatchCore：正常 Patch 记忆库与 Coreset”，其中最关键的注意事项是什么？",
+      "expected_evidence": [
+        "f2059a5da6191e1949e0e1cbe984414063a76932e6efe2965d5ab25e870cb06f",
+        "be475170e56ea3f904f774c24e76726e5bce5ee21822c0d266fd6db9cd906e87",
+        "242730a89fa750926954488d2707afa64fc08e4d719531d052af4771535ab22e"
+      ],
+      "source_case_id": "rag_v0_020_1",
+      "source_locator": "KB-METHOD-03",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_011",
+      "set": "pronoun",
+      "question": "关于它，还有哪些容易被忽略的限制？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，CutPaste 与 DRAEM：图像空间伪异常有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“CutPaste 与 DRAEM：图像空间伪异常”，关于它，还有哪些容易被忽略的限制？",
+      "expected_evidence": [
+        "8c4b5bed845b81bb084f854e322b690ee5a57897d3dd72ebc6705f619867b78b"
+      ],
+      "source_case_id": "rag_v0_021_1",
+      "source_locator": "KB-METHOD-04",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_012",
+      "set": "pronoun",
+      "question": "那部分的适用边界是什么？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，Reverse Distillation / RD++：蒸馏差异作为异常证据有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“Reverse Distillation / RD++：蒸馏差异作为异常证据”，那部分的适用边界是什么？",
+      "expected_evidence": [
+        "8c4b5bed845b81bb084f854e322b690ee5a57897d3dd72ebc6705f619867b78b"
+      ],
+      "source_case_id": "rag_v0_022_1",
+      "source_locator": "KB-METHOD-05",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_013",
+      "set": "pronoun",
+      "question": "这个主题还需要满足哪些前置条件？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，SimpleNet 与 RealNet：特征空间/生成式异常合成有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“SimpleNet 与 RealNet：特征空间/生成式异常合成”，这个主题还需要满足哪些前置条件？",
+      "expected_evidence": [
+        "7114aad2faeb3ce1183d31efedeeace6af3f5aef1a08d7db1de3b0a45d667cd2"
+      ],
+      "source_case_id": "rag_v0_023_1",
+      "source_locator": "KB-METHOD-06",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_014",
+      "set": "pronoun",
+      "question": "它与常见做法相比有什么不同？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，UniAD：统一多类别异常检测有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“UniAD：统一多类别异常检测”，它与常见做法相比有什么不同？",
+      "expected_evidence": [
+        "7114aad2faeb3ce1183d31efedeeace6af3f5aef1a08d7db1de3b0a45d667cd2"
+      ],
+      "source_case_id": "rag_v0_024_1",
+      "source_locator": "KB-METHOD-07",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_015",
+      "set": "pronoun",
+      "question": "其中最关键的注意事项是什么？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，WinCLIP 与 AnomalyCLIP：视觉语言模型用于零/少样本有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“WinCLIP 与 AnomalyCLIP：视觉语言模型用于零/少样本”，其中最关键的注意事项是什么？",
+      "expected_evidence": [
+        "d924fb011fac66d1d227d75b3809fa05c967b92a384441ba89139d4ab3c7fc69",
+        "242730a89fa750926954488d2707afa64fc08e4d719531d052af4771535ab22e"
+      ],
+      "source_case_id": "rag_v0_025_1",
+      "source_locator": "KB-METHOD-08",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_016",
+      "set": "pronoun",
+      "question": "关于它，还有哪些容易被忽略的限制？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，EfficientAD：实时性与逻辑异常有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“EfficientAD：实时性与逻辑异常”，关于它，还有哪些容易被忽略的限制？",
+      "expected_evidence": [
+        "617167b38dd6c3b238c5761ebaa99e5e8c847615b8fbf5bf56ab4bccb163472b"
+      ],
+      "source_case_id": "rag_v0_026_1",
+      "source_locator": "KB-METHOD-09",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_017",
+      "set": "pronoun",
+      "question": "那部分的适用边界是什么？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，为什么不能只看一个 AUROC有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“为什么不能只看一个 AUROC”，那部分的适用边界是什么？",
+      "expected_evidence": [
+        "932f73040ae9f6dafb9eb1ed269dc27d2d1bcf84667f805e84ec1f6b6b0ea820",
+        "242730a89fa750926954488d2707afa64fc08e4d719531d052af4771535ab22e"
+      ],
+      "source_case_id": "rag_v0_027_1",
+      "source_locator": "KB-EVAL-01",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_018",
+      "set": "pronoun",
+      "question": "这个主题还需要满足哪些前置条件？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，推荐实验协议有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“推荐实验协议”，这个主题还需要满足哪些前置条件？",
+      "expected_evidence": [
+        "59690744dc7b8bf841b22e29ce23be2fa8baf11ad3087dbe9016cfb5e341a84a"
+      ],
+      "source_case_id": "rag_v0_028_1",
+      "source_locator": "KB-EVAL-02",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_019",
+      "set": "pronoun",
+      "question": "它与常见做法相比有什么不同？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，公平比较检查清单有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“公平比较检查清单”，它与常见做法相比有什么不同？",
+      "expected_evidence": [
+        "59690744dc7b8bf841b22e29ce23be2fa8baf11ad3087dbe9016cfb5e341a84a"
+      ],
+      "source_case_id": "rag_v0_029_1",
+      "source_locator": "KB-EVAL-03",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_pronoun_020",
+      "set": "pronoun",
+      "question": "其中最关键的注意事项是什么？",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，RTX 4090 硬件事实与实验含义有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“RTX 4090 硬件事实与实验含义”，其中最关键的注意事项是什么？",
+      "expected_evidence": [
+        "83e4dbef75de24610d562164f9a6fa03be2477bbd0049968b12e05061461f1b2"
+      ],
+      "source_case_id": "rag_v0_030_1",
+      "source_locator": "KB-EXP-01",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_001",
+      "set": "follow_up",
+      "question": "继续说明实施时的关键注意事项。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，新实验从 0 到结果的标准流程有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“新实验从 0 到结果的标准流程”，继续说明实施时的关键注意事项。",
+      "expected_evidence": [
+        "83e4dbef75de24610d562164f9a6fa03be2477bbd0049968b12e05061461f1b2"
+      ],
+      "source_case_id": "rag_v0_031_1",
+      "source_locator": "KB-EXP-02",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_002",
+      "set": "follow_up",
+      "question": "再说说有哪些明确限制。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，推荐项目目录有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“推荐项目目录”，再说说有哪些明确限制。",
+      "expected_evidence": [
+        "83e4dbef75de24610d562164f9a6fa03be2477bbd0049968b12e05061461f1b2"
+      ],
+      "source_case_id": "rag_v0_032_1",
+      "source_locator": "KB-EXP-03",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_003",
+      "set": "follow_up",
+      "question": "接着说明容易出错的环节。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，环境快照建议有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“环境快照建议”，接着说明容易出错的环节。",
+      "expected_evidence": [
+        "2ad1ba108378895fed8099da0e8eed7b965588cf140560aced4e8e99b51c7f58",
+        "242730a89fa750926954488d2707afa64fc08e4d719531d052af4771535ab22e"
+      ],
+      "source_case_id": "rag_v0_033_1",
+      "source_locator": "KB-EXP-04",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_004",
+      "set": "follow_up",
+      "question": "继续列出需要核对的关键条件。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，可复现性：随机性与确定性有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“可复现性：随机性与确定性”，继续列出需要核对的关键条件。",
+      "expected_evidence": [
+        "2ad1ba108378895fed8099da0e8eed7b965588cf140560aced4e8e99b51c7f58",
+        "242730a89fa750926954488d2707afa64fc08e4d719531d052af4771535ab22e"
+      ],
+      "source_case_id": "rag_v0_034_1",
+      "source_locator": "KB-EXP-05",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_005",
+      "set": "follow_up",
+      "question": "再补充一下适用边界。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，混合精度与显存管理有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“混合精度与显存管理”，再补充一下适用边界。",
+      "expected_evidence": [
+        "8e1cd8e4e00305cc6f6e62b1ebaccfff13b31527429775d38b793e47ef0bf21e",
+        "a738103079b7f826afe92727466abbe60c34249ba7c076a38ec5c4920696c8cc"
+      ],
+      "source_case_id": "rag_v0_035_1",
+      "source_locator": "KB-EXP-06",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_006",
+      "set": "follow_up",
+      "question": "继续说明实施时的关键注意事项。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，实验记录的最低完整度有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“实验记录的最低完整度”，继续说明实施时的关键注意事项。",
+      "expected_evidence": [
+        "7097d091f2549a121ef7e2657ff6f94e873c31bcbbfbd9bdb1651fbb0187dd49",
+        "242730a89fa750926954488d2707afa64fc08e4d719531d052af4771535ab22e"
+      ],
+      "source_case_id": "rag_v0_036_1",
+      "source_locator": "KB-MLOPS-01",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_007",
+      "set": "follow_up",
+      "question": "再说说有哪些明确限制。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，W&B / SwanLab 使用边界有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“W&B / SwanLab 使用边界”，再说说有哪些明确限制。",
+      "expected_evidence": [
+        "7097d091f2549a121ef7e2657ff6f94e873c31bcbbfbd9bdb1651fbb0187dd49"
+      ],
+      "source_case_id": "rag_v0_037_1",
+      "source_locator": "KB-MLOPS-02",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_008",
+      "set": "follow_up",
+      "question": "接着说明容易出错的环节。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，结果文件格式建议有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“结果文件格式建议”，接着说明容易出错的环节。",
+      "expected_evidence": [
+        "7097d091f2549a121ef7e2657ff6f94e873c31bcbbfbd9bdb1651fbb0187dd49"
+      ],
+      "source_case_id": "rag_v0_038_1",
+      "source_locator": "KB-MLOPS-03",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_009",
+      "set": "follow_up",
+      "question": "继续列出需要核对的关键条件。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，基线库建议有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“基线库建议”，继续列出需要核对的关键条件。",
+      "expected_evidence": [
+        "02869dffd3e17cf515d98896dbfc619220404d55ffce1be0de6162c5f0c53ea1"
+      ],
+      "source_case_id": "rag_v0_039_1",
+      "source_locator": "KB-MLOPS-04",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_010",
+      "set": "follow_up",
+      "question": "再补充一下适用边界。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，ZeroTier 无法加入网络有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“ZeroTier 无法加入网络”，再补充一下适用边界。",
+      "expected_evidence": [
+        "6fca4fbca0194845d2e6ced480935559b73a362f22977db1bddc198a22712168"
+      ],
+      "source_case_id": "rag_v0_040_1",
+      "source_locator": "KB-FAQ-01",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_011",
+      "set": "follow_up",
+      "question": "继续说明实施时的关键注意事项。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，SSH 连接超时、拒绝或权限错误有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“SSH 连接超时、拒绝或权限错误”，继续说明实施时的关键注意事项。",
+      "expected_evidence": [
+        "6fca4fbca0194845d2e6ced480935559b73a362f22977db1bddc198a22712168"
+      ],
+      "source_case_id": "rag_v0_041_1",
+      "source_locator": "KB-FAQ-02",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_012",
+      "set": "follow_up",
+      "question": "再说说有哪些明确限制。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，nvidia-smi 正常，但 PyTorch 无法使用 GPU有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“nvidia-smi 正常，但 PyTorch 无法使用 GPU”，再说说有哪些明确限制。",
+      "expected_evidence": [
+        "6fca4fbca0194845d2e6ced480935559b73a362f22977db1bddc198a22712168",
+        "242730a89fa750926954488d2707afa64fc08e4d719531d052af4771535ab22e"
+      ],
+      "source_case_id": "rag_v0_042_1",
+      "source_locator": "KB-FAQ-03",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_013",
+      "set": "follow_up",
+      "question": "接着说明容易出错的环节。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，Conda、磁盘与下载问题有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“Conda、磁盘与下载问题”，接着说明容易出错的环节。",
+      "expected_evidence": [
+        "6fca4fbca0194845d2e6ced480935559b73a362f22977db1bddc198a22712168"
+      ],
+      "source_case_id": "rag_v0_043_1",
+      "source_locator": "KB-FAQ-04",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_014",
+      "set": "follow_up",
+      "question": "继续列出需要核对的关键条件。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，工业异常检测实验常见“方法问题”有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“工业异常检测实验常见“方法问题””，继续列出需要核对的关键条件。",
+      "expected_evidence": [
+        "e4f81b6363be97078e495364123267cdec7a0e8930a3d18a07f6e74cbbb20029"
+      ],
+      "source_case_id": "rag_v0_044_1",
+      "source_locator": "KB-FAQ-05",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_015",
+      "set": "follow_up",
+      "question": "再补充一下适用边界。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，为什么要把本 PDF 进一步结构化有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“为什么要把本 PDF 进一步结构化”，再补充一下适用边界。",
+      "expected_evidence": [
+        "be475170e56ea3f904f774c24e76726e5bce5ee21822c0d266fd6db9cd906e87"
+      ],
+      "source_case_id": "rag_v0_045_1",
+      "source_locator": "KB-RAG-01",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_016",
+      "set": "follow_up",
+      "question": "继续说明实施时的关键注意事项。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，推荐 Chunk 元数据有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“推荐 Chunk 元数据”，继续说明实施时的关键注意事项。",
+      "expected_evidence": [
+        "be475170e56ea3f904f774c24e76726e5bce5ee21822c0d266fd6db9cd906e87"
+      ],
+      "source_case_id": "rag_v0_046_1",
+      "source_locator": "KB-RAG-02",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_017",
+      "set": "follow_up",
+      "question": "再说说有哪些明确限制。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，切分原则有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“切分原则”，再说说有哪些明确限制。",
+      "expected_evidence": [
+        "be475170e56ea3f904f774c24e76726e5bce5ee21822c0d266fd6db9cd906e87"
+      ],
+      "source_case_id": "rag_v0_047_1",
+      "source_locator": "KB-RAG-03",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_018",
+      "set": "follow_up",
+      "question": "接着说明容易出错的环节。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，推荐检索策略有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“推荐检索策略”，接着说明容易出错的环节。",
+      "expected_evidence": [
+        "be475170e56ea3f904f774c24e76726e5bce5ee21822c0d266fd6db9cd906e87"
+      ],
+      "source_case_id": "rag_v0_048_1",
+      "source_locator": "KB-RAG-04",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_019",
+      "set": "follow_up",
+      "question": "继续列出需要核对的关键条件。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，RAG 常见查询与应命中的条目有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“RAG 常见查询与应命中的条目”，继续列出需要核对的关键条件。",
+      "expected_evidence": [
+        "242730a89fa750926954488d2707afa64fc08e4d719531d052af4771535ab22e"
+      ],
+      "source_case_id": "rag_v0_049_1",
+      "source_locator": "KB-RAG-05",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    },
+    {
+      "id": "rag_p3_follow_up_020",
+      "set": "follow_up",
+      "question": "再补充一下适用边界。",
+      "history": [
+        {
+          "role": "user",
+          "content": "根据知识库，知识库更新流程有哪些明确、可核验的事实？"
+        }
+      ],
+      "expected_mode": "knowledge_base",
+      "expected_route_stage": "intent_classifier",
+      "expected_retrieval_query": "关于“知识库更新流程”，再补充一下适用边界。",
+      "expected_evidence": [
+        "a738103079b7f826afe92727466abbe60c34249ba7c076a38ec5c4920696c8cc"
+      ],
+      "source_case_id": "rag_v0_050_1",
+      "source_locator": "KB-RAG-06",
+      "review": {
+        "status": "approved",
+        "route_label_approved": true,
+        "rewrite_target_approved": true,
+        "evidence_approved": true,
+        "notes": "人工逐条审核后全部保留"
+      }
+    }
+  ],
+  "signoff": {
+    "reviewer": "human_product_reviewer",
+    "reviewed_at": "2026-08-31T01:03:40.373066+00:00",
+    "scope": "all_80_cases_reviewed_and_kept",
+    "authorization_source": "explicit_user_confirmation"
+  },
+  "signed_fingerprint": "143f3fc553a5887990d9b18cc4873bd3d31970b9fded077e0ae13d698dd6861d"
+}

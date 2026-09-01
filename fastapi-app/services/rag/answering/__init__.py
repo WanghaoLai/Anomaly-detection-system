@@ -6,6 +6,15 @@ from .prompting import (
     PromptBuilder,
     RAGGenerationPipeline,
 )
+from .phase3 import (
+    DashScopeIntentClassifier,
+    DashScopeQueryRewriter,
+    Phase3QueryResolver,
+    Phase3RuleRouter,
+    QueryResolution,
+    RewriteResult,
+    RouteDecision,
+)
 from .grounding import (
     GroundedAnswerValidator,
     GroundedPromptBuilder,
@@ -44,4 +53,11 @@ __all__ = [
     "QueryModeRouter",
     "RAGGenerationPipeline",
     "VerifiedAnswer",
+    "DashScopeIntentClassifier",
+    "DashScopeQueryRewriter",
+    "Phase3QueryResolver",
+    "Phase3RuleRouter",
+    "QueryResolution",
+    "RewriteResult",
+    "RouteDecision",
 ]

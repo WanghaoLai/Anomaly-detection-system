@@ -17,6 +17,10 @@ __pycache__/
 # ==== 虚拟环境 ====
 .venv/
 venv/
+.venv-rag-phase2/
+
+# ==== 本地 RAG 模型（固定 revision 由评测报告记录，不提交权重）====
+.rag-models/
 
 # ==== IDE / 编辑器个人配置 ====
 .idea/

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import threading
 import time
 from typing import Sequence
 
@@ -59,6 +60,10 @@ class LlamaIndexEmbeddingAdapter(BaseEmbedding):
 
         return [list(vector) for vector in self._backend.embed_queries(queries)]
 
+    def backend_metrics_snapshot(self) -> dict[str, int]:
+        method = getattr(self._backend, "metrics_snapshot", None)
+        return dict(method() if method is not None else {})
+
 
 class DashScopeEmbeddingModel:
     provider = "dashscope"
@@ -82,6 +87,22 @@ class DashScopeEmbeddingModel:
         self.max_retries = int(max_retries)
         self.retry_backoff_seconds = float(retry_backoff_seconds)
         self.dimension: int | None = None
+        self._metrics_lock = threading.Lock()
+        self._api_calls_total = 0
+        self._retry_count_total = 0
+
+    def metrics_snapshot(self) -> dict[str, int]:
+        with self._metrics_lock:
+            return {
+                "api_calls": self._api_calls_total,
+                "retries": self._retry_count_total,
+            }
+
+    def _record_attempt(self, *, retry: bool) -> None:
+        with self._metrics_lock:
+            self._api_calls_total += 1
+            if retry:
+                self._retry_count_total += 1
 
     def _batch_limit(self) -> int:
         lowered = self.model.lower()
@@ -93,6 +114,7 @@ class DashScopeEmbeddingModel:
 
     def _call(self, batch: list[str], text_type: str):
         for attempt in range(self.max_retries + 1):
+            self._record_attempt(retry=attempt > 0)
             try:
                 response = self.api.call(
                     model=self.model,

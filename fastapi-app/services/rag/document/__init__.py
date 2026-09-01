@@ -3,13 +3,19 @@
 from .storage import (
     DOCUMENT_SCHEMA_VERSION,
     RELEASE_SCHEMA_VERSION,
+    RELEASE_SMOKE_SCHEMA_VERSION,
     KnowledgeArtifactRepository,
     deterministic_document_id,
     deterministic_node_id,
     sha256_bytes,
     utc_now_iso,
 )
-from .pipeline import AsyncIngestionExecutor, DocumentIngestionPipeline
+from .pipeline import (
+    AsyncIngestionExecutor,
+    DocumentIngestionPipeline,
+    ProcessIsolatedDocumentParser,
+)
+from .security import LocalClamAvScanner, UploadSecurityPolicy, validate_upload_content
 from .parsing import MarkdownNodeParser
 from .loading import (
     DefaultDocumentPreprocessor,
@@ -17,6 +23,7 @@ from .loading import (
     SUPPORTED_DOCUMENT_EXTENSIONS,
     preprocess_pdf_markdown,
 )
+from .ocr import LocalTesseractPdfOcr, PdfOcrResult
 from .splitting import (
     PARSER_SCHEMA_VERSION,
     approx_token_len,
@@ -30,10 +37,17 @@ __all__ = [
     "DefaultDocumentPreprocessor",
     "DocumentIngestionPipeline",
     "KnowledgeArtifactRepository",
+    "LocalTesseractPdfOcr",
     "MarkdownNodeParser",
     "MarkItDownDocumentLoader",
+    "LocalClamAvScanner",
     "PARSER_SCHEMA_VERSION",
+    "PdfOcrResult",
+    "ProcessIsolatedDocumentParser",
     "RELEASE_SCHEMA_VERSION",
+    "RELEASE_SMOKE_SCHEMA_VERSION",
+    "UploadSecurityPolicy",
+    "validate_upload_content",
     "SUPPORTED_DOCUMENT_EXTENSIONS",
     "approx_token_len",
     "chunk_paragraphs",

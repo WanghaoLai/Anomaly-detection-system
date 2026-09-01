@@ -108,6 +108,7 @@ AI_CONFIG = {
     "rag_lexical_candidate_k": _env_int("AI_RAG_LEXICAL_CANDIDATE_K", 50),
     "rag_candidate_union_limit": _env_int("AI_RAG_CANDIDATE_UNION_LIMIT", 100),
     "rag_final_k": _env_int("AI_RAG_FINAL_K", 4),
+    "rag_rerank_input_k": _env_int("AI_RAG_RERANK_INPUT_K", 50),
     "rag_rerank_final_k": _env_int("AI_RAG_RERANK_FINAL_K", 8),
     "rag_score_threshold": _env_float("AI_RAG_SCORE_THRESHOLD", 0.20),
     "rag_hybrid_enabled": _env_bool("AI_RAG_HYBRID_ENABLED", True),
@@ -118,7 +119,12 @@ AI_CONFIG = {
     "rag_reranker_timeout_seconds": _env_float(
         "AI_RAG_RERANKER_TIMEOUT_SECONDS", 2.0
     ),
+    "rag_reranker_max_length": _env_int("AI_RAG_RERANKER_MAX_LENGTH", 0),
     "rag_audit_enabled": _env_bool("AI_RAG_AUDIT_ENABLED", True),
+    # Phase 5：覆盖路由、改写、检索、生成和校验的整条请求截止时间。
+    "rag_request_deadline_seconds": _env_float(
+        "AI_RAG_REQUEST_DEADLINE_SECONDS", 75.0
+    ),
     "rag_lexical_min_score": _env_float("AI_RAG_LEXICAL_MIN_SCORE", 0.08),
     "rag_context_tokens": _env_int("AI_RAG_CONTEXT_TOKENS", 2800),
     # P4 Context Packing：标题、来源、Node ID、正文和省略标记共同计入总预算。
@@ -148,9 +154,89 @@ AI_CONFIG = {
         "AI_RAG_GROUNDING_VALIDATION_RETRIES", 1
     ),
     "rag_query_history_turns": _env_int("AI_RAG_QUERY_HISTORY_TURNS", 2),
+    # Phase 3 先离线评测，生产 Router/Classifier/Rewrite 必须由人工再次确认后开启。
+    "rag_phase3_router_enabled": _env_bool(
+        "AI_RAG_PHASE3_ROUTER_ENABLED", False
+    ),
+    "rag_phase3_rewrite_enabled": _env_bool(
+        "AI_RAG_PHASE3_REWRITE_ENABLED", False
+    ),
+    "rag_phase3_classifier_confidence": _env_float(
+        "AI_RAG_PHASE3_CLASSIFIER_CONFIDENCE", 0.75
+    ),
+    "rag_phase3_classifier_timeout_seconds": _env_float(
+        "AI_RAG_PHASE3_CLASSIFIER_TIMEOUT_SECONDS", 8.0
+    ),
+    "rag_phase3_rewrite_timeout_seconds": _env_float(
+        "AI_RAG_PHASE3_REWRITE_TIMEOUT_SECONDS", 8.0
+    ),
     "rag_chunk_tokens": _env_int("AI_RAG_CHUNK_TOKENS", 500),
     "rag_overlap_tokens": _env_int("AI_RAG_OVERLAP_TOKENS", 50),
+    "rag_embedding_cache_enabled": _env_bool(
+        "AI_RAG_EMBEDDING_CACHE_ENABLED", True
+    ),
+    "rag_embedding_cache_path": os.getenv("AI_RAG_EMBEDDING_CACHE_PATH", ""),
+    # Phase 4B 默认关闭；完成本地 OCR 路由门禁后再由人工启用。
+    "rag_ocr_enabled": _env_bool("AI_RAG_OCR_ENABLED", False),
+    "rag_ocr_tesseract_path": os.getenv("AI_RAG_OCR_TESSERACT_PATH", ""),
+    "rag_ocr_pdftoppm_path": os.getenv("AI_RAG_OCR_PDFTOPPM_PATH", ""),
+    "rag_ocr_pdfinfo_path": os.getenv("AI_RAG_OCR_PDFINFO_PATH", ""),
+    "rag_ocr_tessdata_path": os.getenv("AI_RAG_OCR_TESSDATA_PATH", ""),
+    "rag_ocr_languages": os.getenv("AI_RAG_OCR_LANGUAGES", "chi_sim+eng"),
+    "rag_ocr_dpi": _env_int("AI_RAG_OCR_DPI", 300),
+    "rag_ocr_timeout_seconds": _env_float(
+        "AI_RAG_OCR_TIMEOUT_SECONDS", 120.0
+    ),
+    "rag_ocr_min_chars": _env_int("AI_RAG_OCR_MIN_CHARS", 200),
+    "rag_ocr_min_chars_per_page": _env_int(
+        "AI_RAG_OCR_MIN_CHARS_PER_PAGE", 20
+    ),
+    # Phase 4C 离线通过后才在生产环境启用发布硬门禁。
+    "rag_release_smoke_required": _env_bool(
+        "AI_RAG_RELEASE_SMOKE_REQUIRED", False
+    ),
+    "rag_release_smoke_set_path": os.getenv(
+        "AI_RAG_RELEASE_SMOKE_SET_PATH"
+    ) or str(BASE_DIR.parent / "config" / "rag_phase4_release_smoke_v0.json"),
     "rag_max_upload_bytes": _env_int("AI_RAG_MAX_UPLOAD_BYTES", 20 * 1024 * 1024),
+    # Phase 6：解析前上传安全门禁；人工已确认生产 Fail Closed 策略。
+    "rag_upload_security_enabled": _env_bool("AI_RAG_UPLOAD_SECURITY_ENABLED", True),
+    "rag_archive_max_entries": _env_int("AI_RAG_ARCHIVE_MAX_ENTRIES", 5000),
+    "rag_archive_max_uncompressed_bytes": _env_int(
+        "AI_RAG_ARCHIVE_MAX_UNCOMPRESSED_BYTES", 200 * 1024 * 1024
+    ),
+    "rag_archive_max_compression_ratio": _env_float(
+        "AI_RAG_ARCHIVE_MAX_COMPRESSION_RATIO", 100.0
+    ),
+    "rag_malware_scan_enabled": _env_bool("AI_RAG_MALWARE_SCAN_ENABLED", True),
+    "rag_clamav_path": os.getenv(
+        "AI_RAG_CLAMAV_PATH", "/usr/local/clamav/bin/clamscan"
+    ),
+    "rag_clamav_version": os.getenv("AI_RAG_CLAMAV_VERSION", "1.5.4"),
+    "rag_clamav_database_path": os.getenv(
+        "AI_RAG_CLAMAV_DATABASE_PATH", "/usr/local/clamav/share/clamav"
+    ),
+    "rag_clamav_certs_path": os.getenv(
+        "AI_RAG_CLAMAV_CERTS_PATH", "/usr/local/clamav/etc/certs"
+    ),
+    "rag_clamav_timeout_seconds": _env_float(
+        "AI_RAG_CLAMAV_TIMEOUT_SECONDS", 120.0
+    ),
+    "rag_clamav_max_signature_age_seconds": _env_float(
+        "AI_RAG_CLAMAV_MAX_SIGNATURE_AGE_SECONDS", 86400.0
+    ),
+    "rag_parser_isolation_enabled": _env_bool(
+        "AI_RAG_PARSER_ISOLATION_ENABLED", True
+    ),
+    "rag_parser_wall_timeout_seconds": _env_float(
+        "AI_RAG_PARSER_WALL_TIMEOUT_SECONDS", 120.0
+    ),
+    "rag_parser_memory_limit_bytes": _env_int(
+        "AI_RAG_PARSER_MEMORY_LIMIT_BYTES", 1024 * 1024 * 1024
+    ),
+    "rag_parser_cpu_limit_seconds": _env_int(
+        "AI_RAG_PARSER_CPU_LIMIT_SECONDS", 60
+    ),
     # P1 原始文件、DocStore 和发布清单的本地持久化根目录。
     # 该目录与 Chroma 分离：前者是可追溯事实源，后者是可重建派生物。
     "rag_artifact_path": os.getenv(
@@ -271,7 +357,7 @@ TRAINING_EXECUTOR_CONFIG = {
     ),
     "runner_path": os.getenv(
         "TRAINING_REMOTE_RUNNER_PATH",
-        "/home/adtrainer/bin/phase0_pbas_runner.py",
+        "/home/adtrainer/bin/phase0_pbas_runner_dataset_v2.py",
     ),
     "gpu_allowlist": [
         int(item)

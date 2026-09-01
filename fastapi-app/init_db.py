@@ -1,7 +1,6 @@
 import asyncio
 from tortoise import Tortoise
 from settings import TORTOISE_ORM
-from models import Conversation, Message
 
 
 async def init_db():

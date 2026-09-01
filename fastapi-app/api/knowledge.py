@@ -1,4 +1,5 @@
 """知识库管理 API（仅管理员）"""
+import asyncio
 import logging
 import os
 
@@ -14,6 +15,11 @@ from services.knowledge_service import (
     SUPPORTED_DOCUMENT_EXTENSIONS,
     KnowledgeService,
 )
+from services.rag.document import (
+    LocalClamAvScanner,
+    UploadSecurityPolicy,
+    validate_upload_content,
+)
 
 router = APIRouter(prefix="/knowledge", dependencies=[Depends(get_current_admin)])
 
@@ -25,6 +31,28 @@ MAX_UPLOAD_BYTES = int(AI_CONFIG.get("rag_max_upload_bytes", 20 * 1024 * 1024))
 UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 if MAX_UPLOAD_BYTES <= 0:
     raise RuntimeError("AI_RAG_MAX_UPLOAD_BYTES 必须大于 0")
+
+UPLOAD_SECURITY_ENABLED = bool(AI_CONFIG.get("rag_upload_security_enabled", True))
+MALWARE_SCAN_ENABLED = bool(AI_CONFIG.get("rag_malware_scan_enabled", True))
+UPLOAD_SECURITY_POLICY = UploadSecurityPolicy(
+    max_archive_entries=int(AI_CONFIG.get("rag_archive_max_entries", 5000)),
+    max_archive_uncompressed_bytes=int(
+        AI_CONFIG.get("rag_archive_max_uncompressed_bytes", 200 * 1024 * 1024)
+    ),
+    max_archive_compression_ratio=float(
+        AI_CONFIG.get("rag_archive_max_compression_ratio", 100.0)
+    ),
+)
+MALWARE_SCANNER = LocalClamAvScanner(
+    str(AI_CONFIG.get("rag_clamav_path") or "/usr/local/bin/clamscan"),
+    expected_version=str(AI_CONFIG.get("rag_clamav_version") or "1.5.4"),
+    database_path=str(AI_CONFIG.get("rag_clamav_database_path") or ""),
+    certs_path=str(AI_CONFIG.get("rag_clamav_certs_path") or ""),
+    timeout_seconds=float(AI_CONFIG.get("rag_clamav_timeout_seconds", 120.0)),
+    max_signature_age_seconds=float(
+        AI_CONFIG.get("rag_clamav_max_signature_age_seconds", 86400.0)
+    ),
+)
 
 
 async def _read_upload_limited(file: UploadFile) -> bytes:
@@ -41,6 +69,23 @@ async def _read_upload_limited(file: UploadFile) -> bytes:
             limit_mb = MAX_UPLOAD_BYTES / (1024 * 1024)
             raise CustomException(f"文件大小不能超过 {limit_mb:g}MB")
     return bytes(content)
+
+
+async def _secure_upload(
+    file_bytes: bytes,
+    original_name: str,
+    declared_media_type: str | None,
+) -> None:
+    """在任何文档解析、OCR 或持久化之前执行本地安全门禁。"""
+    if UPLOAD_SECURITY_ENABLED:
+        validate_upload_content(
+            file_bytes,
+            original_name,
+            declared_media_type,
+            policy=UPLOAD_SECURITY_POLICY,
+        )
+    if MALWARE_SCAN_ENABLED:
+        await asyncio.to_thread(MALWARE_SCANNER.scan, file_bytes, original_name)
 
 
 async def _upsert_knowledge_metadata_using(
@@ -92,7 +137,10 @@ async def preview(file: UploadFile = File(...)):
     if not file_bytes:
         raise CustomException("文件内容为空")
     try:
-        result = knowledge_service.preview_document(file_bytes, original_name)
+        await _secure_upload(file_bytes, original_name, file.content_type)
+        result = await knowledge_service.preview_document_async(
+            file_bytes, original_name
+        )
     except (ValueError, RuntimeError) as exc:
         raise CustomException(str(exc)) from exc
     except Exception as exc:
@@ -119,6 +167,7 @@ async def upload(
         raise CustomException("文件内容为空")
 
     try:
+        await _secure_upload(file_bytes, original_name, file.content_type)
         # P1 阶段只构建影子 collection，此时在线检索指针未变。
         info = await knowledge_service.stage_document_release_async(
             file_bytes,

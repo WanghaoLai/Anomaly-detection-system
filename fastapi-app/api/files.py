@@ -1,7 +1,6 @@
 # 文件上传和下载
 import io
 import logging
-import os
 import uuid
 from datetime import datetime
 from pathlib import Path

@@ -92,8 +92,27 @@ Prompt，用户指令也无法改变认证身份或 ACL。
 
 当前实现采用 claim 级 fail-closed：无支撑的 Claim 被直接丢弃，只有发布集合
 中的内容会发送给用户；全部 Claim 都无支撑时才拒绝整次回答并触发受控重试。
-因此被发布回答的 Citation Validity 按构造为 100%，`AI_RAG_FAITHFULNESS_THRESHOLD`
-（默认 `0.90`）作为候选整体质量的审计指标随事件流输出，不再单独阻断发布。
+因此被发布回答的 Citation Validity 按构造为 100%。`AI_RAG_FAITHFULNESS_THRESHOLD`
+（默认 `0.90`）作为候选整体质量的重试信号：首次低于阈值时受控重生成一次，
+第二次仍低于阈值时只发布逐条验证通过的安全 Claim，而不是整份拒答。
+
+Phase 1 的有界回答契约：
+
+- 非拒答候选最多 12 条原子 Claim；宽泛问题允许代表性回答，不要求穷尽资料；
+- 首次超限必须携带 `claim_count_exceeded` 原因受控重生成一次；
+- 第二次仍超限时，只从逐条验证通过的 Claim 中选择 12 条；
+- 选择优先级为问题相关性、关键命令/路径/参数、来源与章节覆盖、较新文档、原始顺序；
+- 选择完成后恢复原始顺序展示，避免打乱操作步骤；
+- Completeness 仅记录 Claim 生存代理，当前不作为发布门禁。
+
+评测同时保留两种 Citation 口径：历史 `citation_accuracy` 只统计已发布的
+非拒答回答，用于兼容已签署 V0；新增固定分母的
+`citation_expected_evidence_success_rate`，把所有具有 Expected Evidence 的应回答
+用例纳入分母，拒答按未命中计算。新指标先用于诊断，未经人工确认不替换历史门禁。
+同理，历史 `terminal_generation_error_cases` 保持不变；新增
+`unexpected_terminal_generation_error_cases` 与
+`expected_safe_grounding_refusal_cases`，区分真正的应回答失败和符合 Golden 预期的
+fail-closed 安全拒答。
 
 ## SSE 与失败状态
 
@@ -117,7 +136,8 @@ Prompt，用户指令也无法改变认证身份或 ACL。
 - `AI_LLM_TIMEOUT_SECONDS=45`
 - `DASHSCOPE_COMPATIBLE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1`
 - `AI_RAG_FAITHFULNESS_THRESHOLD=0.90`
-- `AI_RAG_CLAIM_LEXICAL_SUPPORT=0.08`
+- `AI_RAG_CLAIM_LEXICAL_SUPPORT=0.30`
+
 
 ```bash
 python -m pytest tests/test_rag_p5_grounding.py tests/test_rag_p5_llm_sse.py -q

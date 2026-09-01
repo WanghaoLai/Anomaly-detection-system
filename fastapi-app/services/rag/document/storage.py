@@ -285,12 +285,50 @@ class ReleaseManifestStore:
         _atomic_write(self.active_path, _canonical_json(previous))
 
 
+RELEASE_SMOKE_SCHEMA_VERSION = "rag-release-smoke-attestation-v1"
+
+
+class ReleaseSmokeStore:
+    """Immutable evidence that a candidate release passed the fixed smoke set."""
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+
+    def path_for(self, release_id: str) -> Path:
+        if not release_id or any(ch not in "0123456789abcdef" for ch in release_id):
+            raise ValueError("release_id 无效")
+        return _safe_storage_path(
+            self.root, f"release_smoke/{release_id}.json"
+        )
+
+    def put(self, attestation: dict) -> None:
+        if attestation.get("schema_version") != RELEASE_SMOKE_SCHEMA_VERSION:
+            raise ValueError("Release Smoke 证明 schema_version 无效")
+        release_id = str(attestation.get("release_id") or "")
+        path = self.path_for(release_id)
+        payload = _canonical_json(attestation)
+        if path.exists() and path.read_bytes() != payload:
+            raise RuntimeError(f"Release Smoke 证明冲突: {release_id}")
+        if not path.exists():
+            _atomic_write(path, payload)
+
+    def get(self, release_id: str) -> dict:
+        path = self.path_for(release_id)
+        if not path.is_file():
+            raise FileNotFoundError(f"Release Smoke 证明不存在: {release_id}")
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if value.get("schema_version") != RELEASE_SMOKE_SCHEMA_VERSION:
+            raise RuntimeError("Release Smoke 证明 schema_version 不一致")
+        return value
+
+
 class KnowledgeArtifactRepository:
     def __init__(self, root: str | Path):
         self.root = Path(root)
         self.files = ContentAddressedFileStore(self.root)
         self.documents = JsonDocumentStore(self.root)
         self.releases = ReleaseManifestStore(self.root)
+        self.release_smokes = ReleaseSmokeStore(self.root)
 
 
 def deterministic_document_id(
@@ -327,7 +365,9 @@ __all__ = [
     "KnowledgeArtifactRepository",
     "NODE_SCHEMA_VERSION",
     "RELEASE_SCHEMA_VERSION",
+    "RELEASE_SMOKE_SCHEMA_VERSION",
     "ReleaseManifestStore",
+    "ReleaseSmokeStore",
     "deterministic_document_id",
     "deterministic_node_id",
     "sha256_bytes",

@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="app-container">
     <div class="header">
       <div style="flex: 1">
         <div style="padding-left: 20px; display: flex; align-items: center">
@@ -20,7 +20,7 @@
       </div>
     </div>
 
-    <div style="display: flex">
+    <div class="content-wrapper">
       <div class="sidebar">
         <el-menu
             router
@@ -199,12 +199,20 @@ const logout = async () => {
 </script>
 
 <style lang="scss" scoped>
+.app-container {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .header {
   height: 60px;
   display: flex;
   align-items: center;
   background: linear-gradient(90deg, #1d2b4a 0%, #2c3e6b 100%);
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
 }
 
 .header-title {
@@ -267,12 +275,41 @@ const logout = async () => {
   margin-top: 2px;
 }
 
+.content-wrapper {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
 .sidebar {
   width: 210px;
-  min-height: calc(100vh - 60px);
   background: linear-gradient(180deg, #1d2b4a 0%, #2c3e6b 100%);
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  flex-shrink: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.15) rgba(255, 255, 255, 0.05);
+
+  /* WebKit 浏览器自定义滚动条样式 */
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+    transition: background 0.2s ease;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.25);
+    }
+  }
 }
 
 .sidebar-copyright {
@@ -290,6 +327,29 @@ const logout = async () => {
   width: 0;
   padding: 10px;
   background-color: #f0f2f5;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #bdc1c6 #e8eaed;
+
+  /* WebKit 浏览器自定义滚动条样式 */
+  &::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: #e8eaed;
+    border-radius: 4px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #bdc1c6;
+    border-radius: 4px;
+    transition: background 0.2s ease;
+
+    &:hover {
+      background: #9aa0a6;
+    }
+  }
 }
 
 @media (max-width: 720px) {

@@ -107,16 +107,6 @@ def _isolated_output_root(
     )
 
 
-def _load_allowlist(raw: str, name: str) -> dict[str, dict[str, Any]]:
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise TrainingExecutorError(f"{name} 不是有效 JSON") from exc
-    if not isinstance(value, dict) or not value:
-        raise TrainingExecutorError(f"{name} 必须是非空 JSON 对象")
-    return value
-
-
 class TrainingExecutorService:
     def __init__(self) -> None:
         self.config = TRAINING_EXECUTOR_CONFIG

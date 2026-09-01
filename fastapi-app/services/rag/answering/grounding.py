@@ -22,7 +22,14 @@ _JSON_FENCE_RE = re.compile(
 
 
 class GroundingValidationError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: str = "grounding_validation_failed",
+    ) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
 @dataclass(frozen=True)
@@ -42,6 +49,14 @@ class VerifiedAnswer:
     status: str
     reason_code: str | None = None
     sources: tuple[dict, ...] = ()
+    claims_raw: int = 0
+    claims_supported: int = 0
+    claims_rejected: int = 0
+    claims_selected: int = 0
+    claims_overflow_dropped: int = 0
+    answer_completeness_proxy: float | None = None
+    claim_limit_retry_triggered: bool = False
+    faithfulness_retry_triggered: bool = False
 
 
 class QueryModeRouter:
@@ -72,7 +87,7 @@ class QueryModeRouter:
 class GroundedPromptBuilder:
     """构造高优先级知识约束；上下文和历史都明确标记为不可信数据。"""
 
-    KNOWLEDGE_PROMPT_VERSION = "grounded-knowledge-v4"
+    KNOWLEDGE_PROMPT_VERSION = "grounded-knowledge-v5"
     GENERAL_PROMPT_VERSION = "general-assistant-v2"
 
     KNOWLEDGE_SYSTEM_PROMPT = """你好呀！😊 你是工业异常检测平台的知识库回答器，负责依据知识库证据为用户提供可靠、值得信赖的解答。
@@ -83,9 +98,10 @@ class GroundedPromptBuilder:
 3. 每个 claim 只表达一个可验证结论：一个操作步骤、一条命令、一个参数值各占一条 claim，不要把多步流程或多个结论合并成一条长句。citations 只填写上下文中真实存在的 K 编号。
 4. 命令、路径、数值、账号流程都与引用证据保持一致，不猜测、不改写关键参数。
 5. mode、refusal、claims 三个字段都必须输出；不用 answer、content 或 text 替代 claims。
-6. 非拒答时 refusal=false 且 claims 必须至少包含一项。回答要覆盖上下文中与问题相关的全部资料：宽泛问题（如“服务器配置”“详细设置步骤”）通常给出 5～10 条 claim，逐条对应资料中的信息点；不同小节的内容分别成条并引用各自的 K 编号。
-7. 依据不足时 refusal=true、claims=[]，不勉强用常识补齐，也不输出 refusal=false、claims=[]。
-8. 只输出一个 JSON 对象，不输出 Markdown 或解释。
+6. 非拒答时 refusal=false 且 claims 必须至少包含一项、最多包含 12 项。宽泛问题允许给出有代表性但非穷尽的回答，严禁为了覆盖全部资料而超过 12 项。
+7. 需要取舍时依次优先：与问题直接相关的结论；关键命令、路径和参数；不同来源与章节的代表性内容；较新的文档；最后才按原文顺序。不要让 12 项全部重复覆盖同一 K 编号或同一小节。
+8. 依据不足时 refusal=true、claims=[]，不勉强用常识补齐，也不输出 refusal=false、claims=[]。
+9. 只输出一个 JSON 对象，不输出 Markdown 或解释。
 
 JSON Schema：
 {"mode":"knowledge_base","refusal":false,"claims":[{"text":"单一事实结论","citations":["K1"]}]}
@@ -122,17 +138,42 @@ JSON Schema：
         packed: PackedContext,
         *,
         validation_retry: bool = False,
+        retry_reason: str | None = None,
     ) -> list[dict]:
         payload = {
             "question_untrusted": str(question or ""),
             "history_untrusted": self._history(history),
             "knowledge_context": packed.text,
             "allowed_citations": list(packed.citation_map),
+            "max_claims": 12,
         }
         if validation_retry:
-            payload["server_output_contract_retry"] = (
-                "上一次候选未通过输出契约。请重新生成，必须严格输出 "
-                "mode、refusal、claims 三个字段；非拒答 claims 不得为空。"
+            retry_messages = {
+                "claim_count_exceeded": (
+                    "上一次候选超过 12 条。请重新生成不超过 12 条的代表性 "
+                    "claims，并按问题相关性、关键命令/路径/参数、来源与章节 "
+                    "覆盖、较新文档、原始顺序依次取舍。"
+                ),
+                "invalid_citation": (
+                    "上一次候选包含无效引用。citations 只能使用 "
+                    "allowed_citations 中真实存在的 K 编号。"
+                ),
+                "low_faithfulness": (
+                    "上一次候选中部分 claims 缺少充分证据。请删除或改写这些 "
+                    "claims，并确保每条结论由其 citations 直接支持。"
+                ),
+                "no_supported_claims": (
+                    "上一次候选没有可验证的 claim。只输出证据直接支持的 "
+                    "claims；如果证据不足，请 refusal=true、claims=[]。"
+                ),
+            }
+            payload["server_output_contract_retry"] = retry_messages.get(
+                str(retry_reason or ""),
+                "上一次候选未通过输出契约。请严格输出 mode、refusal、"
+                "claims 三个字段；非拒答 claims 不得为空且不得超过 12 条。",
+            )
+            payload["retry_reason"] = str(
+                retry_reason or "grounding_validation_failed"
             )
         return [{
             "role": "user",
@@ -205,6 +246,66 @@ class GroundedAnswerValidator:
         )
 
     @staticmethod
+    def _latest_key(value: str) -> tuple[int, int, int, int, int, int]:
+        parts = [int(part) for part in re.findall(r"\d+", str(value or ""))[:6]]
+        return tuple((parts + [0] * 6)[:6])
+
+    def _select_representative_claims(
+        self,
+        claims: list[tuple[int, GroundedClaim]],
+        *,
+        question: str,
+        packed: PackedContext,
+    ) -> list[GroundedClaim]:
+        """按已确认的产品优先级选择有代表性的安全 Claim。"""
+
+        if len(claims) <= self.max_claims:
+            return [claim for _, claim in claims]
+        entries = {entry.citation_id: entry for entry in packed.entries}
+        question_features = HybridResultSelector.query_features(question)
+        selected: list[tuple[int, GroundedClaim]] = []
+        remaining = list(claims)
+        covered_citations: set[str] = set()
+        covered_sections: set[tuple[str, str]] = set()
+        while remaining and len(selected) < self.max_claims:
+            def priority(item: tuple[int, GroundedClaim]) -> tuple:
+                original_index, claim = item
+                claim_features = HybridResultSelector.query_features(claim.text)
+                relevance = len(question_features & claim_features)
+                technical = len(self._exact_atoms(claim.text))
+                citation_set = set(claim.citations)
+                section_set = {
+                    (entries[citation].source, entries[citation].heading_path)
+                    for citation in claim.citations
+                    if citation in entries
+                }
+                coverage = (
+                    len(citation_set - covered_citations)
+                    + len(section_set - covered_sections)
+                )
+                latest = max(
+                    (
+                        self._latest_key(entries[citation].document_timestamp)
+                        for citation in claim.citations
+                        if citation in entries
+                    ),
+                    default=(0, 0, 0, 0, 0, 0),
+                )
+                return relevance, technical, coverage, latest, -original_index
+
+            chosen = max(remaining, key=priority)
+            remaining.remove(chosen)
+            selected.append(chosen)
+            covered_citations.update(chosen[1].citations)
+            covered_sections.update({
+                (entries[citation].source, entries[citation].heading_path)
+                for citation in chosen[1].citations
+                if citation in entries
+            })
+        # 选择依据使用产品优先级，最终展示恢复模型原始顺序，避免打乱操作步骤。
+        return [claim for _, claim in sorted(selected, key=lambda item: item[0])]
+
+    @staticmethod
     def refusal(reason_code: str = "no_knowledge") -> VerifiedAnswer:
         text = (
             INTERNAL_REFUSAL
@@ -222,7 +323,14 @@ class GroundedAnswerValidator:
             reason_code=reason_code,
         )
 
-    def validate(self, raw: str | dict, packed: PackedContext) -> VerifiedAnswer:
+    def validate(
+        self,
+        raw: str | dict,
+        packed: PackedContext,
+        *,
+        question: str = "",
+        allow_overflow_selection: bool = False,
+    ) -> VerifiedAnswer:
         value = self._parse(raw)
         if value.get("mode") != "knowledge_base":
             raise GroundingValidationError("结构化输出 mode 非 knowledge_base")
@@ -233,24 +341,29 @@ class GroundedAnswerValidator:
             return self.refusal("model_refusal")
         if not isinstance(claims_raw, list) or not claims_raw:
             raise GroundingValidationError("非拒答输出必须包含 claims")
-        if len(claims_raw) > self.max_claims:
-            raise GroundingValidationError("claims 数量超过限制")
+        raw_count = len(claims_raw)
+        if raw_count > self.max_claims and not allow_overflow_selection:
+            raise GroundingValidationError(
+                "claims 数量超过限制",
+                reason_code="claim_count_exceeded",
+            )
 
         allowed = packed.citation_map
-        claims: list[GroundedClaim] = []
-        supported = 0
-        for item in claims_raw:
+        supported_claims: list[tuple[int, GroundedClaim]] = []
+        invalid_citation_count = 0
+        for original_index, item in enumerate(claims_raw):
             if not isinstance(item, dict):
-                raise GroundingValidationError("claim 必须是对象")
+                continue
             text = _CITATION_RE.sub("", str(item.get("text") or "")).strip()
             citations_raw = item.get("citations")
             if not text or len(text) > 1000:
-                raise GroundingValidationError("claim 文本为空或过长")
+                continue
             if not isinstance(citations_raw, list) or not citations_raw:
-                raise GroundingValidationError("每个 claim 必须包含引用")
+                continue
             citations = tuple(dict.fromkeys(str(value) for value in citations_raw))
             if any(citation not in allowed for citation in citations):
-                raise GroundingValidationError("claim 包含不存在或无权限的引用")
+                invalid_citation_count += 1
+                continue
             evidence = "\n".join(
                 entry.text
                 for entry in packed.entries
@@ -260,14 +373,31 @@ class GroundedAnswerValidator:
                 # 丢弃无证据支持的 claim，只发布服务端验证过的内容；
                 # 部分改写失败不再导致整条回答被拒。
                 continue
-            supported += 1
-            claims.append(GroundedClaim(text=text, citations=citations))
+            supported_claims.append((
+                original_index,
+                GroundedClaim(text=text, citations=citations),
+            ))
 
-        if not claims:
-            raise GroundingValidationError("claim 未被引用证据支持")
+        if not supported_claims:
+            raise GroundingValidationError(
+                "claim 包含不存在或无权限的引用"
+                if invalid_citation_count
+                else "claim 未被引用证据支持",
+                reason_code=(
+                    "invalid_citation"
+                    if invalid_citation_count
+                    else "no_supported_claims"
+                ),
+            )
+        claims = self._select_representative_claims(
+            supported_claims,
+            question=question,
+            packed=packed,
+        )
+        supported = len(supported_claims)
         # faithfulness 反映候选整体质量，仅供审计；发布集合中的每条
         # claim 都已单独通过原子与词面校验。
-        faithfulness = supported / len(claims_raw)
+        faithfulness = supported / raw_count
         rendered = AnswerRenderer.render_claims(claims)
         all_citations = tuple(dict.fromkeys(
             citation for claim in claims for citation in claim.citations
@@ -289,6 +419,12 @@ class GroundedAnswerValidator:
             faithfulness=faithfulness,
             status="completed",
             sources=sources,
+            claims_raw=raw_count,
+            claims_supported=supported,
+            claims_rejected=raw_count - supported,
+            claims_selected=len(claims),
+            claims_overflow_dropped=max(0, supported - len(claims)),
+            answer_completeness_proxy=len(claims) / raw_count,
         )
 
 

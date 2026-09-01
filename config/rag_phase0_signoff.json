@@ -1,0 +1,25 @@
+{
+  "schema_version": "rag-production-baseline-signoff-v1",
+  "baseline_version": "V0",
+  "status": "signed",
+  "signed_at": "2026-08-29T23:37:42+08:00",
+  "signed_by": "project_owner",
+  "decision": "confirmed_as_production_baseline_v0",
+  "release_id": "fda85a12df284a61af4a13fd6d50ede8",
+  "dataset_question_fingerprint": "27ee131712eb2b41f69c9c0a02f3a9445bf6607feab78ed1d92c8969e551b4f4",
+  "scope": {
+    "cases": 210,
+    "documents": 2,
+    "nodes": 58,
+    "generation_model": "qwen-turbo",
+    "embedding_model": "text-embedding-v2"
+  },
+  "meaning": "This records the measured pre-improvement state. It does not assert that known quality gaps are production-ready.",
+  "known_limitations": [
+    "Router accuracy is 0.5667.",
+    "No-answer refusal rate is 0.5.",
+    "Expected Answer Points are not populated, so correctness and completeness remain null.",
+    "ACL leakage is not applicable while every published document is visible to both authenticated roles.",
+    "Eleven cases ended in Grounding rejection, mainly because the generated claim count exceeded the validator limit."
+  ]
+}

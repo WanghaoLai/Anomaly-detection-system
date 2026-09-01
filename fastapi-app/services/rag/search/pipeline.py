@@ -29,6 +29,7 @@ class SearchRuntimeConfig:
     dense_k: int
     lexical_k: int
     union_limit: int
+    rerank_input_k: int
     final_k: int
     score_threshold: float
     hybrid_enabled: bool
@@ -67,24 +68,58 @@ class AuthorizedRetrievalPipeline:
     ):
         started_at = time.perf_counter()
         query_id = hashlib.sha256((query or "").encode("utf-8")).hexdigest()[:12]
+        trace_context = dict(audit_context or {})
+        public_audit_context = {
+            key: value
+            for key, value in trace_context.items()
+            if not str(key).startswith("_")
+        }
+        stage_durations: dict[str, float | None] = {}
+        dense: list[dict] = []
+        lexical: list[dict] = []
+        dense_error: str | None = None
+        bm25_error: str | None = None
         try:
+            stage_started = time.perf_counter()
             allowed_doc_ids = await asyncio.to_thread(
                 self.knowledge.allowed_document_ids, principal
             )
-            if not allowed_doc_ids:
-                return self.context_packer([])
-
-            dense = await self.knowledge.asearch(
-                query,
-                top_k=config.dense_k,
-                allowed_doc_ids=(
-                    allowed_doc_ids if config.acl_pushdown_enabled else None
-                ),
+            stage_durations["acl"] = round(
+                (time.perf_counter() - stage_started) * 1000, 1
             )
-            # Chroma where 是性能优化，服务端二次过滤才是权限边界。
-            dense = self.access_policy.filter(dense, principal)
-            lexical: list[dict] = []
-            if config.hybrid_enabled and config.bm25_enabled:
+
+            if allowed_doc_ids:
+                stage_started = time.perf_counter()
+                try:
+                    dense = await self.knowledge.asearch(
+                        query,
+                        top_k=config.dense_k,
+                        allowed_doc_ids=(
+                            allowed_doc_ids
+                            if config.acl_pushdown_enabled else None
+                        ),
+                    )
+                    # 向量库过滤仅是性能优化，服务端二次过滤才是权限边界。
+                    dense = self.access_policy.filter(dense, principal)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    dense_error = type(exc).__name__
+                    logger.warning(
+                        "RAG Dense 分支异常，尝试降级为 BM25: query_id=%s",
+                        query_id,
+                        exc_info=True,
+                    )
+                stage_durations["dense"] = round(
+                    (time.perf_counter() - stage_started) * 1000, 1
+                )
+
+            if (
+                allowed_doc_ids
+                and config.hybrid_enabled
+                and config.bm25_enabled
+            ):
+                stage_started = time.perf_counter()
                 try:
                     lexical = await self.knowledge.alexical_search(
                         query,
@@ -94,25 +129,49 @@ class AuthorizedRetrievalPipeline:
                     lexical = self.access_policy.filter(lexical, principal)
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
+                    bm25_error = type(exc).__name__
                     logger.warning(
                         "RAG BM25 分支异常，已降级为 dense: query_id=%s",
                         query_id,
                         exc_info=True,
                     )
+                stage_durations["bm25"] = round(
+                    (time.perf_counter() - stage_started) * 1000, 1
+                )
 
+            stage_started = time.perf_counter()
             candidates, selection_stats = self.selector_factory().fuse_ranked(
                 dense,
                 lexical,
                 limit=config.union_limit,
             )
+            if dense_error and lexical:
+                selection_stats["mode"] = "bm25_fallback"
+            elif bm25_error and dense:
+                selection_stats["mode"] = "dense_fallback"
+            elif dense_error and bm25_error:
+                selection_stats["mode"] = "retrieval_unavailable"
+            stage_durations["rrf"] = round(
+                (time.perf_counter() - stage_started) * 1000, 1
+            )
+            rerank_candidates = candidates[:config.rerank_input_k]
+            stage_started = time.perf_counter()
             results, rerank_stats = await self.reranker.rerank(
                 query,
-                candidates,
+                rerank_candidates,
                 top_k=config.final_k,
             )
+            stage_durations["rerank"] = round(
+                (time.perf_counter() - stage_started) * 1000, 1
+            )
+            stage_started = time.perf_counter()
             packed = self.context_packer(results, query=query)
+            stage_durations["context_packing"] = round(
+                (time.perf_counter() - stage_started) * 1000, 1
+            )
             elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+            stage_durations["retrieval_total"] = elapsed_ms
             release_id = self.knowledge.current_release_id()
             citation_map = {
                 entry.citation_id: {
@@ -125,7 +184,8 @@ class AuthorizedRetrievalPipeline:
                 for entry in packed.entries
             }
             trace_id = await self.audit_recorder.record({
-                **dict(audit_context or {}),
+                "id": trace_context.get("_trace_id"),
+                **public_audit_context,
                 "principal_role": principal.role,
                 "principal_id": principal.user_id,
                 "query_hash": hashlib.sha256(query.encode("utf-8")).hexdigest(),
@@ -145,21 +205,31 @@ class AuthorizedRetrievalPipeline:
                     "dense_k": config.dense_k,
                     "lexical_k": config.lexical_k,
                     "union_limit": config.union_limit,
+                    "rerank_input_k": config.rerank_input_k,
                     "final_k": config.final_k,
                     "score_threshold": config.score_threshold,
                     "acl_pushdown": config.acl_pushdown_enabled,
                     "selection_mode": selection_stats.get("mode"),
                     "rerank_mode": rerank_stats.get("mode"),
+                    "rerank_fallback": rerank_stats.get("fallback", False),
+                    "rerank_fallback_reason": rerank_stats.get(
+                        "fallback_reason"
+                    ),
+                    "dense_error": dense_error,
+                    "bm25_error": bm25_error,
+                    "route": trace_context.get("_route_trace"),
+                    "rewrite": trace_context.get("_rewrite_trace"),
                 },
                 "candidate_counts": {
                     "authorized_documents": len(allowed_doc_ids),
                     "dense": len(dense),
                     "bm25": len(lexical),
                     "union": len(candidates),
+                    "rerank_input": len(rerank_candidates),
                     "final": len(results),
                     "packed": len(packed.entries),
                 },
-                "stage_durations_ms": {"retrieval_total": elapsed_ms},
+                "stage_durations_ms": stage_durations,
                 "token_usage": {
                     "context_tokens_estimated": packed.token_count,
                     "provider_usage_available": False,
@@ -168,7 +238,8 @@ class AuthorizedRetrievalPipeline:
                 "citation_map": citation_map,
             })
             if audit_context is not None:
-                audit_context["_trace_id"] = trace_id
+                if trace_id:
+                    audit_context["_trace_id"] = trace_id
                 audit_context["_retrieval_elapsed_ms"] = elapsed_ms
             logger.info(
                 "RAG 授权检索完成: query_id=%s release_id=%s elapsed_ms=%s "

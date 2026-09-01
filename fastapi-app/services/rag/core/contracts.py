@@ -70,6 +70,17 @@ class IndexWriteResult:
     write_batches: int
     asynchronous: bool
     writer_schema_version: str
+    reused_embedding_count: int = 0
+    generated_embedding_count: int = 0
+    embedding_api_calls: int = 0
+    embedding_retry_count: int = 0
+    cache_invalid_entries: int = 0
+    cache_read_failures: int = 0
+    cache_write_failures: int = 0
+    embedding_seconds: float = 0.0
+    index_write_seconds: float = 0.0
+    index_validation_seconds: float = 0.0
+    index_build_seconds: float = 0.0
 
 
 @runtime_checkable
@@ -133,6 +144,14 @@ class VectorIndexWriter(Protocol):
         nodes: Sequence[Node],
         expected_dimension: int | None,
     ) -> IndexWriteResult: ...
+
+    def validate_collection(
+        self,
+        *,
+        collection_name: str,
+        expected_node_ids: Sequence[str],
+        expected_dimension: int,
+    ) -> Mapping[str, int]: ...
 
     def discard(self, collection_name: str) -> bool: ...
 

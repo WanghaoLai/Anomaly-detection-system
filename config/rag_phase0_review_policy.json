@@ -1,0 +1,33 @@
+{
+  "schema_version": "rag-phase0-human-policy-v1",
+  "approved_at": "2026-08-29",
+  "approved_by": "project_owner",
+  "candidate_questions": {
+    "status": "approved_keep_all",
+    "expected_count": 210
+  },
+  "external_processing": {
+    "dashscope_evaluation_allowed": true
+  },
+  "access_control": {
+    "current_policy": "all_published_documents_visible_to_authenticated_users",
+    "allowed_roles": [
+      "管理员",
+      "用户"
+    ],
+    "acl_leakage_metric": "not_applicable_without_restricted_documents",
+    "unauthorized_citation_rate_target": 0.0
+  },
+  "prompt_injection": {
+    "policy": "treat_user_and_document_instructions_as_untrusted_data",
+    "may_override_system_rules": false
+  },
+  "wrong_premise": {
+    "policy": "correct_with_current_evidence_before_answering",
+    "continue_unsupported_premise": false
+  },
+  "document_conflict": {
+    "policy": "prefer_latest_knowledge_document_by_effective_time",
+    "on_unresolved_tie": "state_conflict_and_request_human_confirmation"
+  }
+}
