@@ -101,6 +101,21 @@ AI_CONFIG = {
         "AI_LLM_CIRCUIT_RECOVERY_SECONDS", 30.0
     ),
     "embedding_model": os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v2"),
+    # 个人开发迁移默认仍使用 Chroma；Qdrant 仅在显式配置时启用。
+    "vector_store_provider": os.getenv(
+        "AI_VECTOR_STORE_PROVIDER", "chroma"
+    ).strip().lower(),
+    "qdrant_mode": os.getenv("AI_QDRANT_MODE", "local").strip().lower(),
+    "qdrant_path": os.getenv("AI_QDRANT_PATH", "") or str(
+        BASE_DIR / "qdrant_db"
+    ),
+    "qdrant_url": os.getenv(
+        "AI_QDRANT_URL", "http://127.0.0.1:6333"
+    ).rstrip("/"),
+    "qdrant_api_key": os.getenv("AI_QDRANT_API_KEY", ""),
+    "qdrant_timeout_seconds": _env_float("AI_QDRANT_TIMEOUT_SECONDS", 10.0),
+    "qdrant_prefer_grpc": _env_bool("AI_QDRANT_PREFER_GRPC", False),
+    "qdrant_batch_size": _env_int("AI_QDRANT_BATCH_SIZE", 100),
     "max_history": _env_int("AI_MAX_HISTORY", 20),
     "top_k": _env_int("AI_TOP_K", 3),
     "rag_candidate_k": _env_int("AI_RAG_CANDIDATE_K", 8),

@@ -1,0 +1,105 @@
+{
+  "schema_version": "qdrant-migration-baseline-v1",
+  "recorded_date": "2026-09-01",
+  "git_commit": "ebe5861",
+  "worktree_clean": false,
+  "active_release": {
+    "schema_version": "shadow-release-v1",
+    "release_id": "032a6213d1f04badb4636d79fb102761",
+    "vector_store_provider": "chroma",
+    "collection_name": "knowledge_shadow_032a6213d1f04badb4636d79fb102761",
+    "document_count": 2,
+    "node_count": 58
+  },
+  "embedding": {
+    "provider": "dashscope",
+    "model": "text-embedding-v2",
+    "schema_version": "dashscope-text-embedding-v1",
+    "dimension": 1536,
+    "normalized": true,
+    "distance": "cosine"
+  },
+  "storage": {
+    "chroma_directory_approximate_size": "48M",
+    "artifact_directory_approximate_size": "9.0M",
+    "chroma_collections": 3
+  },
+  "baseline_test_command": "python3 -m pytest tests/test_rag_p3_indexing.py tests/test_rag_p6_retrieval.py tests/test_knowledge_service.py -q",
+  "baseline_test_result": {
+    "passed": 36,
+    "failed": 2,
+    "pre_existing_failures": [
+      "tests/test_rag_p3_indexing.py::P3ServiceIntegrationTests::test_async_ingestion_and_write_failure_leave_active_release_unchanged",
+      "tests/test_rag_p3_indexing.py::P3ServiceIntegrationTests::test_manifest_blue_green_rebuild_and_four_store_reconciliation"
+    ],
+    "failure_reason": "AI_RAG_RELEASE_SMOKE_REQUIRED is enabled in the local environment, while these tests do not create release-smoke attestations"
+  },
+  "development_migration_status": {
+    "scope": "personal-development-only",
+    "default_provider": "chroma",
+    "completed_stage": "D2-synthetic-local-e2e",
+    "approved_pending_stages": [
+      "D3-cloud-synthetic-preflight",
+      "D3-cloud-real-data-shadow",
+      "D4-cloud-development-switch"
+    ],
+    "cloud_data_upload_approved": true,
+    "qdrant_cloud_as_vector_store_approved": true,
+    "cloud_endpoint_configured": true,
+    "cloud_region": "aws-eu-west-1",
+    "cloud_preflight": {
+      "status": "passed",
+      "server_version": "1.19.0",
+      "synthetic_point_count": 2,
+      "acl_filter": "passed",
+      "test_collection_deleted": true
+    },
+    "cloud_shadow_release": {
+      "release_id": "2ecaec37b4324301bb04d852aa53e873",
+      "collection_name": "knowledge_shadow_2ecaec37b4324301bb04d852aa53e873",
+      "published": true,
+      "document_count": 2,
+      "node_count": 58,
+      "validated_vectors": 58,
+      "validated_point_ids": 58,
+      "quality_reference_thresholds": "passed",
+      "mean_top_8_overlap": 1.0,
+      "latency_observation": {
+        "chroma_p95_ms": 2.276,
+        "qdrant_cloud_p95_ms": 655.75,
+        "meets_reference_threshold": false,
+        "enforced": false,
+        "note": "Includes eu-west-1 geographic distance and local proxy path."
+      }
+    },
+    "d4_cloud_cutover": {
+      "status": "passed",
+      "published_at": "2026-09-01T07:43:49+00:00",
+      "active_release_id": "2ecaec37b4324301bb04d852aa53e873",
+      "active_provider": "qdrant",
+      "active_pointer_sha256": "9ae5aef4e804e8e08fbcfa13de9b50440a20628f0428031fd957776e6977c7c0",
+      "release_smoke": "20/20 passed",
+      "embedding_consistent": true,
+      "online_chunk_count": 58,
+      "user_hits": 3,
+      "admin_hits": 3,
+      "empty_acl_hits": 0,
+      "unauthorized_doc_hits": 0,
+      "post_cutover_regression": "62 passed, 5 subtests passed",
+      "rollback": {
+        "release_id": "032a6213d1f04badb4636d79fb102761",
+        "provider": "chroma",
+        "collection_name": "knowledge_shadow_032a6213d1f04badb4636d79fb102761",
+        "pointer_sha256": "2c1f46f000b3d7d93f475de36c043bc2951c90304a94cca219583b76acc1668e",
+        "collection_count": 58,
+        "verified_readable": true
+      }
+    },
+    "production_planning": "deferred",
+    "remote_staging": "physically-removed-no-collections",
+    "migration_regression": "46 passed",
+    "layering_contract": "passed",
+    "repository_regression": "264 passed, 1 skipped, 3 failed",
+    "repository_regression_note": "The three failures are existing ChatService P5 grounding expectations outside the vector-store migration path."
+  }
+}

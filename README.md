@@ -21,8 +21,8 @@
 | 推理评估 | 对训练成功的 checkpoint 提交 `--test` 评估任务，产出官方测试集指标 |
 | 实验结果可视化 | 训练/推理指标曲线、异常热力图等统一入口，远程 run 目录为准、数据库只存索引 |
 | GPU 服务器监控 | 通过只读账号查看 GPU 状态、白名单目录、受信任 Conda 环境 |
-| 智能助手 | 通义千问（DashScope）驱动的用户/管理员双入口对话，SSE 流式输出 |
-| RAG 知识库 | 文档上传（docx/pdf/pptx/xlsx/md 等）→ 语义分块 → Chroma 向量索引 → 混合检索（向量 + BM25）+ 可选重排 + 溯源引用 |
+| 智能助手 | 通义千问（DashScope）驱动的用户/管理员双入口对话：规则路由 + 歧义意图分类 + 上下文查询改写，SSE 流式输出（回答先经校验再推送） |
+| RAG 知识库 | 文档上传（扩展名/MIME/魔数校验、容器炸弹防护、本地 ClamAV 扫描）→ 语义分块（低文本 PDF 可启用 OCR 兜底）→ Shadow 索引蓝绿发布 → 混合检索（向量 + BM25 + RRF，单路失败自动降级）→ 逐条引用与证据校验的溯源回答 |
 | 公告与文件 | 站内公告、头像等文件上传（服务端图像解码校验） |
 
 ## 系统架构
@@ -31,7 +31,7 @@
                           ┌─────────────────────────────────┐
                           │        远程 GPU 服务器            │
                           │  PBAS 训练 / 推理（Conda 环境）     │
-                          │  MVTec AD 数据集                  │
+                          │  MVTec AD / VisA / MPDD / BTAD    │
                           └───────────▲─────────────────────┘
                                       │ SSH / SFTP（asyncssh）
                                       │ config.json 下发 + manifest.json 轮询
@@ -48,6 +48,7 @@
 1. **训练/推理代理执行**：后端 `TrainingExecutorService` / `InferenceExecutorService` 以独立的低权限 SSH 账号连接 GPU 服务器，SFTP 写入 `config.json` 后用 `nohup` 启动 runner 脚本（`scripts/phase0_pbas_runner.py` 训练、`scripts/phase0_pbas_inference_runner.py` 推理），任务终态以远程 `manifest.json` 为事实源，而非进程退出码。
 2. **算法适配器模式**：通用生命周期（排队、GPU 租约、日志、清理）与算法差异（参数、指标、产物）分离；新算法只需在 `fastapi-app/services/algorithm_adapters/` 实现插件契约。
 3. **文件优先、DB 做索引**：实验结果以远程 run 目录中的文件为准，数据库仅存索引与任务元数据，避免双写不一致。
+4. **RAG 蓝绿发布**：知识文档的改动在 Shadow Collection 中全量重建，通过完整性校验（节点数/重复 ID/向量维度与有效性）和固定冒烟题的证据命中门禁后，才原子切换 Active Release；上一版 Release 保留，可受控回滚。文档解析在独立子进程中执行（超时与资源上限），主服务不受解析故障影响。
 
 ## 环境要求
 
@@ -186,9 +187,10 @@ anomaly_detection_system/
 │   ├── phase0_pbas_runner.py            # PBAS 训练执行器
 │   ├── phase0_pbas_inference_runner.py  # PBAS 推理评估执行器
 │   └── evaluate_rag*.py                 # RAG 检索评测
-├── config/                    # 训练配置与 RAG 评测集
+├── deploy/                    # Qdrant 向量库迁移的 staging 部署配置（进行中）
+├── config/                    # 训练配置、RAG 评测集与 ClamAV 病毒库配置
 ├── docs/                      # 架构与阶段验收文档
-└── tests/                     # pytest 测试（适配器/RAG P0–P6/执行器）
+└── tests/                     # unittest 风格测试，pytest 可直接运行（适配器/RAG P0–P6/执行器）
 ```
 
 ## 文档指引
@@ -214,6 +216,9 @@ anomaly_detection_system/
 - [.env.example](.env.example) —— 全部环境变量及默认值
 - `fastapi-app/migrations/` —— 数据库结构演进记录
 - [代码审查报告](docs/code-review-2026-08-22.md) —— 2026-08 全系统审查：阻塞项/建议项/小改进的完整记录与修复结论
+- [RAG 源码分析](docs/rag-source-code-analysis.md) —— RAG 分层重构后的模块与调用链分析
+- `docs/rag-phase-*.md` 各阶段评审记录 —— RAG 生产化改进（Phase 0–6）的门禁决策、评测数据与验收证据链
+- [Qdrant 迁移手册](docs/qdrant-migration-runbook.md) —— 向量库从 Chroma 迁移至 Qdrant 的操作步骤（进行中）
 
 ## 开发与测试
 
@@ -222,7 +227,7 @@ anomaly_detection_system/
 python3 -m pytest tests/
 ```
 
-全部测试不依赖外部环境：数据库用 SQLite 内存模式，远程 SSH/SFTP 行为以模拟对象替代，克隆后即可直接运行。
+全部测试不依赖外部环境：数据库用 SQLite 内存模式，远程 SSH/SFTP 行为以模拟对象替代；完成快速开始第 2 步生成 `.env` 后即可直接运行。
 
 ```bash
 # 代码检查（ruff 非内置依赖，需先安装：pip install ruff）

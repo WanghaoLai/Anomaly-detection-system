@@ -11,8 +11,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import chromadb
-from chromadb.config import Settings as ChromaSettings
+# chromadb 及其 onnxruntime 传递依赖体量较大；仅在实际使用本地 Chroma
+# （active/target provider 为 chroma）时才导入，Qdrant 模式不加载。
+# 导入移入 chroma_client property，回滚窗口内首次访问自动完成加载。
 from dashscope import TextEmbedding
 
 from settings import AI_CONFIG
@@ -52,15 +53,29 @@ from .rag.indexing import (
     INDEX_WRITER_SCHEMA_VERSION,
     LlamaIndexChromaIndexWriter,
     LlamaIndexEmbeddingAdapter,
+    POINT_ID_SCHEMA_VERSION,
+    QDRANT_PAYLOAD_INDEX_FIELDS,
+    QDRANT_PAYLOAD_SCHEMA_VERSION,
+    QDRANT_WRITER_SCHEMA_VERSION,
+    QdrantCollectionAdapter,
+    QdrantDatabaseAdapter,
+    QdrantIndexWriter,
+    QdrantRuntimeConfig,
+    QdrantVectorStore,
     SQLiteEmbeddingCache,
+    create_qdrant_client,
 )
 from .rag.search import ReleaseBM25Cache
 
-try:
-    from markitdown import MarkItDown, StreamInfo
-except ImportError:  # 依赖在部署环境中由 requirements.txt 提供；保留惰性报错便于非 RAG 测试启动。
-    MarkItDown = None
-    StreamInfo = None
+# markitdown 及其传递依赖（含 onnxruntime）体量较大，仅在实际执行文档
+# 转换时才导入：转换器构造在 markdown_converter property 内，StreamInfo
+# 通过下方懒工厂在实际 convert 时解析。非 RAG 场景零加载。
+
+
+def _markitdown_stream_info_factory(**kwargs):
+    from markitdown import StreamInfo
+
+    return StreamInfo(**kwargs)
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +160,14 @@ class KnowledgeService:
         self.embedding_model = embedding_model or AI_CONFIG.get("embedding_model", "text-embedding-v2")
         self.dashscope_api_key = AI_CONFIG.get("dashscope_api_key", "")
         self._client = None
+        self._qdrant_client = None
+        self._qdrant_database = None
         self._collection = None
         self._collection_name = None
+        self._collection_provider = None
+        self._consistency_cache_lock = threading.RLock()
+        self._consistency_cache_key = None
+        self._consistency_cache_report = None
         self._markdown_converter = markdown_converter
         if artifact_root is not None:
             resolved_artifact_root = artifact_root
@@ -233,7 +254,7 @@ class KnowledgeService:
         )
         self.document_loader = document_loader or MarkItDownDocumentLoader(
             lambda: self.markdown_converter,
-            StreamInfo,
+            _markitdown_stream_info_factory,
             pdf_ocr=pdf_ocr,
             pdf_ocr_min_chars=int(
                 AI_CONFIG.get("rag_ocr_min_chars", 200)
@@ -288,13 +309,32 @@ class KnowledgeService:
             schema_version=self.embedding_schema_version,
             normalized=self.embedding_normalized,
         )
-        self.vector_store = vector_store or ChromaVectorStore(lambda: self.collection)
-        self.index_writer = index_writer or LlamaIndexChromaIndexWriter(
-            client_provider=lambda: self.client,
-            embedding_adapter=self.llama_embedding,
-            node_embedder=self.node_embedder,
-            insert_batch_size=100,
-        )
+        self.vector_store = vector_store
+        self.target_vector_store_provider = str(
+            AI_CONFIG.get("vector_store_provider", "chroma")
+        ).strip().lower()
+        if self.target_vector_store_provider not in {"chroma", "qdrant"}:
+            raise ValueError("AI_VECTOR_STORE_PROVIDER 必须为 chroma 或 qdrant")
+        if index_writer is not None:
+            self.index_writer = index_writer
+        elif self.target_vector_store_provider == "qdrant":
+            self.index_writer = QdrantIndexWriter(
+                client_provider=lambda: self.qdrant_client,
+                embedding_adapter=self.llama_embedding,
+                node_embedder=self.node_embedder,
+                insert_batch_size=int(AI_CONFIG.get("qdrant_batch_size", 100)),
+                require_payload_indexes=(
+                    str(AI_CONFIG.get("qdrant_mode", "local")).lower()
+                    == "server"
+                ),
+            )
+        else:
+            self.index_writer = LlamaIndexChromaIndexWriter(
+                client_provider=lambda: self.chroma_client,
+                embedding_adapter=self.llama_embedding,
+                node_embedder=self.node_embedder,
+                insert_batch_size=100,
+            )
         self.async_ingestion_executor = (
             async_ingestion_executor
             or AsyncIngestionExecutor(
@@ -321,16 +361,79 @@ class KnowledgeService:
                 ),
             )
         )
-        self._bm25_cache = ReleaseBM25Cache(self._lexical_snapshot)
+        self._bm25_cache = ReleaseBM25Cache(
+            self.current_release_id,
+            self._lexical_snapshot,
+        )
 
     @property
-    def client(self):
+    def chroma_client(self):
         if self._client is None:
+            import chromadb
+            from chromadb.config import Settings as ChromaSettings
+
             os.makedirs(CHROMA_PATH, exist_ok=True)
             self._client = chromadb.PersistentClient(
                 path=CHROMA_PATH, settings=ChromaSettings(anonymized_telemetry=False)
             )
         return self._client
+
+    @property
+    def client(self):
+        """Legacy Chroma client alias retained during the rollback window."""
+        return self.chroma_client
+
+    def _qdrant_runtime_config(self):
+        return {
+            "mode": str(AI_CONFIG.get("qdrant_mode", "local")),
+            "path": str(AI_CONFIG.get("qdrant_path") or ""),
+            "url": str(AI_CONFIG.get("qdrant_url") or ""),
+            "timeout_seconds": float(
+                AI_CONFIG.get("qdrant_timeout_seconds", 10.0)
+            ),
+            "prefer_grpc": bool(AI_CONFIG.get("qdrant_prefer_grpc", False)),
+        }
+
+    @property
+    def qdrant_client(self):
+        """Qdrant client for local development and optional integration tests."""
+        if self._qdrant_client is None:
+            self._qdrant_client = create_qdrant_client(QdrantRuntimeConfig(
+                **self._qdrant_runtime_config(),
+                api_key=str(AI_CONFIG.get("qdrant_api_key") or ""),
+            ))
+        return self._qdrant_client
+
+    @property
+    def qdrant_database(self):
+        if self._qdrant_database is None:
+            self._qdrant_database = QdrantDatabaseAdapter(self.qdrant_client)
+        return self._qdrant_database
+
+    def active_vector_store_provider(self) -> str:
+        pointer = self.artifact_repository.releases.active()
+        if pointer is None:
+            return "chroma"
+        provider = str(pointer.get("vector_store_provider") or "").lower()
+        if not provider:
+            manifest = self.artifact_repository.releases.get(
+                str(pointer["release_id"])
+            )
+            provider = str(
+                (manifest.get("indexing") or {}).get(
+                    "vector_store_provider", "chroma"
+                )
+            ).lower()
+        if provider not in {"chroma", "qdrant"}:
+            raise RuntimeError(f"发布指针向量库 provider 无效: {provider}")
+        return provider
+
+    def _database_for_provider(self, provider: str):
+        if provider == "qdrant":
+            return self.qdrant_database
+        if provider == "chroma":
+            return self.chroma_client
+        raise ValueError(f"不支持的向量库 provider: {provider}")
 
     @property
     def artifact_repository(self) -> KnowledgeArtifactRepository:
@@ -351,21 +454,47 @@ class KnowledgeService:
         if self._collection is not None and self._collection_name is None:
             return self._collection
         collection_name = self.active_collection_name()
-        if self._collection is None or self._collection_name != collection_name:
-            self._collection = self.client.get_or_create_collection(
-                name=collection_name,
-                # collection metadata 创建后不可直接改，这里把模型和嵌入契约一起写入；
-                # 维度在首次成功调用 embedding 后再补入。
-                metadata={
-                    **BASE_COLLECTION_METADATA,
-                    "embedding_model": self.embedding_model,
-                    "embedding_provider": self.embedding_provider,
-                    "embedding_schema_version": self.embedding_schema_version,
-                    "embedding_normalized": self.embedding_normalized,
-                },
-            )
+        provider = self.active_vector_store_provider()
+        if (
+            self._collection is None
+            or self._collection_name != collection_name
+            or self._collection_provider != provider
+        ):
+            if provider == "qdrant":
+                # 在线读绝不得自动创建空 collection，否则会把索引丢失
+                # 静默伪装成“无知识”。
+                self._collection = self.qdrant_database.get_collection(
+                    collection_name
+                )
+            else:
+                self._collection = self.chroma_client.get_or_create_collection(
+                    name=collection_name,
+                    metadata={
+                        **BASE_COLLECTION_METADATA,
+                        "embedding_model": self.embedding_model,
+                        "embedding_provider": self.embedding_provider,
+                        "embedding_schema_version": self.embedding_schema_version,
+                        "embedding_normalized": self.embedding_normalized,
+                    },
+                )
             self._collection_name = collection_name
+            self._collection_provider = provider
         return self._collection
+
+    def _active_vector_store(self):
+        if self.vector_store is not None:
+            return self.vector_store
+        # Tests and provider-neutral callers may inject a Chroma-shaped
+        # collection directly. Preserve that explicit dependency even when
+        # the process-wide Active Pointer currently targets Qdrant.
+        if self._collection is not None and self._collection_name is None:
+            return ChromaVectorStore(lambda: self.collection)
+        if self.active_vector_store_provider() == "qdrant":
+            return QdrantVectorStore(
+                lambda: self.qdrant_client,
+                self.active_collection_name,
+            )
+        return ChromaVectorStore(lambda: self.collection)
 
     # ==================== 文档知识库 ====================
 
@@ -373,7 +502,9 @@ class KnowledgeService:
     def markdown_converter(self):
         """返回统一的 MarkItDown 转换器实例。"""
         if self._markdown_converter is None:
-            if MarkItDown is None:
+            try:
+                from markitdown import MarkItDown
+            except ImportError:
                 raise RuntimeError(
                     "MarkItDown 依赖未安装，请执行 pip install -r requirements.txt"
                 )
@@ -819,6 +950,14 @@ class KnowledgeService:
             or expected_report.get("collection_dim")
             or expected_report.get("chunk_dim")
         )
+        writer_provider = str(
+            getattr(self.index_writer, "provider", "replaceable")
+        )
+        writer_schema_version = (
+            QDRANT_WRITER_SCHEMA_VERSION
+            if writer_provider == "qdrant"
+            else INDEX_WRITER_SCHEMA_VERSION
+        )
         metadata = {
             **BASE_COLLECTION_METADATA,
             "embedding_model": self.embedding_model,
@@ -828,7 +967,7 @@ class KnowledgeService:
             "release_id": release_id,
             "document_schema_version": DOCUMENT_SCHEMA_VERSION,
             "index_framework": "llamaindex",
-            "index_writer_schema_version": INDEX_WRITER_SCHEMA_VERSION,
+            "index_writer_schema_version": writer_schema_version,
             "blue_green": True,
         }
         writer_nodes: List[Node] = []
@@ -900,10 +1039,17 @@ class KnowledgeService:
                 },
                 "indexing": {
                     "framework": "llamaindex",
-                    "writer": "VectorStoreIndex",
+                    "embedding_manager": "LlamaIndexEmbeddingAdapter",
+                    "writer": (
+                        "QdrantIndexWriter"
+                        if writer_provider == "qdrant"
+                        else "VectorStoreIndex"
+                    ),
                     "writer_schema_version": write_result.writer_schema_version,
-                    "vector_store_provider": getattr(
-                        self.index_writer, "provider", "replaceable"
+                    "vector_store_provider": writer_provider,
+                    "point_id_schema_version": (
+                        POINT_ID_SCHEMA_VERSION
+                        if writer_provider == "qdrant" else None
                     ),
                     "mode": "blue_green_full_rebuild",
                     "docstore_node_count": docstore_node_count,
@@ -941,6 +1087,20 @@ class KnowledgeService:
                     "asynchronous": write_result.asynchronous,
                     "async_capable": hasattr(self.index_writer, "abuild"),
                 },
+                "vector_store": (
+                    {
+                        "provider": "qdrant",
+                        "vector_size": write_result.dimension,
+                        "distance": "cosine",
+                        "payload_schema_version": QDRANT_PAYLOAD_SCHEMA_VERSION,
+                        "payload_indexes": list(QDRANT_PAYLOAD_INDEX_FIELDS),
+                    }
+                    if writer_provider == "qdrant" else {
+                        "provider": "chroma",
+                        "vector_size": write_result.dimension,
+                        "distance": "cosine",
+                    }
+                ),
                 "base_guard": base_guard,
             }
             self.artifact_repository.releases.put(manifest)
@@ -1293,20 +1453,26 @@ class KnowledgeService:
             return self._build_shadow_release(catalog, base_guard)
 
     def _validate_shadow_manifest(self, manifest: Dict) -> None:
-        names = {item.name for item in self.client.list_collections()}
+        indexing = manifest.get("indexing") or {}
+        provider = str(indexing.get("vector_store_provider") or "chroma")
+        database = self._database_for_provider(provider)
+        names = {item.name for item in database.list_collections()}
         collection_name = manifest["collection_name"]
         if collection_name not in names:
             raise RuntimeError(f"影子 collection 不存在: {collection_name}")
-        collection = self.client.get_collection(name=collection_name)
+        collection = database.get_collection(name=collection_name)
         metadata = dict(collection.metadata or {})
         embedding = manifest["embedding"]
         if metadata.get("embedding_model") != embedding["model"]:
             raise RuntimeError("影子索引 embedding model 不一致，已阻断发布")
         if int(metadata.get("embedding_dimension") or 0) != int(embedding["dimension"]):
             raise RuntimeError("影子索引 embedding dimension 不一致，已阻断发布")
-        indexing = manifest.get("indexing") or {}
         if indexing:
-            if indexing.get("writer_schema_version") != INDEX_WRITER_SCHEMA_VERSION:
+            expected_writer_schema = (
+                QDRANT_WRITER_SCHEMA_VERSION
+                if provider == "qdrant" else INDEX_WRITER_SCHEMA_VERSION
+            )
+            if indexing.get("writer_schema_version") != expected_writer_schema:
                 raise RuntimeError("影子索引 writer schema 不一致，已阻断发布")
             if metadata.get("index_framework") != "llamaindex":
                 raise RuntimeError("影子索引未由 LlamaIndex 构建，已阻断发布")
@@ -1350,7 +1516,9 @@ class KnowledgeService:
                 if actual_policy != expected_policy:
                     raise RuntimeError("影子索引权限元数据与 Manifest 不一致")
         validator = getattr(self.index_writer, "validate_collection", None)
-        if validator is not None:
+        if validator is not None and getattr(
+            self.index_writer, "provider", None
+        ) == provider:
             validator(
                 collection_name=collection_name,
                 expected_node_ids=ids,
@@ -1409,6 +1577,15 @@ class KnowledgeService:
             previous = self.artifact_repository.releases.publish(manifest)
             self._collection = None
             self._collection_name = None
+            self._collection_provider = None
+            self._invalidate_consistency_cache()
+            try:
+                self.warm_lexical_cache()
+            except Exception:
+                logger.exception(
+                    "Release 已发布，但当前进程 BM25 预热失败: release_id=%s",
+                    release_id,
+                )
             return previous
 
     def rollback_published_release(
@@ -1422,6 +1599,15 @@ class KnowledgeService:
             self.artifact_repository.releases.restore(previous_pointer)
             self._collection = None
             self._collection_name = None
+            self._collection_provider = None
+            self._invalidate_consistency_cache()
+            try:
+                self.warm_lexical_cache()
+            except Exception:
+                logger.exception(
+                    "Release 已回滚，但当前进程 BM25 预热失败: release_id=%s",
+                    release_id,
+                )
             return True
 
     def discard_staged_release(self, release_id: str) -> bool:
@@ -1556,7 +1742,7 @@ class KnowledgeService:
                 metadatas.append(metadata)
 
             try:
-                self.vector_store.add(
+                self._active_vector_store().add(
                     ids=ids,
                     embeddings=embeddings,
                     documents=chunks,
@@ -1951,9 +2137,11 @@ class KnowledgeService:
     def validate_embedding_config(self) -> dict:
         """校验 collection/chunk 元数据与当前 AI_CONFIG.embedding_model 是否一致。
 
-        不会调用 DashScope，仅读 Chroma 本地数据。
+        不会调用 DashScope，仅读当前发布向量库。
         """
-        names = [c.name for c in self.client.list_collections()]
+        active_provider = self.active_vector_store_provider()
+        database = self._database_for_provider(active_provider)
+        names = [c.name for c in database.list_collections()]
         result = {
             "consistent": True,
             "issues": [],
@@ -1974,7 +2162,7 @@ class KnowledgeService:
         if collection_name not in names:
             return result
 
-        col = self.client.get_collection(name=collection_name)
+        col = database.get_collection(name=collection_name)
         col_meta = col.metadata or {}
         result["collection_model"] = col_meta.get("embedding_model")
         result["collection_provider"] = col_meta.get("embedding_provider")
@@ -2079,9 +2267,48 @@ class KnowledgeService:
                 "\n请回滚 AI_CONFIG.embedding_model，或重新 embedding 全部历史数据。"
             )
 
+    def _consistency_cache_identity(self) -> tuple:
+        return (
+            self.current_release_id(),
+            self.active_vector_store_provider(),
+            self.embedding_model,
+            self.embedding_provider,
+            self.embedding_schema_version,
+            self.embedding_normalized,
+        )
+
+    @staticmethod
+    def _copy_consistency_report(report: dict) -> dict:
+        return {
+            **report,
+            "issues": list(report.get("issues") or []),
+        }
+
+    def _invalidate_consistency_cache(self) -> None:
+        with self._consistency_cache_lock:
+            self._consistency_cache_key = None
+            self._consistency_cache_report = None
+
+    def _cached_embedding_config_report(self) -> dict:
+        """每个进程、每个 Release 只执行一次远程向量契约校验。"""
+
+        cache_key = self._consistency_cache_identity()
+        with self._consistency_cache_lock:
+            if (
+                self._consistency_cache_key == cache_key
+                and self._consistency_cache_report is not None
+            ):
+                return self._copy_consistency_report(
+                    self._consistency_cache_report
+                )
+            report = self.validate_embedding_config()
+            self._consistency_cache_key = cache_key
+            self._consistency_cache_report = self._copy_consistency_report(report)
+            return self._copy_consistency_report(report)
+
     def _ensure_consistent_or_warn(self, op: str) -> bool:
         """search 路径软校验：不一致则记 error 并返回 False，让上层走兜底。"""
-        report = self.validate_embedding_config()
+        report = self._cached_embedding_config_report()
         if not report["consistent"]:
             logger.error(
                 "embedding 配置不一致，%s 已跳过 RAG 检索：\n  %s",
@@ -2159,8 +2386,111 @@ class KnowledgeService:
                 allowed.add(str(doc_id))
         return allowed
 
-    def _lexical_snapshot(self) -> tuple[str, list[dict]]:
-        return self.current_release_id(), self.list_document_chunks()
+    @staticmethod
+    def _lexical_chunk_record(
+        node_id: str | None,
+        content: str,
+        metadata: Dict,
+    ) -> dict:
+        """将 provider payload 或 DocStore Node 归一为 BM25 记录。"""
+
+        return {
+            "node_id": node_id or metadata.get("node_id"),
+            "content": content,
+            "source": "knowledge_base",
+            "doc_id": metadata.get("doc_id"),
+            "filename": metadata.get("filename", metadata.get("name", "")),
+            "heading_path": metadata.get("heading_path"),
+            "heading_paths": metadata.get(
+                "heading_paths", metadata.get("heading_path")
+            ),
+            "chunk_index": metadata.get("chunk_index"),
+            "content_format": metadata.get("content_format", "markdown"),
+            "section_path": metadata.get(
+                "section_path", metadata.get("heading_path")
+            ),
+            "position": metadata.get("position"),
+            "line_start": metadata.get("line_start"),
+            "line_end": metadata.get("line_end"),
+            "char_start": metadata.get(
+                "char_start", metadata.get("start")
+            ),
+            "char_end": metadata.get("char_end", metadata.get("end")),
+            "citation_label": metadata.get("citation_label"),
+            "visibility": metadata.get("visibility", "internal"),
+            "allowed_roles": metadata.get(
+                "allowed_roles", "管理员,用户"
+            ),
+            "allowed_user_ids": metadata.get("allowed_user_ids", ""),
+        }
+
+    def _lexical_snapshot(self, release_id: str) -> list[dict]:
+        """只从本地 Manifest/DocStore 构建指定 Release 的 BM25 快照。
+
+        Release Manifest/Active Pointer 是发布控制面，DocStore 是正文与 Node 的
+        事实源。已发布版本不需要反向 scroll 向量库；只有 P1 前 legacy 版本仍
+        使用原 collection 兼容读取。
+        """
+
+        if release_id.startswith("legacy:"):
+            return self.list_document_chunks()
+
+        manifest = self.artifact_repository.releases.get(release_id)
+        access_policies = dict(manifest.get("access_policies") or {})
+        records_by_node_id: Dict[str, dict] = {}
+        for document_id in manifest.get("document_ids") or []:
+            document_id = str(document_id)
+            if document_id not in access_policies:
+                raise RuntimeError(
+                    f"Release lexical snapshot 缺少 ACL: {document_id}"
+                )
+            document = self.artifact_repository.documents.get(document_id)
+            source = dict(document.get("source") or {})
+            policy = DocumentAccessPolicy.normalize(
+                **access_policies[document_id]
+            ).as_metadata()
+            for node in document.get("nodes") or []:
+                node_id = str(node.get("node_id") or "")
+                if not node_id:
+                    raise RuntimeError("DocStore lexical snapshot 存在空 Node ID")
+                if node_id in records_by_node_id:
+                    raise RuntimeError(
+                        f"Release lexical snapshot 存在重复 Node ID: {node_id}"
+                    )
+                metadata = dict(node.get("metadata") or {})
+                metadata.update({
+                    "node_id": node_id,
+                    "doc_id": document_id,
+                    "filename": source.get("filename", ""),
+                    "content_hash": source.get("sha256", ""),
+                    "raw_storage_key": source.get("storage_key") or "",
+                    "source_extension": source.get("extension", ""),
+                    "content_format": "markdown",
+                    "type": "document",
+                    "release_id": release_id,
+                    **policy,
+                })
+                records_by_node_id[node_id] = self._lexical_chunk_record(
+                    node_id,
+                    str(node.get("text") or ""),
+                    metadata,
+                )
+
+        node_ids = sorted(records_by_node_id)
+        if len(node_ids) != int(manifest.get("node_count") or 0):
+            raise RuntimeError("Release lexical snapshot Node 数与 Manifest 不一致")
+        if self._node_ids_hash(node_ids) != manifest.get("node_ids_sha256"):
+            raise RuntimeError("Release lexical snapshot Node ID 哈希不一致")
+        return [records_by_node_id[node_id] for node_id in node_ids]
+
+    def warm_lexical_cache(self) -> dict:
+        """为当前进程预热 Active Release 的本地 BM25 索引。"""
+
+        release_id, index = self._bm25_cache.index()
+        return {
+            "release_id": release_id,
+            "node_count": len(index.records),
+        }
 
     def lexical_search(
         self,
@@ -2215,11 +2545,15 @@ class KnowledgeService:
             return []
 
         query_embedding = self._get_embeddings([query], text_type="query")[0]
-        store = (
-            self.vector_store
-            if col is self.collection
-            else ChromaVectorStore(lambda: col)
-        )
+        if col is self.collection:
+            store = self._active_vector_store()
+        elif isinstance(col, QdrantCollectionAdapter):
+            store = QdrantVectorStore(
+                lambda: self.qdrant_client,
+                lambda: col.name,
+            )
+        else:
+            store = ChromaVectorStore(lambda: col)
         where = (
             {"doc_id": {"$in": sorted(allowed_doc_ids)}}
             if allowed_doc_ids is not None else None
@@ -2311,41 +2645,17 @@ class KnowledgeService:
         )
 
     def list_document_chunks(self) -> list:
-        """读取现有 Chroma 分块，供轻量字面检索使用，不引入新索引。"""
+        """兼容读取当前向量库分块；发布版 BM25 改用本地 DocStore。"""
         if not self._ensure_consistent_or_warn("list_document_chunks"):
             return []
         chunks = []
-        for node in self.vector_store.list_nodes():
+        store = self._active_vector_store()
+        for node in store.list_nodes():
             content = node["content"]
-            metadata = node["metadata"]
-            chunks.append({
-                "node_id": node.get("node_id") or metadata.get("node_id"),
-                "content": content,
-                "source": "knowledge_base",
-                "doc_id": metadata.get("doc_id"),
-                "filename": metadata.get("filename", metadata.get("name", "")),
-                "heading_path": metadata.get("heading_path"),
-                "heading_paths": metadata.get(
-                    "heading_paths",
-                    metadata.get("heading_path"),
-                ),
-                "chunk_index": metadata.get("chunk_index"),
-                "content_format": metadata.get("content_format", "markdown"),
-                "section_path": metadata.get(
-                    "section_path", metadata.get("heading_path")
-                ),
-                "position": metadata.get("position"),
-                "line_start": metadata.get("line_start"),
-                "line_end": metadata.get("line_end"),
-                "char_start": metadata.get("char_start"),
-                "char_end": metadata.get("char_end"),
-                "citation_label": metadata.get("citation_label"),
-                "visibility": metadata.get("visibility", "internal"),
-                "allowed_roles": metadata.get(
-                    "allowed_roles", "管理员,用户"
-                ),
-                "allowed_user_ids": metadata.get("allowed_user_ids", ""),
-            })
+            metadata = dict(node["metadata"])
+            chunks.append(self._lexical_chunk_record(
+                node.get("node_id"), content, metadata
+            ))
         return chunks
 
     # ==================== 统计 ====================
@@ -2467,10 +2777,18 @@ class KnowledgeService:
                 details=list(embedding_report.get("issues") or []),
             )
 
+        active_provider = str(
+            (manifest.get("indexing") or {}).get(
+                "vector_store_provider", "chroma"
+            )
+        )
+        active_database = self._database_for_provider(active_provider)
         chroma_doc_ids: set[str] = set()
         chroma_node_ids: list[str] = []
         try:
-            collection = self.client.get_collection(name=manifest["collection_name"])
+            collection = active_database.get_collection(
+                name=manifest["collection_name"]
+            )
             index = collection.get(include=["metadatas"])
             chroma_ids = list(index.get("ids") or [])
             chroma_metadatas = list(index.get("metadatas") or [])
@@ -2500,7 +2818,11 @@ class KnowledgeService:
                 )
         except Exception as exc:
             chroma_ids = []
-            add_issue("chroma_unavailable", "无法读取当前发布 Chroma", details=str(exc))
+            add_issue(
+                "vector_store_unavailable",
+                f"无法读取当前发布向量库: {active_provider}",
+                details=str(exc),
+            )
 
         mysql_ids = set(sql_by_doc_id)
         for missing in sorted(active_doc_ids - mysql_ids):
@@ -2587,6 +2909,7 @@ class KnowledgeService:
             "release": {
                 "release_id": manifest["release_id"],
                 "collection_name": manifest["collection_name"],
+                "vector_store_provider": active_provider,
                 "document_schema_version": DOCUMENT_SCHEMA_VERSION,
             },
             "summary": summary,
