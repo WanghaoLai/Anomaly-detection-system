@@ -50,6 +50,7 @@ Thumbs.db
 *.sqlite
 *.sqlite3
 fastapi-app/chroma_db/
+fastapi-app/qdrant_db/
 
 # ==== 日志 ====
 *.log

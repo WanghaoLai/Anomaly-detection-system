@@ -416,5 +416,4 @@ __all__ = [
     "ExperimentResultError",
     "ExperimentResultService",
     "experiment_result_service",
-    "_visualization_items",
 ]

@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 BACKEND_DIR = Path(__file__).parents[1] / "fastapi-app"
@@ -60,9 +60,19 @@ class RagP1IngestionTests(unittest.TestCase):
     def setUp(self):
         self.chroma_dir = tempfile.TemporaryDirectory()
         self.artifact_dir = tempfile.TemporaryDirectory()
+        self.config_patch = patch.dict(
+            knowledge_module.AI_CONFIG,
+            {
+                "vector_store_provider": "chroma",
+                "qdrant_mode": "local",
+                "rag_release_smoke_required": False,
+            },
+            clear=False,
+        )
         self.patch = patch.object(
             knowledge_module, "CHROMA_PATH", self.chroma_dir.name
         )
+        self.config_patch.start()
         self.patch.start()
         self.embedding = MutableEmbedding(2)
         self.converter = MutableMarkdownConverter()
@@ -75,6 +85,7 @@ class RagP1IngestionTests(unittest.TestCase):
 
     def tearDown(self):
         self.patch.stop()
+        self.config_patch.stop()
         self.artifact_dir.cleanup()
         self.chroma_dir.cleanup()
 
@@ -114,6 +125,24 @@ class RagP1IngestionTests(unittest.TestCase):
             previous = self.service.publish_staged_release(staged["release_id"])
 
         self.assertIsNone(previous)
+
+    def test_publish_prewarms_bm25_and_warm_failure_does_not_rollback(self):
+        staged = self.service.stage_document_release(b"raw-v1", "manual.md")
+        self.service.warm_lexical_cache = Mock(
+            side_effect=RuntimeError("warm failed")
+        )
+
+        with self.assertLogs(
+            "services.knowledge_service", level="ERROR"
+        ) as captured:
+            previous = self.service.publish_staged_release(staged["release_id"])
+
+        self.assertIsNone(previous)
+        self.assertEqual(
+            self.service.artifact_repository.releases.active()["release_id"],
+            staged["release_id"],
+        )
+        self.assertIn("BM25 预热失败", "\n".join(captured.output))
 
     def test_original_file_document_nodes_and_source_are_preserved(self):
         staged = self.service.stage_document_release(b"raw-v1", "folder\\manual.md")

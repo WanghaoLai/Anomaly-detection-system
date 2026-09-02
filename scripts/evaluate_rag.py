@@ -1,4 +1,4 @@
-"""在现有 Chroma 知识库上评测 dense、轻量 hybrid 和可选 v4 向量。
+"""在现有或候选向量库上评测 dense、轻量 hybrid 和可选 v4 向量。
 
 默认只调用当前配置的 embedding 模型生成查询向量，不修改 Chroma。传入
 --compare-v4 时会在内存中临时生成 v4 文档/查询向量，同样不会写入索引。
@@ -129,15 +129,20 @@ def evaluate(
     *,
     compare_v4: bool = False,
     collection_name: str | None = None,
+    collection_provider: str | None = None,
 ) -> dict:
     cases = list(dataset["questions"])
     service = KnowledgeService()
     if collection_name:
-        collection = service.client.get_collection(name=collection_name)
+        provider = str(collection_provider or "chroma").lower()
+        collection = service._database_for_provider(provider).get_collection(
+            name=collection_name
+        )
         collection_metadata = dict(collection.metadata or {})
         if collection_metadata.get("embedding_model") != service.embedding_model:
             raise RuntimeError("候选 collection 的 embedding model 与运行时不一致")
     else:
+        provider = service.active_vector_store_provider()
         config_report = service.validate_embedding_config()
         if not config_report["consistent"]:
             raise RuntimeError("现有 Chroma embedding 配置不一致：" + "; ".join(config_report["issues"]))
@@ -204,6 +209,9 @@ def evaluate(
             "hybrid_hit": any(_is_relevant(item, case) for item in hybrid_selected),
             "first_relevant_rank": relevant_dense_ranks[0] if relevant_dense_ranks else None,
             "selection": selection,
+            "top_dense_node_ids": [
+                str(item["node_id"]) for item in dense_candidates[:candidate_k]
+            ],
             "top_dense_scores": [round(item["score"], 4) for item in dense_candidates[:final_k]],
             "dense_threshold_hits": {
                 f"{threshold:.2f}": any(
@@ -300,6 +308,7 @@ def evaluate(
             "questions": len(cases),
         },
         "index": {
+            "vector_store_provider": provider,
             "embedding_model": service.embedding_model,
             "collection_name": collection.name,
             "documents": len({record.get("doc_id") for record in records}),
@@ -345,7 +354,7 @@ def evaluate(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="评测当前 Chroma RAG 检索质量")
+    parser = argparse.ArgumentParser(description="评测当前或候选 RAG 检索质量")
     parser.add_argument(
         "--dataset",
         default=str(PROJECT_ROOT / "config" / "rag_eval_questions.json"),
@@ -355,6 +364,12 @@ def main() -> int:
         "--collection",
         default=None,
         help="评测指定影子 collection，不切换在线发布指针",
+    )
+    parser.add_argument(
+        "--provider",
+        choices=("chroma", "qdrant"),
+        default=None,
+        help="--collection 对应的向量库 provider",
     )
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
@@ -369,6 +384,7 @@ def main() -> int:
         dataset,
         compare_v4=args.compare_v4,
         collection_name=args.collection,
+        collection_provider=args.provider,
     )
     report["elapsed_seconds"] = round(time.perf_counter() - started, 2)
     output_path = (

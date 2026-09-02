@@ -21,7 +21,12 @@ from ..core.contracts import Document, Node, SourceInfo
 
 DOCUMENT_SCHEMA_VERSION = "unified-document-v1"
 NODE_SCHEMA_VERSION = "deterministic-node-v1"
-RELEASE_SCHEMA_VERSION = "shadow-release-v1"
+LEGACY_RELEASE_SCHEMA_VERSION = "shadow-release-v1"
+RELEASE_SCHEMA_VERSION = "shadow-release-v2"
+SUPPORTED_RELEASE_SCHEMA_VERSIONS = frozenset({
+    LEGACY_RELEASE_SCHEMA_VERSION,
+    RELEASE_SCHEMA_VERSION,
+})
 
 
 def utc_now_iso() -> str:
@@ -239,7 +244,10 @@ class ReleaseManifestStore:
         path = self.release_path(release_id)
         if not path.is_file():
             raise FileNotFoundError(f"发布清单不存在: {release_id}")
-        return json.loads(path.read_text(encoding="utf-8"))
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        if manifest.get("schema_version") not in SUPPORTED_RELEASE_SCHEMA_VERSIONS:
+            raise RuntimeError("发布清单 schema_version 不受支持")
+        return manifest
 
     def active(self) -> dict | None:
         if not self.active_path.is_file():
@@ -247,7 +255,7 @@ class ReleaseManifestStore:
         pointer = json.loads(self.active_path.read_text(encoding="utf-8"))
         if pointer.get("legacy") is True:
             return None
-        if pointer.get("schema_version") != RELEASE_SCHEMA_VERSION:
+        if pointer.get("schema_version") not in SUPPORTED_RELEASE_SCHEMA_VERSIONS:
             raise RuntimeError("发布指针 schema_version 不一致")
         release_id = str(pointer.get("release_id") or "")
         manifest_path = self.release_path(release_id)
@@ -263,6 +271,11 @@ class ReleaseManifestStore:
         pointer = {
             "schema_version": RELEASE_SCHEMA_VERSION,
             "release_id": manifest["release_id"],
+            "vector_store_provider": str(
+                (manifest.get("indexing") or {}).get(
+                    "vector_store_provider", "chroma"
+                )
+            ),
             "collection_name": manifest["collection_name"],
             "manifest_sha256": sha256_bytes(
                 self.release_path(manifest["release_id"]).read_bytes()

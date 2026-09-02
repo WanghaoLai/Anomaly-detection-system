@@ -100,21 +100,44 @@ class BM25Index:
 
 
 class ReleaseBM25Cache:
-    """每个进程只保留当前 release 的一份不可变索引。"""
+    """每个进程只保留当前 release 的一份不可变索引。
 
-    def __init__(self, snapshot_provider: Callable[[], tuple[str, list[dict]]]):
+    Release ID 与正文加载必须分离：命中缓存时只读取本地发布指针，不能为
+    了确认缓存而再次全量读取向量库。构建过程放在同一把锁内，避免并发冷
+    请求重复加载快照。
+    """
+
+    def __init__(
+        self,
+        release_id_provider: Callable[[], str],
+        snapshot_provider: Callable[[str], list[dict]],
+    ):
+        self._release_id_provider = release_id_provider
         self._snapshot_provider = snapshot_provider
         self._lock = threading.RLock()
         self._release_id: str | None = None
         self._index: BM25Index | None = None
 
     def index(self) -> tuple[str, BM25Index]:
-        release_id, records = self._snapshot_provider()
         with self._lock:
-            if self._index is None or self._release_id != release_id:
-                self._index = BM25Index(records)
-                self._release_id = release_id
-            return release_id, self._index
+            # 等待并发构建锁之后重新读取指针，避免线程排队期间发生发布切换，
+            # 却按进入锁之前读取的旧 ID 错误命中旧缓存。
+            release_id = self._release_id_provider()
+            if self._index is not None and self._release_id == release_id:
+                return release_id, self._index
+
+            # 发布指针可能在本地快照加载期间切换。只有快照仍对应当前指针时
+            # 才安装缓存；若发生切换则重试新 release，避免混用版本。
+            for _ in range(3):
+                records = self._snapshot_provider(release_id)
+                current_release_id = self._release_id_provider()
+                if current_release_id == release_id:
+                    self._index = BM25Index(records)
+                    self._release_id = release_id
+                    return release_id, self._index
+                release_id = current_release_id
+
+            raise RuntimeError("BM25 快照构建期间发布指针持续变化")
 
     def search(
         self,

@@ -12,7 +12,9 @@ from typing import Mapping, Sequence
 from llama_index.core import StorageContext, VectorStoreIndex
 from llama_index.core.indices.utils import async_embed_nodes, embed_nodes
 from llama_index.core.schema import NodeRelationship, RelatedNodeInfo, TextNode
-from llama_index.vector_stores.chroma import ChromaVectorStore as LlamaChromaVectorStore
+# llama-index 的 Chroma 集成在模块顶层 import chromadb（连带 onnxruntime）。
+# 导入移入 _write_preembedded：QdrantIndexWriter 完整覆盖该方法，
+# Qdrant 模式下 chromadb 不再被加载。
 
 from ..core.contracts import IndexWriteResult, Node
 from .cache import EmbeddingBuildStats
@@ -180,6 +182,10 @@ class LlamaIndexChromaIndexWriter:
         )
         if not nodes:
             return
+        from llama_index.vector_stores.chroma import (
+            ChromaVectorStore as LlamaChromaVectorStore,
+        )
+
         vector_store = LlamaChromaVectorStore(chroma_collection=collection)
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
         # Node 已经通过 LlamaIndex embed_nodes 附带 embedding，此处
