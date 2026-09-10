@@ -80,7 +80,7 @@ CREATE TABLE `algorithm` (
   `train_entrypoint` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '训练入口脚本路径',
   `inference_entrypoint` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '推理入口脚本路径',
   `executor_type` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'GPU' COMMENT '执行器类型',
-  `process_manager` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'SYSTEMD' COMMENT '任务进程管理方式',
+  `process_manager` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PROCESS_GROUP' COMMENT '任务进程管理方式',
   `protocol_version` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '1.0' COMMENT 'JSONL 训练协议版本',
   `sse_enabled` tinyint(1) NOT NULL DEFAULT '1' COMMENT '是否支持 SSE 实时推送',
   `parameter_schema_json` json DEFAULT NULL COMMENT '参数结构定义',
@@ -88,7 +88,7 @@ CREATE TABLE `algorithm` (
   `resource_spec_json` json DEFAULT NULL COMMENT '资源需求规格',
   `dataset_requirement_json` json DEFAULT NULL COMMENT '数据集要求定义',
   PRIMARY KEY (`id`) USING BTREE,
-  KEY `fk_algorithm_versions_algorithm` (`algorithm_id`),
+  UNIQUE KEY `uq_algorithm_algorithm_id` (`algorithm_id`),
   CONSTRAINT `fk_algorithm_versions_algorithm` FOREIGN KEY (`algorithm_id`) REFERENCES `algorithms` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE=InnoDB AUTO_INCREMENT=10 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC COMMENT='算法信息';
 
@@ -161,7 +161,7 @@ CREATE TABLE `dataset` (
   `test_sample_count` int NOT NULL DEFAULT '0' COMMENT '测试集样本数',
   `anomaly_sample_count` int NOT NULL DEFAULT '0' COMMENT '异常样本数',
   PRIMARY KEY (`id`) USING BTREE,
-  KEY `idx_dataset_creator` (`dataset_id`) USING BTREE,
+  UNIQUE KEY `uq_dataset_dataset_id` (`dataset_id`) USING BTREE,
   CONSTRAINT `fk_dataset_versions_dataset` FOREIGN KEY (`dataset_id`) REFERENCES `datasets` (`id`) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE=InnoDB AUTO_INCREMENT=10 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC COMMENT='数据集信息';
 
@@ -218,6 +218,20 @@ CREATE TABLE `inference_jobs` (
 ) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------
+-- Table structure for gpu_leases
+-- ----------------------------
+DROP TABLE IF EXISTS `gpu_leases`;
+CREATE TABLE `gpu_leases` (
+  `gpu_index` int NOT NULL,
+  `workload_type` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `workload_id` bigint NOT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`gpu_index`),
+  UNIQUE KEY `uq_gpu_leases_workload` (`workload_type`,`workload_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------
 -- Table structure for knowledge
 -- ----------------------------
 DROP TABLE IF EXISTS `knowledge`;
@@ -230,6 +244,24 @@ CREATE TABLE `knowledge` (
   `created_at` datetime(6) DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库信息';
+
+-- ----------------------------
+-- Table structure for knowledge_release_operations
+-- ----------------------------
+DROP TABLE IF EXISTS `knowledge_release_operations`;
+CREATE TABLE `knowledge_release_operations` (
+  `release_id` varchar(64) NOT NULL,
+  `operation` varchar(16) NOT NULL,
+  `status` varchar(20) NOT NULL DEFAULT 'PENDING',
+  `payload_json` json NOT NULL,
+  `error_message` varchar(1000) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`release_id`),
+  KEY `idx_knowledge_release_status` (`status`),
+  CONSTRAINT `chk_knowledge_release_operation` CHECK (`operation` IN ('UPLOAD','DELETE')),
+  CONSTRAINT `chk_knowledge_release_status` CHECK (`status` IN ('PENDING','PUBLISHED','ROLLED_BACK'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------
 -- Table structure for login_throttle
@@ -494,6 +526,33 @@ CREATE TABLE `training_metrics` (
 ) ENGINE=InnoDB AUTO_INCREMENT=108 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------
+-- 注意：完整导入本基线后，需执行
+--   python fastapi-app/manage_migrations.py baseline --version latest
+-- 以建立带校验和的版本历史。
+
+-- ----------------------------
+-- Table structure for stored_files
+-- ----------------------------
+DROP TABLE IF EXISTS `stored_files`;
+CREATE TABLE `stored_files` (
+  `id` varchar(36) NOT NULL,
+  `category` varchar(32) NOT NULL,
+  `relative_path` varchar(500) NOT NULL,
+  `original_name` varchar(255) NOT NULL,
+  `owner_id` int NOT NULL,
+  `owner_role` varchar(20) NOT NULL,
+  `access_scope` varchar(20) NOT NULL DEFAULT 'OWNER',
+  `size_bytes` bigint NOT NULL,
+  `media_type` varchar(128) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_stored_files_relative_path` (`relative_path`),
+  KEY `idx_stored_files_owner` (`owner_role`,`owner_id`),
+  KEY `idx_stored_files_category` (`category`),
+  CONSTRAINT `chk_stored_files_scope` CHECK (`access_scope` IN ('OWNER','AUTHENTICATED'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------
 -- Table structure for user
 -- ----------------------------
 DROP TABLE IF EXISTS `user`;
@@ -505,7 +564,11 @@ CREATE TABLE `user` (
   `avatar` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '头像',
   `role` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '角色',
   `token_version` int NOT NULL DEFAULT '0' COMMENT '令牌版本',
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`) USING BTREE,
+  -- 与 migrations/011_user_username_unique.sql 的产物保持一致：
+  -- 并发注册同名账号时由唯一索引做最终裁决，否则登录 get_or_none
+  -- 会抛 MultipleObjectsFound，同名账号永久不可用。
+  UNIQUE KEY `uq_user_username` (`username`) USING BTREE
 ) ENGINE=InnoDB AUTO_INCREMENT=11 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户信息';
 
 SET FOREIGN_KEY_CHECKS = 1;

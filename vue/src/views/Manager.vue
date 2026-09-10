@@ -146,6 +146,11 @@
 import { reactive, ref, onMounted, onUnmounted } from "vue";
 import router from "@/router";
 import {ElMessage} from "element-plus";
+import {
+  Avatar, Bell, ChatDotRound, Clock, Coin, Collection, Cpu, DataLine,
+  FolderOpened, Histogram, HomeFilled, Key, Lock, Monitor, SetUp,
+  SwitchButton, TrendCharts, UploadFilled, User,
+} from "@element-plus/icons-vue";
 import request from "@/utils/request";
 import { clearAuthState } from "@/utils/auth";
 

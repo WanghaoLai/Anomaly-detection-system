@@ -148,7 +148,10 @@ const handleEdit = (row) => {
 }
 
 const add = () => {
-  request.post('/notice/add', data.form).then(res => {
+  request.post('/notice/add', {
+    name: data.form.name,
+    content: data.form.content,
+  }).then(res => {
     if (res.code === '200') {
       ElMessage.success('操作成功')
       data.formVisible = false
@@ -160,7 +163,11 @@ const add = () => {
 }
 
 const update = () => {
-  request.put('/notice/update', data.form).then(res => {
+  request.put('/notice/update', {
+    id: data.form.id,
+    name: data.form.name,
+    content: data.form.content,
+  }).then(res => {
     if (res.code === '200') {
       ElMessage.success('操作成功')
       data.formVisible = false

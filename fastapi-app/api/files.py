@@ -1,6 +1,8 @@
 # 文件上传和下载
 import io
 import logging
+import mimetypes
+import os
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -12,11 +14,13 @@ from starlette.responses import FileResponse
 from common.auth import get_current_user
 from common.exception_handler import CustomException
 from common.result import Result
+from models import Admin, StoredFile, User
+from settings import BASE_DIR
 
 logger = logging.getLogger(__name__)
 
-UPLOAD_DIR = Path("files")
-UPLOAD_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR = (BASE_DIR / "files").resolve()
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 CATEGORY_DIRS = {
     "avatar": "avatars",
@@ -49,17 +53,18 @@ def _matches_signatures(ext: str, content: bytes) -> bool:
     )
 
 
-@router.post("/upload", dependencies=[Depends(get_current_user)])
+@router.post("/upload")
 async def upload_file(
     request: Request,
     file: UploadFile = File(...),
     category: str = Query("avatar", description="文件分类: avatar / image / inference"),
+    current_user: dict = Depends(get_current_user),
 ):
     """上传单个文件，按分类保存到子目录，生成唯一文件名避免冲突。"""
     if category not in CATEGORY_DIRS:
-        category = "image"
+        raise HTTPException(status_code=422, detail="不支持的文件分类")
 
-    ext = Path(file.filename).suffix.lower()
+    ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         logger.warning("拒绝不支持的扩展名: filename=%s ext=%s", file.filename, ext)
         raise HTTPException(status_code=415, detail=f"不支持的文件格式: {ext}")
@@ -94,30 +99,89 @@ async def upload_file(
     unique_name = f"{date_prefix}_{uuid.uuid4().hex[:8]}{ext}"
     file_path = subdir / unique_name
 
-    file_path.write_bytes(content)
+    relative_path = f"{CATEGORY_DIRS[category]}/{unique_name}"
+    file_id = str(uuid.uuid4())
+    temp_path = file_path.with_suffix(f"{file_path.suffix}.uploading")
+    access_scope = "AUTHENTICATED" if category == "avatar" else "OWNER"
+    original_name = Path(file.filename or unique_name).name[:255]
+
+    try:
+        temp_path.write_bytes(content)
+        os.replace(temp_path, file_path)
+        await StoredFile.create(
+            id=file_id,
+            category=category,
+            relative_path=relative_path,
+            original_name=original_name,
+            owner_id=int(current_user["user_id"]),
+            owner_role=str(current_user["role"]),
+            access_scope=access_scope,
+            size_bytes=len(content),
+            media_type=file.content_type or mimetypes.guess_type(original_name)[0],
+        )
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        file_path.unlink(missing_ok=True)
+        logger.exception("文件与元数据持久化失败: file_id=%s", file_id)
+        raise CustomException("文件保存失败")
 
     base_url = str(request.base_url).rstrip("/")
-    relative_path = f"{CATEGORY_DIRS[category]}/{unique_name}"
-    return Result.success(f"{base_url}/files/download/{relative_path}")
+    return Result.success(f"{base_url}/files/download/{file_id}")
 
 
-@router.get(
-    "/download/{file_path:path}",
-    dependencies=[Depends(get_current_user)],
-)
-async def download_file(file_path: str):
-    """下载文件，兼容旧的扁平结构与新的分类子目录。"""
-    # 推理结果等上传产物按用户隔离，未登录请求必须在这里被拒绝；
-    # GET 请求同源 Cookie 自动携带，前端 <img> 引用不受影响。
-    if ".." in file_path or file_path.startswith("/"):
-        raise CustomException("非法的文件路径")
+def _is_authorized(record: StoredFile, current_user: dict) -> bool:
+    if record.access_scope == "AUTHENTICATED":
+        return True
+    if current_user.get("role") == "管理员":
+        return True
+    return (
+        record.owner_id == int(current_user["user_id"])
+        and record.owner_role == str(current_user["role"])
+    )
 
-    file_location = UPLOAD_DIR / file_path
-    if not file_location.exists() or not file_location.is_file():
-        raise CustomException("文件不存在")
+
+async def _is_referenced_legacy_avatar(relative_path: str) -> bool:
+    """旧版头像没有元数据；只对仍被账号记录精确引用的头像兼容放行。"""
+    if not relative_path.startswith("avatars/"):
+        return False
+    suffix = f"/files/download/{relative_path}"
+    return (
+        await User.filter(avatar__endswith=suffix).exists()
+        or await Admin.filter(avatar__endswith=suffix).exists()
+    )
+
+
+@router.get("/download/{file_ref:path}")
+async def download_file(
+    file_ref: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """根据文件对象授权下载；拒绝时统一返回 404，避免泄露对象存在性。"""
+    if ".." in file_ref or file_ref.startswith("/"):
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    record = await StoredFile.get_or_none(id=file_ref)
+    if record is not None:
+        if not _is_authorized(record, current_user):
+            raise HTTPException(status_code=404, detail="文件不存在")
+        relative_path = record.relative_path
+        download_name = record.original_name
+        media_type = record.media_type or "application/octet-stream"
+    else:
+        # 兼容升级前头像 URL；非头像历史路径默认关闭（fail closed）。
+        if not await _is_referenced_legacy_avatar(file_ref):
+            raise HTTPException(status_code=404, detail="文件不存在")
+        relative_path = file_ref
+        download_name = Path(file_ref).name
+        media_type = mimetypes.guess_type(download_name)[0] or "application/octet-stream"
+
+    root = UPLOAD_DIR.resolve()
+    file_location = (UPLOAD_DIR / relative_path).resolve()
+    if root not in file_location.parents or not file_location.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
 
     return FileResponse(
         path=str(file_location),
-        filename=file_location.name,
-        media_type='application/octet-stream',
+        filename=download_name,
+        media_type=media_type,
     )

@@ -83,6 +83,9 @@ TORTOISE_ORM = {
     "timezone": "Asia/Shanghai"
 }
 
+# 启动时只做版本校验，DDL 由 manage_migrations.py 显式执行。
+DB_SCHEMA_CHECK_ENABLED = _env_bool("DB_SCHEMA_CHECK_ENABLED", True)
+
 # 智能问答配置
 AI_CONFIG = {
     "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY", ""),

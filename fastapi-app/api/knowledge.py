@@ -3,28 +3,27 @@ import asyncio
 import logging
 import os
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form
-from tortoise.transactions import in_transaction
-
 from common.auth import get_current_admin
 from common.exception_handler import CustomException
 from common.result import Result
-from models import Knowledge
-from settings import AI_CONFIG
+from fastapi import APIRouter, Depends, File, Form, UploadFile
+from models import Knowledge, KnowledgeReleaseOperation
 from services.knowledge_service import (
     SUPPORTED_DOCUMENT_EXTENSIONS,
-    KnowledgeService,
+    knowledge_service,
 )
 from services.rag.document import (
     LocalClamAvScanner,
     UploadSecurityPolicy,
     validate_upload_content,
 )
+from settings import AI_CONFIG
+from tortoise.transactions import in_transaction
 
 router = APIRouter(prefix="/knowledge", dependencies=[Depends(get_current_admin)])
 
-knowledge_service = KnowledgeService()
 logger = logging.getLogger(__name__)
+_release_operation_lock = asyncio.Lock()
 
 ALLOWED_EXTENSIONS = SUPPORTED_DOCUMENT_EXTENSIONS
 MAX_UPLOAD_BYTES = int(AI_CONFIG.get("rag_max_upload_bytes", 20 * 1024 * 1024))
@@ -126,6 +125,50 @@ async def _upsert_knowledge_metadata(info: dict, original_name: str) -> Knowledg
     return await Knowledge.get(id=knowledge_id)
 
 
+def _knowledge_snapshot(rows) -> list[dict]:
+    return [{
+        "id": item.id,
+        "filename": item.filename,
+        "original_name": item.original_name,
+        "file_size": item.file_size,
+        "chunk_count": item.chunk_count,
+    } for item in rows]
+
+
+async def _restore_knowledge_snapshot(payload: dict, connection) -> None:
+    original_name = payload["original_name"]
+    await Knowledge.filter(original_name=original_name).using_db(connection).delete()
+    for item in payload.get("previous_rows") or []:
+        await Knowledge.create(using_db=connection, **item)
+
+
+async def _publish_recorded_release(operation: KnowledgeReleaseOperation) -> None:
+    """发布 PENDING release；进程在指针切换后退出时可幂等收敛。"""
+    if knowledge_service.current_release_id() != operation.release_id:
+        knowledge_service.publish_staged_release(operation.release_id)
+    await KnowledgeReleaseOperation.filter(
+        release_id=operation.release_id,
+        status="PENDING",
+    ).update(status="PUBLISHED", error_message=None)
+
+
+async def recover_pending_knowledge_releases() -> None:
+    """应用启动时先完成已提交的元数据发布，再开放检索和管理接口。"""
+    pending = await KnowledgeReleaseOperation.filter(status="PENDING").order_by(
+        "created_at"
+    )
+    for operation in pending:
+        try:
+            await _publish_recorded_release(operation)
+        except Exception as exc:
+            await KnowledgeReleaseOperation.filter(
+                release_id=operation.release_id
+            ).update(error_message=str(exc)[:1000])
+            raise RuntimeError(
+                f"知识库发布 {operation.release_id} 尚未恢复，拒绝启动"
+            ) from exc
+
+
 @router.post("/preview")
 async def preview(file: UploadFile = File(...)):
     """解析 PDF 并返回清理、标题识别和分块预览，不写入 Chroma/MySQL。"""
@@ -182,39 +225,45 @@ async def upload(
         logger.exception("知识库文档构建失败: filename=%s", original_name)
         raise CustomException("知识库影子索引构建失败，当前发布版本未受影响") from exc
 
-    previous_pointer = None
-    published = False
-    try:
-        async with in_transaction() as connection:
-            knowledge_id = await _upsert_knowledge_metadata_using(
-                info, original_name, connection
-            )
-            if not info.get("unchanged"):
-                # 指针写入放在 MySQL 事务内：发布失败时 SQL 回滚；
-                # SQL 在退出事务时提交失败，外层则恢复原指针。
-                previous_pointer = knowledge_service.publish_staged_release(
-                    info["release_id"]
+    async with _release_operation_lock:
+        operation = None
+        try:
+            async with in_transaction() as connection:
+                previous = await Knowledge.filter(
+                    original_name=original_name
+                ).using_db(connection).order_by("id")
+                knowledge_id = await _upsert_knowledge_metadata_using(
+                    info, original_name, connection
                 )
-                published = True
-        knowledge = await Knowledge.get(id=knowledge_id)
-    except Exception as exc:
-        rollback_ok = True
-        if published:
-            rollback_ok = knowledge_service.rollback_published_release(
-                info["release_id"], previous_pointer
-            )
-        if not info.get("unchanged"):
-            try:
-                knowledge_service.discard_staged_release(info["release_id"])
-            except Exception:
-                logger.exception("清理未发布影子索引失败: %s", info["release_id"])
-        if not rollback_ok:
-            logger.critical(
-                "MySQL 提交失败后发布指针恢复失败: release_id=%s",
-                info["release_id"],
-            )
-            raise CustomException("知识库发布回滚失败，请立即检查健康状态") from exc
-        raise CustomException("知识库发布失败，当前版本已保持不变") from exc
+                if not info.get("unchanged"):
+                    operation = await KnowledgeReleaseOperation.create(
+                        using_db=connection,
+                        release_id=info["release_id"],
+                        operation="UPLOAD",
+                        status="PENDING",
+                        payload_json={
+                            "original_name": original_name,
+                            "previous_rows": _knowledge_snapshot(previous),
+                        },
+                    )
+            if operation is not None:
+                await _publish_recorded_release(operation)
+            knowledge = await Knowledge.get(id=knowledge_id)
+        except Exception as exc:
+            # 指针已经切换时保留 PENDING，启动恢复会把它幂等标为 PUBLISHED。
+            if operation is not None and knowledge_service.current_release_id() != operation.release_id:
+                async with in_transaction() as connection:
+                    await _restore_knowledge_snapshot(operation.payload_json, connection)
+                    await KnowledgeReleaseOperation.filter(
+                        release_id=operation.release_id
+                    ).using_db(connection).update(
+                        status="ROLLED_BACK", error_message=str(exc)[:1000]
+                    )
+                try:
+                    knowledge_service.discard_staged_release(operation.release_id)
+                except Exception:
+                    logger.exception("清理未发布影子索引失败: %s", operation.release_id)
+            raise CustomException("知识库发布失败，当前版本已保持不变") from exc
 
     if info.get("unchanged"):
         logger.info(
@@ -265,30 +314,42 @@ async def delete(doc_id: int):
     except Exception as exc:
         raise CustomException("删除影子索引构建失败，当前版本未受影响") from exc
 
-    previous_pointer = None
-    published = False
-    try:
-        async with in_transaction() as connection:
-            deleted = await Knowledge.filter(id=doc_id).using_db(connection).delete()
-            if deleted != 1:
-                raise RuntimeError("知识库 MySQL 记录删除数量异常")
-            previous_pointer = knowledge_service.publish_staged_release(
-                staged["release_id"]
-            )
-            published = True
-    except Exception as exc:
-        rollback_ok = True
-        if published:
-            rollback_ok = knowledge_service.rollback_published_release(
-                staged["release_id"], previous_pointer
-            )
+    async with _release_operation_lock:
+        operation = None
         try:
-            knowledge_service.discard_staged_release(staged["release_id"])
-        except Exception:
-            logger.exception("清理删除影子索引失败: %s", staged["release_id"])
-        if not rollback_ok:
-            raise CustomException("知识库删除回滚失败，请立即检查健康状态") from exc
-        raise CustomException("知识库删除失败，当前发布版本已保持不变") from exc
+            async with in_transaction() as connection:
+                rows = await Knowledge.filter(
+                    original_name=knowledge.original_name
+                ).using_db(connection).order_by("id")
+                payload = {
+                    "original_name": knowledge.original_name,
+                    "previous_rows": _knowledge_snapshot(rows),
+                }
+                deleted = await Knowledge.filter(id=doc_id).using_db(connection).delete()
+                if deleted != 1:
+                    raise RuntimeError("知识库 MySQL 记录删除数量异常")
+                operation = await KnowledgeReleaseOperation.create(
+                    using_db=connection,
+                    release_id=staged["release_id"],
+                    operation="DELETE",
+                    status="PENDING",
+                    payload_json=payload,
+                )
+            await _publish_recorded_release(operation)
+        except Exception as exc:
+            if operation is not None and knowledge_service.current_release_id() != operation.release_id:
+                async with in_transaction() as connection:
+                    await _restore_knowledge_snapshot(operation.payload_json, connection)
+                    await KnowledgeReleaseOperation.filter(
+                        release_id=operation.release_id
+                    ).using_db(connection).update(
+                        status="ROLLED_BACK", error_message=str(exc)[:1000]
+                    )
+                try:
+                    knowledge_service.discard_staged_release(operation.release_id)
+                except Exception:
+                    logger.exception("清理删除影子索引失败: %s", operation.release_id)
+            raise CustomException("知识库删除失败，当前发布版本已保持不变") from exc
     return Result.success()
 
 

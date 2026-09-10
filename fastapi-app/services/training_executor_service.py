@@ -14,13 +14,11 @@ from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any
 
-from tortoise import connections
-from tortoise.exceptions import IntegrityError
-from tortoise.transactions import in_transaction
-
 from models import (
+    Admin,
     Algorithm,
     Dataset,
+    InferenceJob,
     TrainingArtifact,
     TrainingAudit,
     TrainingEvent,
@@ -28,14 +26,19 @@ from models import (
     TrainingJobDeletion,
     TrainingLog,
     TrainingMetric,
-    InferenceJob,
+    User,
 )
 from settings import TRAINING_EXECUTOR_CONFIG
+from tortoise import connections
+from tortoise.exceptions import IntegrityError
+from tortoise.transactions import in_transaction
+
 from services.algorithm_adapters import (
     AlgorithmAdapter,
     AlgorithmAdapterError,
     algorithm_adapter_registry,
 )
+from services.gpu_lease_service import gpu_lease_coordinator
 from services.training_log_parser import ParsedTrainingLine
 from services.training_reliability import (
     classify_failure,
@@ -63,6 +66,14 @@ class NoGpuAvailableError(TrainingExecutorError):
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _age_seconds(value: datetime | None) -> float:
+    if value is None:
+        return 0.0
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return max(0.0, (_utc_now() - value).total_seconds())
 
 
 def _load_json_object(text: str | None) -> dict[str, Any] | None:
@@ -222,16 +233,16 @@ class TrainingExecutorService:
     async def build_algorithm_allowlist(self) -> dict[str, dict[str, Any]]:
         algorithms = await Algorithm.filter(
             deleted_at__isnull=True,
-        ).prefetch_related("algorithm_infos")
+        ).prefetch_related("algorithm_info")
         allowlist: dict[str, dict[str, Any]] = {}
         for algo in algorithms:
-            if not algo.algorithm_infos:
+            if not algo.algorithm_info:
                 continue
             key = (algo.abbreviation or "").upper()
             adapter = algorithm_adapter_registry.get(key)
             if adapter is None:
                 continue
-            info = algo.algorithm_infos[0]
+            info = algo.algorithm_info
             resource_spec = info.resource_spec_json or {}
             configured_minimum = resource_spec.get(
                 "min_free_gpu_memory_mb",
@@ -260,12 +271,12 @@ class TrainingExecutorService:
     async def build_dataset_allowlist(self) -> dict[str, dict[str, Any]]:
         datasets = await Dataset.filter(
             deleted_at__isnull=True,
-        ).prefetch_related("dataset_infos")
+        ).prefetch_related("dataset_info")
         allowlist: dict[str, dict[str, Any]] = {}
         for ds in datasets:
-            if not ds.dataset_infos:
+            if not ds.dataset_info:
                 continue
-            info = ds.dataset_infos[0]
+            info = ds.dataset_info
             allowlist[ds.name] = {
                 "root_directory": info.root_directory or "",
             }
@@ -285,14 +296,14 @@ class TrainingExecutorService:
         algorithm = await Algorithm.filter(
             id=algorithm_id,
             deleted_at__isnull=True,
-        ).prefetch_related("algorithm_infos").first()
+        ).prefetch_related("algorithm_info").first()
         dataset = await Dataset.filter(
             id=dataset_id,
             deleted_at__isnull=True,
-        ).prefetch_related("dataset_infos").first()
-        if algorithm is None or not algorithm.algorithm_infos:
+        ).prefetch_related("dataset_info").first()
+        if algorithm is None or not algorithm.algorithm_info:
             raise TrainingExecutorError("算法不存在或缺少运行配置")
-        if dataset is None or not dataset.dataset_infos:
+        if dataset is None or not dataset.dataset_info:
             raise TrainingExecutorError("数据集不存在或缺少路径配置")
 
         algorithm_allowlist = await self.build_algorithm_allowlist()
@@ -310,7 +321,7 @@ class TrainingExecutorService:
         if not isinstance(dataset_runtime, dict):
             raise TrainingExecutorError("数据集未进入训练白名单")
 
-        info = algorithm.algorithm_infos[0]
+        info = algorithm.algorithm_info
         expected_env = _absolute_path(str(runtime.get("conda_env_path", "")), "Conda 环境")
         expected_source = _absolute_path(
             str(runtime.get("source_directory", "")),
@@ -327,7 +338,7 @@ class TrainingExecutorService:
             or info.train_entrypoint != expected_entrypoint
         ):
             raise TrainingExecutorError("数据库算法运行配置与管理员白名单不一致")
-        dataset_info = dataset.dataset_infos[0]
+        dataset_info = dataset.dataset_info
         if posixpath.normpath(dataset_info.root_directory or "") != expected_dataset:
             raise TrainingExecutorError("数据库数据集路径与管理员白名单不一致")
         return algorithm, dataset, runtime, dataset_runtime, adapter
@@ -370,49 +381,25 @@ class TrainingExecutorService:
         if requested_gpu is not None and requested_gpu not in allowed:
             raise TrainingExecutorError("请求的 GPU 不在管理员白名单中")
         free_memory = await self._gpu_free_memory()
-        async with in_transaction() as connection:
-            await TrainingJob.filter(status__in=ACTIVE_STATUSES).using_db(
-                connection
-            ).select_for_update()
-            leased = set(
-                await TrainingJob.filter(
-                    status__in=ACTIVE_STATUSES,
-                    assigned_gpu__isnull=False,
-                ).using_db(connection).values_list("assigned_gpu", flat=True)
+        candidates = [requested_gpu] if requested_gpu is not None else sorted(
+            allowed,
+            key=lambda gpu: free_memory.get(gpu, -1),
+            reverse=True,
+        )
+        candidates = [
+            gpu for gpu in candidates
+            if free_memory.get(gpu, 0) >= minimum_free_memory_mb
+        ]
+        selected = await gpu_lease_coordinator.acquire(
+            workload_type="TRAINING",
+            workload_id=job_id,
+            candidates=candidates,
+        )
+        if selected is None:
+            raise NoGpuAvailableError(
+                f"暂无满足 {minimum_free_memory_mb} MiB 剩余显存的可用 GPU"
             )
-            leased.update(
-                await InferenceJob.filter(
-                    status__in={"QUEUED", "STARTING", "RUNNING"},
-                    assigned_gpu__isnull=False,
-                ).using_db(connection).values_list("assigned_gpu", flat=True)
-            )
-            candidates = [requested_gpu] if requested_gpu is not None else sorted(
-                allowed,
-                key=lambda gpu: free_memory.get(gpu, -1),
-                reverse=True,
-            )
-            selected = next(
-                (
-                    gpu for gpu in candidates
-                    if gpu not in leased
-                    and free_memory.get(gpu, 0) >= minimum_free_memory_mb
-                ),
-                None,
-            )
-            if selected is None:
-                raise NoGpuAvailableError(
-                    f"暂无满足 {minimum_free_memory_mb} MiB 剩余显存的可用 GPU"
-                )
-            updated = await TrainingJob.filter(
-                id=job_id,
-                status="QUEUED",
-            ).using_db(connection).update(
-                assigned_gpu=selected,
-                status="STARTING",
-            )
-            if updated != 1:
-                raise TrainingExecutorError("任务状态已变化，停止调度")
-            return selected
+        return selected
 
     def _build_remote_config(
         self,
@@ -480,36 +467,44 @@ class TrainingExecutorService:
         )
         if requested_gpu is not None and requested_gpu not in self.config["gpu_allowlist"]:
             raise TrainingExecutorError("请求的 GPU 不在管理员白名单中")
-        pending_count = await TrainingJob.filter(
-            owner_id=owner["user_id"],
-            owner_role=owner["role"],
-            status__in=ACTIVE_STATUSES,
-        ).count()
-        if pending_count >= self.config["max_pending_jobs_per_user"]:
-            raise TrainingExecutorError(
-                f"每个用户最多保留 {self.config['max_pending_jobs_per_user']} 个活动或排队任务"
-            )
         job_no = str(uuid.uuid4())
-        job = await TrainingJob.create(
-            job_no=job_no,
-            owner_id=owner["user_id"],
-            owner_role=owner["role"],
-            algorithm_id=algorithm.id,
-            dataset_id=dataset.id,
-            status="QUEUED",
-            config_json={
-                "parameters": validated,
-                "requested_gpu": requested_gpu,
-                "adapter": {
-                    "key": adapter.key,
-                    "protocol_version": adapter.protocol_version,
+        owner_model = Admin if owner["role"] == "管理员" else User
+        async with in_transaction() as connection:
+            principal = await owner_model.filter(id=owner["user_id"]).using_db(
+                connection
+            ).select_for_update().first()
+            if principal is None:
+                raise TrainingExecutorError("任务所有者不存在或已被删除")
+            pending_count = await TrainingJob.filter(
+                owner_id=owner["user_id"],
+                owner_role=owner["role"],
+                status__in=ACTIVE_STATUSES,
+            ).using_db(connection).count()
+            if pending_count >= self.config["max_pending_jobs_per_user"]:
+                raise TrainingExecutorError(
+                    f"每个用户最多保留 {self.config['max_pending_jobs_per_user']} 个活动或排队任务"
+                )
+            job = await TrainingJob.create(
+                using_db=connection,
+                job_no=job_no,
+                owner_id=owner["user_id"],
+                owner_role=owner["role"],
+                algorithm_id=algorithm.id,
+                dataset_id=dataset.id,
+                status="QUEUED",
+                config_json={
+                    "parameters": validated,
+                    "requested_gpu": requested_gpu,
+                    "adapter": {
+                        "key": adapter.key,
+                        "protocol_version": adapter.protocol_version,
+                    },
                 },
-            },
-            retry_of_job_id=retry_of_job_id,
-            attempt=attempt,
-            total_epochs=adapter.total_epochs(validated),
-            timeout_seconds=self.config["max_runtime_seconds"],
-        )
+                retry_of_job_id=retry_of_job_id,
+                attempt=attempt,
+                total_epochs=adapter.total_epochs(validated),
+                timeout_seconds=self.config["max_runtime_seconds"],
+            )
         await self._event(
             job.id,
             "JOB_CREATED",
@@ -583,20 +578,34 @@ class TrainingExecutorService:
                 assigned_gpu=None,
             )
             raise
-        except Exception as exc:
-            await TrainingJob.filter(id=job.id).update(
+        except asyncio.CancelledError:
+            updated = await TrainingJob.filter(id=job.id, status="STARTING").update(
                 status="FAILED",
+                assigned_gpu=None,
+                failure_code="LAUNCH_CANCELED",
+                failure_reason="训练任务启动被取消",
+                finished_at=_utc_now(),
+            )
+            if updated:
+                await gpu_lease_coordinator.release("TRAINING", job.id)
+            raise
+        except Exception as exc:
+            updated = await TrainingJob.filter(id=job.id, status="STARTING").update(
+                status="FAILED",
+                assigned_gpu=None,
                 failure_code="LAUNCH_FAILED",
                 failure_reason=str(exc),
                 finished_at=_utc_now(),
             )
-            await self._event(job.id, "LAUNCH_FAILED", str(exc))
-            await self.audit(
-                job.id,
-                "LAUNCH_FAILED",
-                message=str(exc),
-                result="FAILED",
-            )
+            if updated:
+                await gpu_lease_coordinator.release("TRAINING", job.id)
+                await self._event(job.id, "LAUNCH_FAILED", str(exc))
+                await self.audit(
+                    job.id,
+                    "LAUNCH_FAILED",
+                    message=str(exc),
+                    result="FAILED",
+                )
             raise
         return await TrainingJob.get(id=job.id)
 
@@ -745,7 +754,7 @@ class TrainingExecutorService:
             "gpu_index": gpu_index,
             "launcher": "nohup+setsid",
         }
-        await TrainingJob.filter(id=job.id).update(
+        updated = await TrainingJob.filter(id=job.id, status="STARTING").update(
             status="RUNNING",
             launcher_pid=launcher_pid,
             remote_control_dir=control_dir,
@@ -757,6 +766,20 @@ class TrainingExecutorService:
             exit_code=None,
             last_reconciled_at=_utc_now(),
         )
+        if updated != 1:
+            # 取消或监控收敛可能与远端启动并发发生。保存 PID 供停止/对账
+            # 使用，并立即发出终止信号，绝不能把终态覆盖回 RUNNING。
+            await TrainingJob.filter(id=job.id, status="STOPPING").update(
+                launcher_pid=launcher_pid,
+                remote_control_dir=control_dir,
+                remote_run_dir=remote_run_dir,
+                runtime_snapshot_json=snapshot,
+            )
+            try:
+                await self._terminate_launcher(launcher_pid)
+            except Exception:
+                logger.exception("回收状态已变化的训练启动进程失败: %s", job.job_no)
+            raise TrainingExecutorError("训练任务启动期间状态已变化，远程进程已请求停止")
         await self._event(
             job.id,
             "PROCESS_STARTED",
@@ -1412,28 +1435,19 @@ class TrainingExecutorService:
             if job.status in TERMINAL_STATUSES or job.status == "QUEUED":
                 return job
             if job.status == "STARTING" and not job.launcher_pid:
-                database = connections.get("default")
-                rows = await database.execute_query_dict(
-                    "SELECT TIMESTAMPDIFF("
-                    "SECOND, updated_at, UTC_TIMESTAMP(6)"
-                    ") AS age "
-                    "FROM training_jobs WHERE id=%s",
-                    [job.id],
-                )
-                age = float(rows[0]["age"] or 0) if rows else 0
+                age = _age_seconds(job.started_at or job.submitted_at or job.created_at)
                 startup_grace = max(60.0, self.config["command_timeout"] * 3)
                 if age <= startup_grace:
-                    await TrainingJob.filter(id=job.id).update(
-                        last_reconciled_at=_utc_now(),
-                    )
-                    return await TrainingJob.get(id=job.id)
+                    return job
                 await TrainingJob.filter(id=job.id, status="STARTING").update(
                     status="LOST",
+                    assigned_gpu=None,
                     failure_code="EXECUTOR_LOST",
                     failure_reason="远程启动超时且未记录 launcher PID",
                     finished_at=_utc_now(),
                     last_reconciled_at=_utc_now(),
                 )
+                await gpu_lease_coordinator.release("TRAINING", job.id)
                 await self._event(job.id, "PROCESS_LOST", "远程训练启动超时")
                 await self.audit(
                     job.id,
@@ -1510,6 +1524,7 @@ class TrainingExecutorService:
                                 failure_reason = "训练失败，但日志中没有匹配到已知错误类型"
                         await TrainingJob.filter(id=job.id).update(
                             status=status,
+                            assigned_gpu=None,
                             exit_code=manifest.get("exit_code"),
                             failure_code=failure_code,
                             failure_reason=failure_reason,
@@ -1521,6 +1536,7 @@ class TrainingExecutorService:
                             last_reconciled_at=_utc_now(),
                             **runtime_updates,
                         )
+                        await gpu_lease_coordinator.release("TRAINING", job.id)
                         await self._event(
                             job.id,
                             "PROCESS_FINISHED",
@@ -1548,15 +1564,26 @@ class TrainingExecutorService:
                         check=False,
                     )
                     alive = result.exit_status == 0
-                if not alive and not manifest:
+                if not alive and (
+                    not manifest or manifest.get("status") not in {"SUCCEEDED", "FAILED"}
+                ):
+                    lost_status = "STOPPED" if job.status == "STOPPING" else "LOST"
                     await TrainingJob.filter(id=job.id).update(
-                        status="LOST",
-                        failure_code="EXECUTOR_LOST",
-                        failure_reason="远程进程已消失且未生成最终 manifest",
+                        status=lost_status,
+                        assigned_gpu=None,
+                        failure_code=(
+                            job.failure_code if lost_status == "STOPPED" else "EXECUTOR_LOST"
+                        ),
+                        failure_reason=(
+                            job.failure_reason
+                            if lost_status == "STOPPED"
+                            else "远程进程已消失且未生成最终 manifest"
+                        ),
                         finished_at=_utc_now(),
                         last_reconciled_at=_utc_now(),
                         **runtime_updates,
                     )
+                    await gpu_lease_coordinator.release("TRAINING", job.id)
                     await self._event(job.id, "PROCESS_LOST", "远程训练进程不可追踪")
                     await self.audit(
                         job.id,
@@ -1621,6 +1648,22 @@ class TrainingExecutorService:
             await connection.wait_closed()
         return await TrainingJob.get(id=job.id)
 
+    async def _terminate_launcher(self, launcher_pid: int | None) -> None:
+        """终止由 setsid 创建的远程训练进程组。"""
+        pid = int(launcher_pid or 0)
+        if pid <= 1:
+            return
+        connection = await self._connect()
+        try:
+            await self._run(
+                connection,
+                f"kill -TERM -- -{pid}; kill -TERM {pid}",
+                check=False,
+            )
+        finally:
+            connection.close()
+            await connection.wait_closed()
+
     async def _record_reconcile_failure(
         self,
         job: TrainingJob,
@@ -1630,26 +1673,19 @@ class TrainingExecutorService:
     ) -> None:
         failures = int(job.reconcile_failures or 0) + 1
         updates: dict[str, Any] = {"reconcile_failures": failures}
-        if failures >= 3:
-            updates.update({
-                "status": "LOST",
-                "failure_code": "EXECUTOR_LOST",
-                "failure_reason": "连续 3 次无法完成对账，任务标记为失联",
-                "finished_at": _utc_now(),
-            })
         await TrainingJob.filter(id=job.id).update(**updates)
-        if failures >= 3:
+        if failures == 3:
             await self._event(
                 job.id,
                 "EXECUTOR_UNREACHABLE",
-                "连续 3 次无法完成对账，任务标记为失联",
+                "连续 3 次无法完成对账，保留 GPU 租约并继续重试",
             )
             await self.audit(
                 job.id,
-                "PROCESS_LOST",
+                "PROCESS_UNREACHABLE",
                 message=message,
                 payload={"consecutive_failures": failures},
-                result="FAILED",
+                result="WARNING",
             )
         if include_traceback:
             logger.exception("Training job recovery failed: %s", job.job_no)
@@ -1681,8 +1717,8 @@ class TrainingExecutorService:
                 except TrainingExecutorError as exc:
                     await self._record_reconcile_failure(job, str(exc))
                 except Exception as exc:
-                    # 非预期异常同样计入失败：损坏的远程产物等持续性
-                    # 故障不能无限重试，三次后按失联收敛。
+                    # 无法确认远程进程已经退出时持续重试并保留租约，
+                    # 避免同一块 GPU 被分配给第二个任务。
                     await self._record_reconcile_failure(
                         job, repr(exc), include_traceback=True
                     )
@@ -1719,8 +1755,14 @@ class TrainingExecutorService:
 
     async def _monitor(self) -> None:
         while not self._stop_event.is_set():
-            await self.recover_active_jobs()
-            await self.dispatch_queued_jobs()
+            try:
+                await self.recover_active_jobs()
+                await self.dispatch_queued_jobs()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # 数据库或 SSH 基础设施的单轮故障不能永久杀死监控任务。
+                logger.exception("训练监控本轮执行失败，等待下一轮重试")
             try:
                 await asyncio.wait_for(
                     self._stop_event.wait(),
@@ -1732,6 +1774,7 @@ class TrainingExecutorService:
     async def start_monitor(self) -> None:
         if self._monitor_task is None or self._monitor_task.done():
             self._stop_event.clear()
+            await gpu_lease_coordinator.reconcile()
             await self.recover_active_jobs()
             await self.dispatch_queued_jobs()
             self._monitor_task = asyncio.create_task(

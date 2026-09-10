@@ -263,6 +263,50 @@ class GroundedAnswerValidatorTests(unittest.TestCase):
                 ],
             }, self.packed)
 
+    def test_opposite_permission_claim_is_rejected(self):
+        permission_context = ContextPacker(ContextPackingPolicy(
+            token_budget=200,
+            min_body_tokens=4,
+            max_body_tokens=100,
+        )).pack([{
+            "node_id": "permission",
+            "filename": "policy.txt",
+            "section_path": "账号权限",
+            "content": "普通用户不可以删除管理员账号。",
+        }], query="普通用户可以删除管理员吗？")
+
+        with self.assertRaisesRegex(GroundingValidationError, "未被"):
+            self.validator.validate({
+                "mode": "knowledge_base",
+                "refusal": False,
+                "claims": [{
+                    "text": "普通用户可以删除管理员账号。",
+                    "citations": ["K1"],
+                }],
+            }, permission_context)
+
+    def test_matching_negative_permission_claim_is_supported(self):
+        permission_context = ContextPacker(ContextPackingPolicy(
+            token_budget=200,
+            min_body_tokens=4,
+            max_body_tokens=100,
+        )).pack([{
+            "node_id": "permission",
+            "filename": "policy.txt",
+            "section_path": "账号权限",
+            "content": "普通用户不可以删除管理员账号。",
+        }], query="普通用户可以删除管理员吗？")
+
+        answer = self.validator.validate({
+            "mode": "knowledge_base",
+            "refusal": False,
+            "claims": [{
+                "text": "普通用户不可以删除管理员账号。",
+                "citations": ["K1"],
+            }],
+        }, permission_context)
+        self.assertFalse(answer.refusal)
+
     def test_model_refusal_cannot_smuggle_claims(self):
         with self.assertRaisesRegex(GroundingValidationError, "必须为空"):
             self.validator.validate({

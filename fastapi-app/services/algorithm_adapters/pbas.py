@@ -112,11 +112,11 @@ class PbasAlgorithmAdapter(AlgorithmAdapter):
         classes = parameters.get("classes", [])
         if (
             not isinstance(classes, list)
-            or len(set(classes)) != len(classes)
             or any(
                 not isinstance(item, str) or item not in allowed_classes
                 for item in classes
             )
+            or len(set(classes)) != len(classes)
         ):
             raise AlgorithmAdapterError(f"{dataset_name} 类别参数无效")
 

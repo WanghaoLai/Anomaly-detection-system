@@ -34,6 +34,10 @@ class TrainingExecutorServiceTests(unittest.TestCase):
         with self.assertRaises(TrainingExecutorError):
             self.service._validated_parameters({"classes": ["../escape"]})
 
+    def test_rejects_non_string_class_without_leaking_type_error(self):
+        with self.assertRaises(TrainingExecutorError):
+            self.service._validated_parameters({"classes": [{}]})
+
     def test_rejects_more_than_ten_epochs(self):
         with self.assertRaises(TrainingExecutorError):
             self.service._validated_parameters({"epochs": 11})
@@ -135,6 +139,31 @@ class TrainingLogParserTests(unittest.TestCase):
 
         self.assertEqual(parsed.progress_percent, 100)
         self.assertIn(("pixel_pro", 0.925, 3), parsed.metrics)
+
+    def test_malformed_numeric_lines_degrade_instead_of_raising(self):
+        # 数值字符类允许 "..."、"1.2.3" 等非浮点串（tqdm 重绘交错、日志
+        # 损坏都会产生）。解析抛 ValueError 会被计入 reconcile 三振，
+        # 把仍在正常训练的任务误判 LOST 并释放 GPU 租约。
+        malformed_lines = [
+            # FINAL_METRICS_RE 命中但数值为省略号
+            "image_auroc:... image_ap:1 pixel_auroc:1 pixel_ap:1 "
+            "pixel_pro:1 best_epoch:3",
+            # EVALUATION_RE 命中但 IAUC/PAUC 为省略号
+            "epoch:1 sl:1e999 bl:1.0 sample:5 IAUC:...(x) PAUC:...(y) E:1(t)",
+            # EPOCH_RE 命中但损失值为 "--"
+            "epoch:2 sl:-- bl:1.0 sample:5 40%|##| 2/5",
+        ]
+        for line in malformed_lines:
+            parsed = parse_training_line(line)
+            self.assertIsNotNone(parsed, line)
+            self.assertEqual(parsed.metrics, [], line)
+
+    def test_malformed_epoch_line_keeps_progress_fields(self):
+        parsed = parse_training_line("epoch:2 sl:-- bl:1.0 sample:5 40%|##| 2/5")
+        self.assertEqual(parsed.stream, "PROGRESS")
+        self.assertFalse(parsed.persist)  # 按普通进度重绘行处理
+        self.assertEqual(parsed.current_epoch, 2)
+        self.assertEqual(parsed.total_epochs, 5)
 
     def test_persists_runtime_error_for_failure_classification(self):
         parsed = parse_training_line(

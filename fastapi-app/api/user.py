@@ -1,10 +1,4 @@
-from datetime import datetime, timezone
-from typing import Optional
-
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, create_model
-from tortoise.contrib.pydantic import pydantic_model_creator
-from tortoise.exceptions import IntegrityError
+from datetime import UTC, datetime
 
 from common.auth import (
     get_current_admin,
@@ -13,8 +7,12 @@ from common.auth import (
     validate_password_policy,
 )
 from common.exception_handler import CustomException
-from common.result import Result, PageInfo
+from common.result import PageInfo, Result
+from fastapi import APIRouter, Depends, HTTPException, Query
 from models import AuthSession, Conversation, InferenceJob, Message, TrainingJob, User
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from tortoise.contrib.pydantic import pydantic_model_creator
+from tortoise.exceptions import IntegrityError
 
 router = APIRouter(prefix="/user", dependencies=[Depends(get_current_user)])
 UserPydantic = pydantic_model_creator(User)
@@ -22,24 +20,42 @@ UserReadPydantic = pydantic_model_creator(
     User,
     exclude=("password", "token_version"),
 )
-UserCreatePydantic = create_model(
-    "UserPydantic",
-    **{
-        name: (Optional[field.annotation], None)
-        for name, field in UserPydantic.model_fields.items()
-    }
-)
 
 
-class UserPasswordResetRequest(BaseModel):
-    newPassword: str
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class UserCreatePydantic(_StrictModel):
+    username: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=1, max_length=255)
+    name: str | None = Field(default=None, max_length=255)
+    avatar: str | None = Field(default=None, max_length=255)
+
+
+class UserUpdatePydantic(_StrictModel):
+    id: int = Field(gt=0)
+    # ``str`` 配合默认 None：字段可省略，但显式 null 会被 Pydantic 拒绝。
+    username: str = Field(default=None, min_length=1, max_length=255)
+    name: str | None = Field(default=None, max_length=255)
+    avatar: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def require_change(self):
+        if not (self.model_fields_set - {"id"}):
+            raise ValueError("至少提供一个需要更新的字段")
+        return self
+
+
+class UserPasswordResetRequest(_StrictModel):
+    newPassword: str = Field(min_length=1, max_length=255)
 
 
 @router.post("/add", dependencies=[Depends(get_current_admin)])
 async def add(user_pydantic: UserCreatePydantic):
     user = await User.get_or_none(username=user_pydantic.username)
     if user is not None:
-        raise CustomException("账号重复")
+        raise CustomException("账号重复", status_code=409)
     if user_pydantic.name is None:
         user_pydantic.name = user_pydantic.username
     if not user_pydantic.password or not user_pydantic.password.strip():
@@ -54,30 +70,35 @@ async def add(user_pydantic: UserCreatePydantic):
         await User.create(**create_data)
     except IntegrityError:
         # 唯一索引兜底：并发新增同名账号时，先查后建存在竞态窗口。
-        raise CustomException("账号重复")
+        raise CustomException("账号重复", status_code=409)
     return Result.success()
 
 
 @router.put("/update")
 async def update(
-    user_pydantic: UserCreatePydantic,
+    user_pydantic: UserUpdatePydantic,
     current_user: dict = Depends(get_current_user),
 ):
     is_admin = current_user["role"] == "管理员"
     if not is_admin and current_user["user_id"] != user_pydantic.id:
         raise HTTPException(status_code=403, detail="无权修改其他用户")
+    if (
+        not is_admin
+        and "username" in user_pydantic.model_fields_set
+        and user_pydantic.username != current_user["username"]
+    ):
+        # 登录账号参与会话识别和运维侧账号映射，普通用户不能自行改变身份标识。
+        raise HTTPException(status_code=403, detail="登录账号不能在个人资料中修改")
 
     update_data = user_pydantic.model_dump(exclude_unset=True, exclude={'id'})
-    # User 表中的角色是服务端不变量；密码只能通过验证原密码的专用接口修改。
-    # 管理员新增用户时仍可设置初始密码，但通用资料更新不能充当密码重置接口。
-    update_data.pop('role', None)
-    update_data.pop('password', None)
-    update_data.pop('token_version', None)
 
     user = await User.get_or_none(id=user_pydantic.id)
     if user is None:
-        raise CustomException("未找到用户")
-    await User.filter(id=user_pydantic.id).update(**update_data)
+        raise CustomException("未找到用户", status_code=404)
+    try:
+        await User.filter(id=user_pydantic.id).update(**update_data)
+    except IntegrityError as exc:
+        raise CustomException("账号重复", status_code=409) from exc
     return Result.success()
 
 
@@ -95,7 +116,7 @@ async def reset_password(
 
     user = await User.get_or_none(id=user_id)
     if user is None:
-        raise CustomException("未找到用户")
+        raise CustomException("未找到用户", status_code=404)
 
     # 以 token_version 做乐观锁，密码与 Token 版本在同一次更新中生效。
     updated = await User.filter(
@@ -113,7 +134,7 @@ async def reset_password(
         user_id=user.id,
         role="用户",
         revoked_at__isnull=True,
-    ).update(revoked_at=datetime.now(timezone.utc))
+    ).update(revoked_at=datetime.now(UTC))
     return Result.success()
 
 

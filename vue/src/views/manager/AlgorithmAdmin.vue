@@ -144,7 +144,7 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="Conda 路径">
+            <el-form-item label="Conda 路径" prop="conda_env_path">
               <el-input v-model="data.form.conda_env_path" placeholder="如：/opt/conda/envs/pbas-prod" />
             </el-form-item>
           </el-col>
@@ -172,14 +172,12 @@
             <el-form-item label="执行器">
               <el-select v-model="data.form.executor_type" style="width: 100%">
                 <el-option label="GPU 训练执行器" value="GPU" />
-                <el-option label="CPU 执行器" value="CPU" />
               </el-select>
             </el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="进程管理">
               <el-select v-model="data.form.process_manager" style="width: 100%">
-                <el-option label="systemd 任务" value="SYSTEMD" />
                 <el-option label="独立进程组" value="PROCESS_GROUP" />
               </el-select>
             </el-form-item>
@@ -257,7 +255,6 @@ const parseJsonFields = (obj) => {
 }
 
 const data = reactive({
-  user: JSON.parse(localStorage.getItem('system-user') || '{}'),
   form: {},
   formVisible: false,
   saving: false,
@@ -270,6 +267,7 @@ const data = reactive({
     name: [{ required: true, message: '请输入算法名称', trigger: 'blur' }],
     framework: [{ required: true, message: '请输入算法框架', trigger: 'blur' }],
     conda_env_name: [{ required: true, message: '请输入 Conda 环境名称', trigger: 'blur' }],
+    conda_env_path: [{ required: true, message: '请输入 Conda 环境路径', trigger: 'blur' }],
     working_directory: [{ required: true, message: '请输入算法工作目录', trigger: 'blur' }],
     train_entrypoint: [{ required: true, message: '请输入训练入口脚本', trigger: 'blur' }],
   }
@@ -304,7 +302,7 @@ const handleAdd = () => {
   data.form = {
     task_category: 'ANOMALY_DETECTION',
     executor_type: 'GPU',
-    process_manager: 'SYSTEMD',
+    process_manager: 'PROCESS_GROUP',
     protocol_version: '1.0',
     sse_enabled: true,
   }
@@ -353,17 +351,11 @@ const add = async () => {
     abbreviation: data.form.abbreviation,
     description: data.form.description,
     task_category: data.form.task_category,
-    createdBy: data.user.id,
+    ...buildInfoData(),
   }
-  const res = ensureSuccess(
-    await request.post('/algorithm/add', algoData),
-    '算法基本信息保存失败',
-  )
-  const infoData = buildInfoData()
-  infoData.algorithmId = res.data
   ensureSuccess(
-    await request.post('/algorithm/info/add', infoData),
-    '算法运行信息保存失败',
+    await request.post('/algorithm/add', algoData),
+    '算法保存失败',
   )
 }
 
@@ -374,25 +366,12 @@ const update = async () => {
     abbreviation: data.form.abbreviation,
     description: data.form.description,
     task_category: data.form.task_category,
+    ...buildInfoData(),
   }
   ensureSuccess(
     await request.put('/algorithm/update', algoData),
-    '算法基本信息更新失败',
+    '算法更新失败',
   )
-  const infoData = buildInfoData()
-  if (data.form.info_id) {
-    infoData.id = data.form.info_id
-    ensureSuccess(
-      await request.put('/algorithm/info/update', infoData),
-      '算法运行信息更新失败',
-    )
-  } else {
-    infoData.algorithmId = data.form.id
-    ensureSuccess(
-      await request.post('/algorithm/info/add', infoData),
-      '算法运行信息保存失败',
-    )
-  }
 }
 
 const save = async () => {
@@ -424,23 +403,23 @@ const save = async () => {
     data.formVisible = false
     load()
   } catch (error) {
-    ElMessage.error(error?.message || '保存失败，请稍后重试')
+    ElMessage.error(error?.response?.data?.msg || error?.message || '保存失败，请稍后重试')
   } finally {
     data.saving = false
   }
 }
 
-const handleDelete = (id) => {
-  ElMessageBox.confirm('删除后数据无法恢复，您确定删除吗?', '删除确认', { type: 'warning' }).then(() => {
-    request.delete('/algorithm/delete/' + id).then(res => {
-      if (res.code === '200') {
-        load()
-        ElMessage.success('操作成功')
-      } else {
-        ElMessage.error(res.msg)
-      }
-    })
-  }).catch(() => {})
+const handleDelete = async (id) => {
+  try {
+    await ElMessageBox.confirm('删除后数据无法恢复，您确定删除吗?', '删除确认', { type: 'warning' })
+    const res = await request.delete('/algorithm/delete/' + id)
+    ensureSuccess(res, '删除算法失败')
+    load()
+    ElMessage.success('操作成功')
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(error?.response?.data?.msg || error?.message || '删除失败，请稍后重试')
+  }
 }
 
 const reset = () => {

@@ -208,17 +208,19 @@ const handleEdit = (row) => {
   data.formVisible = true
 }
 
-const handleDelete = (id) => {
-  ElMessageBox.confirm('删除后数据无法恢复，您确定删除吗?', '删除确认', { type: 'warning' }).then(() => {
-    request.delete('/user/delete/' + id).then(res => {
-      if (res.code === '200') {
-        load()
-        ElMessage.success('操作成功')
-      } else {
-        ElMessage.error(res.msg)
-      }
-    })
-  }).catch(() => {})
+const backendError = (error, fallback) =>
+  error?.response?.data?.msg || error?.message || fallback
+
+const handleDelete = async (id) => {
+  try {
+    await ElMessageBox.confirm('删除后数据无法恢复，您确定删除吗?', '删除确认', { type: 'warning' })
+    await request.delete('/user/delete/' + id)
+    load()
+    ElMessage.success('操作成功')
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(backendError(error, '删除失败，请稍后重试'))
+  }
 }
 
 const handleResetPassword = (row) => {
@@ -242,31 +244,42 @@ const handleResetPassword = (row) => {
         ElMessage.error(res.msg)
       }
     })
-  }).catch(() => {})
-}
-
-const add = () => {
-  request.post('/user/add', data.form).then(res => {
-    if (res.code === '200') {
-      ElMessage.success('操作成功')
-      data.formVisible = false
-      load()
-    } else {
-      ElMessage.error(res.msg)
-    }
+  }).catch(error => {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(backendError(error, '密码重置失败，请稍后重试'))
   })
 }
 
-const update = () => {
-  request.put('/user/update', data.form).then(res => {
-    if (res.code === '200') {
-      ElMessage.success('操作成功')
-      data.formVisible = false
-      load()
-    } else {
-      ElMessage.error(res.msg)
-    }
-  })
+const add = async () => {
+  try {
+    await request.post('/user/add', {
+      username: data.form.username,
+      password: data.form.password,
+      name: data.form.name,
+      avatar: data.form.avatar,
+    })
+    ElMessage.success('操作成功')
+    data.formVisible = false
+    load()
+  } catch (error) {
+    ElMessage.error(backendError(error, '新增用户失败，请稍后重试'))
+  }
+}
+
+const update = async () => {
+  try {
+    await request.put('/user/update', {
+      id: data.form.id,
+      username: data.form.username,
+      name: data.form.name,
+      avatar: data.form.avatar,
+    })
+    ElMessage.success('操作成功')
+    data.formVisible = false
+    load()
+  } catch (error) {
+    ElMessage.error(backendError(error, '更新用户失败，请稍后重试'))
+  }
 }
 
 const save = () => {

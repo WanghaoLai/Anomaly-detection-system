@@ -1,18 +1,20 @@
 """持久化登录限流：同时约束来源+账号组合和目标账号。"""
 import asyncio
-from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 
 from models import LoginThrottle
 from settings import (
+    JWT_SECRET_KEY,
     LOGIN_RATE_LIMIT_ATTEMPTS,
     LOGIN_RATE_LIMIT_LOCK_SECONDS,
     LOGIN_RATE_LIMIT_WINDOW_SECONDS,
-    JWT_SECRET_KEY,
 )
+from tortoise.exceptions import IntegrityError, OperationalError
+from tortoise.transactions import in_transaction
 
 
 def _utcnow() -> datetime:
@@ -74,9 +76,8 @@ class LoginRateLimiter:
         now = _utcnow()
         window = timedelta(seconds=LOGIN_RATE_LIMIT_WINDOW_SECONDS)
         lock_duration = timedelta(seconds=LOGIN_RATE_LIMIT_LOCK_SECONDS)
-        # 全局锁只串行化同一对 key 的读改写（单进程假设；多 worker 部署
-        # 时窗口计数可能被分摊，需另行评估）。两个 key 的落库并行执行，
-        # 锁持有时间从两次串行 DB 往返压缩为一次。
+        # 进程内锁减少同一 worker 的事务冲突；数据库行锁和唯一键负责
+        # 多 worker 间的准确计数。两个互不相同的 key 可以并行落库。
         async with self._lock:
             await asyncio.gather(*(
                 self._record_key_failure(key, now, window, lock_duration)
@@ -90,27 +91,53 @@ class LoginRateLimiter:
         window: timedelta,
         lock_duration: timedelta,
     ) -> None:
-        record = await LoginThrottle.get_or_none(key=key)
-        window_started = _aware(record.window_started) if record else None
-        if record is None or window_started is None or now - window_started >= window:
-            failures = 1
-            window_started = now
-        else:
-            failures = record.failures + 1
+        # 新 key 的并发插入可能触发唯一键冲突或数据库死锁；短暂重试后，
+        # 后续事务会锁住已存在的行并基于最新 failures 递增。
+        for attempt in range(3):
+            try:
+                async with in_transaction() as connection:
+                    record = await LoginThrottle.filter(key=key).using_db(
+                        connection
+                    ).select_for_update().first()
+                    window_started = (
+                        _aware(record.window_started) if record else None
+                    )
+                    if (
+                        record is None
+                        or window_started is None
+                        or now - window_started >= window
+                    ):
+                        failures = 1
+                        window_started = now
+                    else:
+                        failures = record.failures + 1
 
-        locked_until = (
-            now + lock_duration
-            if failures >= LOGIN_RATE_LIMIT_ATTEMPTS
-            else None
-        )
-        await LoginThrottle.update_or_create(
-            key=key,
-            defaults={
-                "failures": failures,
-                "window_started": window_started,
-                "locked_until": locked_until,
-            },
-        )
+                    locked_until = (
+                        now + lock_duration
+                        if failures >= LOGIN_RATE_LIMIT_ATTEMPTS
+                        else None
+                    )
+                    if record is None:
+                        await LoginThrottle.create(
+                            key=key,
+                            failures=failures,
+                            window_started=window_started,
+                            locked_until=locked_until,
+                            using_db=connection,
+                        )
+                    else:
+                        await LoginThrottle.filter(key=key).using_db(
+                            connection
+                        ).update(
+                            failures=failures,
+                            window_started=window_started,
+                            locked_until=locked_until,
+                        )
+                return
+            except (IntegrityError, OperationalError):
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0)
 
     async def record_success(
         self,

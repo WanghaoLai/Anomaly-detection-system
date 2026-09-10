@@ -1,5 +1,6 @@
 """知识库服务 - 文档解析、分块、向量化、ChromaDB 存储与检索"""
 import asyncio
+import fcntl
 import hashlib
 import json
 import logging
@@ -7,6 +8,7 @@ import os
 import shutil
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -365,6 +367,19 @@ class KnowledgeService:
             self.current_release_id,
             self._lexical_snapshot,
         )
+
+    @contextmanager
+    def _release_lock(self):
+        """跨线程、跨进程串行化发布基线检查与指针替换。"""
+
+        lock_path = self.artifact_repository.root / ".release.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with _P1_RELEASE_LOCK, lock_path.open("a+b") as lock_stream:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
 
     @property
     def chroma_client(self):
@@ -1125,7 +1140,7 @@ class KnowledgeService:
         _document_id: str | None = None,
     ) -> dict:
         """保存原文件/Document/Node 并构建全量影子索引。"""
-        with _P1_RELEASE_LOCK:
+        with self._release_lock():
             access_policy = DocumentAccessPolicy.normalize(
                 visibility=visibility,
                 allowed_roles=allowed_roles,
@@ -1292,7 +1307,7 @@ class KnowledgeService:
 
     def stage_delete_release(self, doc_id: str) -> dict:
         """构建不含目标文档的影子索引，不修改当前发布版。"""
-        with _P1_RELEASE_LOCK:
+        with self._release_lock():
             if self.collection.count() > 0:
                 self._ensure_consistent_or_raise("stage_delete_release")
             catalog, base_guard = self._active_catalog_and_guard()
@@ -1327,7 +1342,7 @@ class KnowledgeService:
         此方法只追加不可变 Document 记录并构建新 collection，
         不修改 MySQL、当前发布指针或旧 collection。
         """
-        with _P1_RELEASE_LOCK:
+        with self._release_lock():
             if self.collection.count() > 0:
                 self._ensure_consistent_or_raise("stage_node_parser_migration")
             catalog, base_guard = self._active_catalog_and_guard()
@@ -1446,7 +1461,7 @@ class KnowledgeService:
 
     def rebuild_shadow_from_active(self) -> dict:
         """从 DocStore 完整重建一个未发布影子索引。"""
-        with _P1_RELEASE_LOCK:
+        with self._release_lock():
             if self.collection.count() > 0:
                 self._ensure_consistent_or_raise("rebuild_shadow_from_active")
             catalog, base_guard = self._active_catalog_and_guard()
@@ -1535,7 +1550,7 @@ class KnowledgeService:
 
     def publish_staged_release(self, release_id: str) -> Optional[Dict]:
         """比较并交换发布指针；只有此方法会改变在线检索版本。"""
-        with _P1_RELEASE_LOCK:
+        with self._release_lock():
             manifest = self.artifact_repository.releases.get(release_id)
             self._validate_shadow_manifest(manifest)
             if bool(AI_CONFIG.get("rag_release_smoke_required", False)):
@@ -1592,7 +1607,7 @@ class KnowledgeService:
         self, release_id: str, previous_pointer: Optional[Dict]
     ) -> bool:
         """在 MySQL 交易提交失败时恢复之前的原子指针。"""
-        with _P1_RELEASE_LOCK:
+        with self._release_lock():
             current = self.artifact_repository.releases.active()
             if current is None or current.get("release_id") != release_id:
                 return False
@@ -1612,7 +1627,7 @@ class KnowledgeService:
 
     def discard_staged_release(self, release_id: str) -> bool:
         """删除未发布影子 collection；不删不可变原文件/DocStore。"""
-        with _P1_RELEASE_LOCK:
+        with self._release_lock():
             active = self.artifact_repository.releases.active()
             if active and active.get("release_id") == release_id:
                 return False

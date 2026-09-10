@@ -6,11 +6,10 @@ import json
 import re
 from dataclasses import dataclass
 
+from ..search.retrieval import HybridResultSelector
 from .atoms import compact_text, exact_atoms
 from .context import PackedContext
 from .rendering import AnswerRenderer
-from ..search.retrieval import HybridResultSelector
-
 
 INTERNAL_REFUSAL = "当前可访问的知识库资料不足以回答这个内部系统问题。"
 GROUNDING_FAILURE_REFUSAL = "知识依据校验未通过，本次回答已安全终止。"
@@ -234,16 +233,38 @@ class GroundedAnswerValidator:
     def _supported(self, claim: str, evidence: str) -> bool:
         # 原子与证据都压缩为 NFKC + casefold + 无空白的形式再比对：
         # PDF 提取造成的 "400 GB"、拆行 URL 与模型的紧凑写法视为同一原子。
-        compact_evidence = compact_text(evidence)
-        if any(
-            compact_text(atom) not in compact_evidence
-            for atom in self._exact_atoms(claim)
-        ):
-            return False
-        return (
-            HybridResultSelector.lexical_score(claim, compact_text(evidence))
-            >= self.minimum_lexical_support
-        )
+        # claim 应是原子事实。按证据句逐一验证，避免一个段落中无关的否定词
+        # 或关键词拼接成并不存在的结论。
+        segments = [
+            item.strip()
+            # 保留换行：PDF/网页解析经常把 URL、数值和单位拆到多行。
+            for item in re.split(r"[。！？!?；;]+", evidence)
+            if item.strip()
+        ] or [evidence]
+        claim_negative = self._has_semantic_negation(claim)
+        atoms = self._exact_atoms(claim)
+        for segment in segments:
+            compact_segment = compact_text(segment)
+            if any(compact_text(atom) not in compact_segment for atom in atoms):
+                continue
+            if claim_negative != self._has_semantic_negation(segment):
+                continue
+            if (
+                HybridResultSelector.lexical_score(claim, compact_segment)
+                >= self.minimum_lexical_support
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _has_semantic_negation(text: str) -> bool:
+        normalized = compact_text(text)
+        return bool(re.search(
+            r"(?:不可以|不能|不可|不允许|不支持|不得|禁止|无权|没有|未能|"
+            r"mustnot|cannot|can't|isn't|aren't|notallowed|unsupported|never)",
+            normalized,
+            flags=re.IGNORECASE,
+        ))
 
     @staticmethod
     def _latest_key(value: str) -> tuple[int, int, int, int, int, int]:

@@ -1,27 +1,36 @@
 from datetime import datetime
-from typing import Optional
-
-from fastapi import APIRouter, Depends, Query
-from pydantic import create_model
-from tortoise.contrib.pydantic import pydantic_model_creator
 
 from common.auth import get_current_admin, get_current_user
-from common.result import Result, PageInfo
+from common.exception_handler import CustomException
+from common.result import PageInfo, Result
+from fastapi import APIRouter, Depends, Query
 from models import Notice
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from tortoise.contrib.pydantic import pydantic_model_creator
 
 router = APIRouter(prefix="/notice", dependencies=[Depends(get_current_user)])
 
 # 创建 pydantic 只读模型 把数据库模型转化成pydantic模型
 NoticePydantic = pydantic_model_creator(Notice)
-# 自动生成所有字段为 Optional 的更新模型
-NoticeCreatePydantic = create_model(
-    "NoticePydantic",
-    **{
-        # 从只读模型中读取所有字段然后给它设置成可选
-        name: (Optional[field.annotation], None)
-        for name, field in NoticePydantic.model_fields.items()
-    }
-)
+class _StrictNoticeModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class NoticeCreatePydantic(_StrictNoticeModel):
+    name: str = Field(min_length=1, max_length=255)
+    content: str = Field(min_length=1, max_length=255)
+
+
+class NoticeUpdatePydantic(_StrictNoticeModel):
+    id: int = Field(gt=0)
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    content: str | None = Field(default=None, min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def require_change(self):
+        if not (self.model_fields_set - {"id"}):
+            raise ValueError("至少提供一个需要更新的字段")
+        return self
 
 
 @router.post("/add", dependencies=[Depends(get_current_admin)])
@@ -33,17 +42,19 @@ async def add(notice_pydantic: NoticeCreatePydantic):
 
 
 @router.put("/update", dependencies=[Depends(get_current_admin)])
-async def update(notice_pydantic: NoticeCreatePydantic):
-    if not notice_pydantic.id:
-        return Result.error("缺少 id")
+async def update(notice_pydantic: NoticeUpdatePydantic):
     update_data = notice_pydantic.model_dump(exclude_unset=True, exclude={'id'})
-    await Notice.filter(id=notice_pydantic.id).update(**update_data)
+    updated = await Notice.filter(id=notice_pydantic.id).update(**update_data)
+    if updated != 1:
+        raise CustomException("公告不存在", status_code=404)
     return Result.success()
 
 
 @router.delete("/delete/{notice_id}", dependencies=[Depends(get_current_admin)])
 async def delete(notice_id: int):
-    await Notice.filter(id=notice_id).delete()
+    deleted = await Notice.filter(id=notice_id).delete()
+    if deleted != 1:
+        raise CustomException("公告不存在", status_code=404)
     return Result.success()
 
 
@@ -57,8 +68,8 @@ async def select_all(name: str = ""):
 @router.get("/selectPage", dependencies=[Depends(get_current_admin)])
 async def select(
     name: str = "",
-    page_num: int = Query(1, ge=1),
-    page_size: int = Query(5, ge=1, le=100),
+    page_num: int = Query(1, alias="pageNum", ge=1),
+    page_size: int = Query(5, alias="pageSize", ge=1, le=100),
 ):
     # 同时获取分页数据和总数
     query = Notice.filter(name__contains=name)

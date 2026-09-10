@@ -377,8 +377,13 @@ class ExperimentResultService:
                     if size > 30 * 1024 * 1024 or total_bytes > 500 * 1024 * 1024:
                         raise ExperimentResultError("实验结果压缩包超过安全大小限制")
                     async with sftp.open(remote_path, "rb") as stream:
-                        content = await stream.read()
-                    await asyncio.to_thread(bundle.writestr, relative, content)
+                        # 逐块写入归档，避免单张图片在内存中形成完整副本。
+                        with bundle.open(relative, "w") as target:
+                            while True:
+                                chunk = await stream.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                await asyncio.to_thread(target.write, chunk)
         except ExperimentResultError:
             archive.close()
             raise

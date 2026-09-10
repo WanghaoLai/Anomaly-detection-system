@@ -13,19 +13,22 @@ from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any
 
-from tortoise import connections
+from models import Admin, InferenceJob, TrainingArtifact, TrainingJob, User
+from settings import INFERENCE_EXECUTOR_CONFIG
+from tortoise.transactions import in_transaction
 
-from models import InferenceJob, TrainingArtifact, TrainingJob
-from services.algorithm_adapters import AlgorithmAdapterError, algorithm_adapter_registry
+from services.algorithm_adapters import (
+    AlgorithmAdapterError,
+    algorithm_adapter_registry,
+)
+from services.gpu_lease_service import gpu_lease_coordinator
 from services.training_executor_service import (
-    ACTIVE_STATUSES,
     TrainingExecutorError,
     _absolute_path,
     _isolated_output_root,
     _load_json_object,
     training_executor_service,
 )
-from settings import INFERENCE_EXECUTOR_CONFIG
 
 try:
     import asyncssh
@@ -44,8 +47,32 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _age_seconds(value: datetime | None) -> float:
+    """以应用时钟计算时间戳距现在的秒数。
+
+    实测（MySQL 9.5 + 本项目 use_tz=True/timezone=Asia/Shanghai 配置）：
+    Tortoise 读回的是带正确时区的 aware datetime，Python 侧差值即为真实
+    间隔；而库内 TIMESTAMPDIFF(..., UTC_TIMESTAMP()) 会与本地墙钟存储
+    相差 8 小时、被 max(0, ...) 钳为 0，导致超时判定永不触发。数据库
+    时间字段的时长计算统一走本函数，不使用 SQL 方言的时间函数。
+    """
+    if value is None:
+        return 0.0
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return max(0.0, (_now() - value).total_seconds())
+
+
 class InferenceExecutorError(RuntimeError):
     pass
+
+
+class InferencePermanentError(InferenceExecutorError):
+    """排队期间已永久失效（训练产物被清理、适配器移除等）。
+
+    与可重试的基础设施故障（SSH 瞬断等）区分开：永久失效的任务必须
+    落到 FAILED 终态，否则会永远留在 QUEUED 每轮重试并占用并发名额。
+    """
 
 
 class InferenceExecutorService:
@@ -65,19 +92,20 @@ class InferenceExecutorService:
         parameters: dict[str, Any],
     ) -> tuple[Any, Any, dict[str, Any], dict[str, Any], Any, dict[str, Any]]:
         if source.status != "SUCCEEDED":
-            raise InferenceExecutorError("只有训练成功的任务可以用于推理")
+            raise InferencePermanentError("只有训练成功的任务可以用于推理")
         if source.cleanup_status != "RETAINED" or not source.remote_run_dir:
-            raise InferenceExecutorError("训练产物已清理或运行目录不可用")
+            raise InferencePermanentError("训练产物已清理或运行目录不可用")
         try:
             await training_executor_service.ensure_artifact_catalog(source)
         except TrainingExecutorError as exc:
+            # SSH/远端故障是瞬时的：保持 QUEUED 留待下一轮重试。
             raise InferenceExecutorError("无法校验训练 checkpoint") from exc
         if not await TrainingArtifact.filter(
             job_id=source.id,
             artifact_role="BEST_CHECKPOINT",
             downloadable=True,
         ).exists():
-            raise InferenceExecutorError("训练任务缺少可用的最佳 checkpoint")
+            raise InferencePermanentError("训练任务缺少可用的最佳 checkpoint")
         algorithm, dataset, runtime, dataset_runtime, adapter = (
             await training_executor_service._resolve_whitelisted_runtime(
                 source.algorithm_id,
@@ -85,7 +113,7 @@ class InferenceExecutorService:
             )
         )
         if algorithm_adapter_registry.get(adapter.key) is None:
-            raise InferenceExecutorError("算法推理适配器不可用")
+            raise InferencePermanentError("算法推理适配器不可用")
         training_parameters = (source.config_json or {}).get("parameters") or {}
         try:
             normalized = adapter.validate_inference_parameters(
@@ -93,7 +121,7 @@ class InferenceExecutorService:
                 training_parameters,
             )
         except AlgorithmAdapterError as exc:
-            raise InferenceExecutorError(str(exc)) from exc
+            raise InferencePermanentError(str(exc)) from exc
         return algorithm, dataset, runtime, dataset_runtime, adapter, normalized
 
     async def submit_job(
@@ -113,45 +141,49 @@ class InferenceExecutorService:
         _, _, _, _, adapter, normalized = await self._resolve_source(source, parameters)
         if requested_gpu is not None and requested_gpu not in self.config["gpu_allowlist"]:
             raise InferenceExecutorError("请求的 GPU 不在管理员白名单中")
-        pending = await InferenceJob.filter(
-            owner_id=owner["user_id"],
-            owner_role=owner["role"],
-            status__in=INFERENCE_ACTIVE,
-        ).count()
-        if pending >= self.config["max_pending_jobs_per_user"]:
-            raise InferenceExecutorError("当前用户的活动推理任务已达上限")
-        return await InferenceJob.create(
-            job_no=str(uuid.uuid4()),
-            owner_id=owner["user_id"],
-            owner_role=owner["role"],
-            training_job_id=source.id,
-            status="QUEUED",
-            config_json={
-                "parameters": normalized,
-                "requested_gpu": requested_gpu,
-                "adapter": {"key": adapter.key, "protocol_version": adapter.protocol_version},
-            },
-        )
+        owner_model = Admin if owner["role"] == "管理员" else User
+        async with in_transaction() as connection:
+            principal = await owner_model.filter(id=owner["user_id"]).using_db(
+                connection
+            ).select_for_update().first()
+            if principal is None:
+                raise InferenceExecutorError("任务所有者不存在或已被删除")
+            pending = await InferenceJob.filter(
+                owner_id=owner["user_id"],
+                owner_role=owner["role"],
+                status__in=INFERENCE_ACTIVE,
+            ).using_db(connection).count()
+            if pending >= self.config["max_pending_jobs_per_user"]:
+                raise InferenceExecutorError("当前用户的活动推理任务已达上限")
+            return await InferenceJob.create(
+                using_db=connection,
+                job_no=str(uuid.uuid4()),
+                owner_id=owner["user_id"],
+                owner_role=owner["role"],
+                training_job_id=source.id,
+                status="QUEUED",
+                config_json={
+                    "parameters": normalized,
+                    "requested_gpu": requested_gpu,
+                    "adapter": {
+                        "key": adapter.key,
+                        "protocol_version": adapter.protocol_version,
+                    },
+                },
+            )
 
-    async def _available_gpu(self, requested: int | None) -> int | None:
+    async def _gpu_candidates(self, requested: int | None) -> list[int]:
         free = await training_executor_service._gpu_free_memory()
-        training_leases = await TrainingJob.filter(
-            status__in=ACTIVE_STATUSES,
-            assigned_gpu__isnull=False,
-        ).values_list("assigned_gpu", flat=True)
-        inference_leases = await InferenceJob.filter(
-            status__in=INFERENCE_ACTIVE,
-            assigned_gpu__isnull=False,
-        ).values_list("assigned_gpu", flat=True)
-        leased = set(training_leases) | set(inference_leases)
         candidates = [requested] if requested is not None else sorted(
             self.config["gpu_allowlist"], key=lambda item: free.get(item, -1), reverse=True
         )
         minimum = int(self.config["min_free_gpu_memory_mb"])
-        return next(
-            (gpu for gpu in candidates if gpu not in leased and free.get(gpu, 0) >= minimum),
-            None,
-        )
+        return [gpu for gpu in candidates if free.get(gpu, 0) >= minimum]
+
+    async def _available_gpu(self, requested: int | None) -> int | None:
+        """兼容旧调用；实际调度会把全部合格候选交给数据库租约层。"""
+        candidates = await self._gpu_candidates(requested)
+        return candidates[0] if candidates else None
 
     async def dispatch_job(self, job_id: int) -> InferenceJob:
         async with self._dispatch_lock:
@@ -160,34 +192,46 @@ class InferenceExecutorService:
                 raise InferenceExecutorError("推理任务不存在")
             if job.status != "QUEUED":
                 return job
-            source = await TrainingJob.get(id=job.training_job_id)
+            source = await TrainingJob.get_or_none(id=job.training_job_id)
+            if source is None:
+                await self._fail_permanent_dispatch(job, "训练任务已被删除，推理无法执行")
+                raise InferencePermanentError("训练任务已被删除，推理无法执行")
             config = job.config_json or {}
-            resolved = await self._resolve_source(
-                source,
-                config.get("parameters") or {},
-            )
-            algorithm, dataset, runtime, dataset_runtime, adapter, normalized = resolved
-            gpu = await self._available_gpu(config.get("requested_gpu"))
-            if gpu is None:
-                return job
-            updated = await InferenceJob.filter(id=job.id, status="QUEUED").update(
-                status="STARTING", assigned_gpu=gpu
-            )
-            if not updated:
-                return await InferenceJob.get(id=job.id)
-            control_root = _absolute_path(self.config["control_root"], "推理控制目录")
-            output_root = _isolated_output_root(
-                _absolute_path(self.config["output_root"], "推理输出目录"),
-                algorithm_id=algorithm.id,
-                algorithm_name=algorithm.abbreviation or algorithm.name,
-                dataset_id=dataset.id,
-                dataset_name=dataset.name,
-            )
-            control_dir = posixpath.join(control_root, job.job_no)
-            run_dir = posixpath.join(output_root, job.job_no)
-            config_path = posixpath.join(control_dir, "config.json")
-            bootstrap_log = posixpath.join(control_dir, "bootstrap.log")
+            launcher_pid: int | None = None
+            lease_acquired = False
             try:
+                try:
+                    resolved = await self._resolve_source(
+                        source,
+                        config.get("parameters") or {},
+                    )
+                except InferencePermanentError as exc:
+                    await self._fail_permanent_dispatch(job, str(exc))
+                    raise
+                algorithm, dataset, runtime, dataset_runtime, adapter, normalized = resolved
+                gpu_candidates = await self._gpu_candidates(config.get("requested_gpu"))
+                if not gpu_candidates:
+                    return job
+                gpu = await gpu_lease_coordinator.acquire(
+                    workload_type="INFERENCE",
+                    workload_id=job.id,
+                    candidates=gpu_candidates,
+                )
+                if gpu is None:
+                    return job
+                lease_acquired = True
+                control_root = _absolute_path(self.config["control_root"], "推理控制目录")
+                output_root = _isolated_output_root(
+                    _absolute_path(self.config["output_root"], "推理输出目录"),
+                    algorithm_id=algorithm.id,
+                    algorithm_name=algorithm.abbreviation or algorithm.name,
+                    dataset_id=dataset.id,
+                    dataset_name=dataset.name,
+                )
+                control_dir = posixpath.join(control_root, job.job_no)
+                run_dir = posixpath.join(output_root, job.job_no)
+                config_path = posixpath.join(control_dir, "config.json")
+                bootstrap_log = posixpath.join(control_dir, "bootstrap.log")
                 remote_config = adapter.build_inference_config(
                     runtime=runtime,
                     dataset_name=dataset.name,
@@ -221,51 +265,58 @@ class InferenceExecutorService:
                 finally:
                     connection.close()
                     await connection.wait_closed()
-            except Exception as exc:
-                await InferenceJob.filter(id=job.id).update(
-                    status="FAILED", failure_reason=str(exc), finished_at=_now()
+                # 条件更新 + 行数校验：若启动耗时超过宽限期、reconcile 已把
+                # 任务收敛为 LOST 并释放租约，这里绝不能把终态覆盖回 RUNNING。
+                updated = await InferenceJob.filter(
+                    id=job.id,
+                    status="STARTING",
+                ).update(
+                    status="RUNNING",
+                    launcher_pid=launcher_pid,
+                    remote_control_dir=control_dir,
+                    remote_run_dir=run_dir,
+                    started_at=_now(),
+                    failure_reason=None,
                 )
+                if not updated:
+                    # 远程进程可能已启动：尽力回收，避免孤儿进程永久占卡。
+                    await self._terminate_launcher(launcher_pid)
+                    raise InferenceExecutorError(
+                        "推理任务启动耗时超过宽限期，已被收敛为 LOST"
+                    )
+                return await InferenceJob.get(id=job.id)
+            except asyncio.CancelledError:
+                # 请求取消/服务停机：CancelledError 不是 Exception 的子类，
+                # 若不在此清理，任务将永久停留在 STARTING 且租约持续占用
+                # GPU。即使本清理本身再被取消，reconcile 的启动宽限期
+                # 收敛也会在下一轮把残留状态回收。
+                if lease_acquired:
+                    await self._abandon_launch(job, launcher_pid, "推理任务启动被取消")
+                raise
+            except InferenceExecutorError:
+                raise
+            except Exception as exc:
+                if lease_acquired:
+                    await self._abandon_launch(job, launcher_pid, str(exc))
                 raise InferenceExecutorError(str(exc)) from exc
-            await InferenceJob.filter(id=job.id).update(
-                status="RUNNING",
-                launcher_pid=launcher_pid,
-                remote_control_dir=control_dir,
-                remote_run_dir=run_dir,
-                started_at=_now(),
-                failure_reason=None,
-            )
-            return await InferenceJob.get(id=job.id)
 
     async def reconcile_job(
         self,
         job: InferenceJob,
         connection=None,
     ) -> InferenceJob:
-        if job.status not in {"STARTING", "RUNNING"} or not job.remote_run_dir:
+        if job.status not in {"STARTING", "RUNNING"}:
             return job
-        runtime_seconds = 0.0
-        if job.started_at:
-            # 与训练执行器保持相同的时间源。use_tz=True 下 MySQL DATETIME
-            # 不能和应用进程的本地/UTC datetime 混算，否则会产生 8 小时偏差。
-            rows = await connections.get("default").execute_query_dict(
-                "SELECT TIMESTAMPDIFF(SECOND, started_at, UTC_TIMESTAMP(6)) AS age "
-                "FROM inference_jobs WHERE id=%s",
-                [job.id],
-            )
-            runtime_seconds = max(0.0, float(rows[0]["age"] or 0)) if rows else 0.0
+        if not job.remote_run_dir:
+            # dispatch 在租约 acquire 与 RUNNING 落库之间被取消/崩溃时，
+            # 任务停留在 STARTING 且没有远端运行目录：交给启动宽限期收敛，
+            # 否则租约会被永久占用（GPU 永久泄漏，重启也不能恢复）。
+            return await self._expire_stale_starting(job)
+        runtime_seconds = _age_seconds(job.started_at)
         if runtime_seconds > self.config["max_runtime_seconds"]:
             if job.launcher_pid and job.launcher_pid > 1:
                 try:
-                    connection = await training_executor_service._connect()
-                    try:
-                        await training_executor_service._run(
-                            connection,
-                            f"/bin/kill -TERM -- -{int(job.launcher_pid)}",
-                            check=False,
-                        )
-                    finally:
-                        connection.close()
-                        await connection.wait_closed()
+                    await self._terminate_launcher(job.launcher_pid)
                 except TrainingExecutorError:
                     pass
             await InferenceJob.filter(id=job.id).update(
@@ -274,6 +325,7 @@ class InferenceExecutorService:
                 finished_at=_now(),
                 assigned_gpu=None,
             )
+            await gpu_lease_coordinator.release("INFERENCE", job.id)
             return await InferenceJob.get(id=job.id)
         owns_connection = connection is None
         if owns_connection:
@@ -313,6 +365,7 @@ class InferenceExecutorService:
                 finished_at=_now(),
                 assigned_gpu=None,
             )
+            await gpu_lease_coordinator.release("INFERENCE", job.id)
             return await InferenceJob.get(id=job.id)
         finally:
             if owns_connection:
@@ -343,7 +396,81 @@ class InferenceExecutorService:
             finished_at=_now(),
             assigned_gpu=None,
         )
+        await gpu_lease_coordinator.release("INFERENCE", job.id)
         return await InferenceJob.get(id=job.id)
+
+    async def _expire_stale_starting(self, job: InferenceJob) -> InferenceJob:
+        """把卡在启动阶段（STARTING 且无远端运行目录）的任务超时收敛。
+
+        以进入 STARTING 的时刻（dispatch 显式写入的 started_at，历史
+        数据回退 updated_at）为基准；超过启动宽限期仍无运行目录即判
+        LOST 并释放租约。条件更新保证不会覆盖已推进到 RUNNING 的任务。
+        """
+        age = _age_seconds(job.started_at or job.updated_at)
+        grace = max(60.0, float(self.config["command_timeout"]) * 3.0)
+        if age <= grace:
+            return job
+        updated = await InferenceJob.filter(
+            id=job.id,
+            status="STARTING",
+            remote_run_dir__isnull=True,
+        ).update(
+            status="LOST",
+            failure_reason="推理任务启动阶段失联（超过启动宽限期），已释放 GPU 租约",
+            finished_at=_now(),
+            assigned_gpu=None,
+        )
+        if updated:
+            await gpu_lease_coordinator.release("INFERENCE", job.id)
+        return await InferenceJob.get(id=job.id)
+
+    @staticmethod
+    async def _fail_permanent_dispatch(job: InferenceJob, reason: str) -> None:
+        """排队期间已永久失效的任务落到 FAILED 终态（发生在租约获取之前）。"""
+        await InferenceJob.filter(id=job.id, status="QUEUED").update(
+            status="FAILED",
+            failure_reason=reason[:1000],
+            finished_at=_now(),
+        )
+
+    async def _abandon_launch(
+        self,
+        job: InferenceJob,
+        launcher_pid: int | None,
+        reason: str,
+    ) -> None:
+        """启动失败/被取消后的收敛：回收远程进程、置 FAILED、释放租约。"""
+        if launcher_pid is not None and int(launcher_pid) > 1:
+            try:
+                await self._terminate_launcher(launcher_pid)
+            except Exception:
+                # 远程回收失败不阻塞本地状态收敛；租约已释放，孤儿进程
+                # 由运维侧处理。
+                logger.exception("回收推理启动进程失败: %s", job.job_no)
+        updated = await InferenceJob.filter(id=job.id, status="STARTING").update(
+            status="FAILED",
+            assigned_gpu=None,
+            failure_reason=reason[:1000],
+            finished_at=_now(),
+        )
+        if updated:
+            await gpu_lease_coordinator.release("INFERENCE", job.id)
+
+    async def _terminate_launcher(self, launcher_pid: int | None) -> None:
+        """向远程进程组发送 SIGTERM（setsid 后 pgid == launcher_pid）。"""
+        pid = int(launcher_pid or 0)
+        if pid <= 1:
+            return
+        connection = await training_executor_service._connect()
+        try:
+            await training_executor_service._run(
+                connection,
+                f"/bin/kill -TERM -- -{pid}",
+                check=False,
+            )
+        finally:
+            connection.close()
+            await connection.wait_closed()
 
     async def dispatch_queued_jobs(self) -> None:
         running = await InferenceJob.filter(status__in={"STARTING", "RUNNING"}).count()
@@ -357,35 +484,44 @@ class InferenceExecutorService:
             except InferenceExecutorError:
                 continue
 
+    async def _monitor_once(self) -> None:
+        active_jobs = await InferenceJob.filter(status__in={"STARTING", "RUNNING"})
+        if active_jobs:
+            # 一轮监控共享一条 SSH 连接，避免逐任务重建会话。
+            shared_connection = None
+            try:
+                shared_connection = await training_executor_service._connect()
+            except TrainingExecutorError:
+                shared_connection = None  # 回退为逐任务独立连接
+            try:
+                for job in active_jobs:
+                    try:
+                        await self.reconcile_job(
+                            job, connection=shared_connection
+                        )
+                    except Exception:
+                        # 瞬时 SSH 故障留待下一轮恢复，不能误判任务终态。
+                        logger.exception(
+                            "Inference job reconcile failed: %s",
+                            job.job_no,
+                        )
+            finally:
+                if shared_connection is not None:
+                    shared_connection.close()
+                    await shared_connection.wait_closed()
+        await self.dispatch_queued_jobs()
+
     async def _monitor_loop(self) -> None:
         while not self._stop_event.is_set():
-            active_jobs = await InferenceJob.filter(
-                status__in={"STARTING", "RUNNING"}
-            )
-            if active_jobs:
-                # 一轮监控共享一条 SSH 连接，避免逐任务重建会话。
-                shared_connection = None
-                try:
-                    shared_connection = await training_executor_service._connect()
-                except TrainingExecutorError:
-                    shared_connection = None  # 回退为逐任务独立连接
-                try:
-                    for job in active_jobs:
-                        try:
-                            await self.reconcile_job(
-                                job, connection=shared_connection
-                            )
-                        except Exception:
-                            # 瞬时 SSH 故障留待下一轮恢复，不能误判任务终态。
-                            logger.exception(
-                                "Inference job reconcile failed: %s",
-                                job.job_no,
-                            )
-                finally:
-                    if shared_connection is not None:
-                        shared_connection.close()
-                        await shared_connection.wait_closed()
-            await self.dispatch_queued_jobs()
+            try:
+                await self._monitor_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # 数据库瞬断等基础设施故障不能永久杀死监控协程。此前
+                # 任何一个逃逸异常都会让调度与对账永久停摆且无自愈；
+                # 本轮失败的收敛工作留给下一轮。
+                logger.exception("推理监控本轮执行失败，等待下一轮重试")
             try:
                 await asyncio.wait_for(
                     self._stop_event.wait(), timeout=self.config["monitor_interval"]
@@ -397,6 +533,7 @@ class InferenceExecutorService:
         if not self.enabled or self._monitor_task is not None:
             return
         self._stop_event.clear()
+        await gpu_lease_coordinator.reconcile()
         self._monitor_task = asyncio.create_task(self._monitor_loop())
 
     async def stop_monitor(self) -> None:

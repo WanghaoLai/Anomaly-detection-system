@@ -1,46 +1,79 @@
-from typing import Optional
-
-from fastapi import APIRouter, Depends, Query
-from pydantic import create_model, Field
-from tortoise.transactions import in_transaction
-from tortoise.contrib.pydantic import pydantic_model_creator
-from tortoise.exceptions import IntegrityError
-
 from common.auth import get_current_admin, get_current_user
 from common.exception_handler import CustomException
-from common.result import Result, PageInfo
+from common.result import PageInfo, Result
 from common.sequential_number import next_sequential_number
+from fastapi import APIRouter, Depends, Query
 from models import Dataset, DatasetInfo
+from pathlib import PurePosixPath
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from tortoise.exceptions import IntegrityError
+from tortoise.transactions import in_transaction
 
 router = APIRouter(prefix="/dataset", dependencies=[Depends(get_current_user)])
 
-# Dataset 只读模型
-DatasetPydantic = pydantic_model_creator(Dataset, name="DatasetPydantic")
-# DatasetInfo 只读模型
-DatasetInfoPydantic = pydantic_model_creator(DatasetInfo, name="DatasetInfoPydantic")
 
-# 创建用的模型，所有字段 Optional。
-# 同 algorithm.py：FK 字段仅在 Tortoise 初始化后才进入 model_fields，
-# 推导时排除与显式声明同名的项，消除导入顺序依赖。
-DatasetCreatePydantic = create_model(
-    "DatasetCreatePydantic",
-    **{
-        name: (Optional[field.annotation], None)
-        for name, field in DatasetPydantic.model_fields.items()
-        if name != "created_by"
-    },
-    created_by=(Optional[int], Field(None, alias="createdBy")),
-)
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+        str_strip_whitespace=True,
+    )
 
-DatasetInfoCreatePydantic = create_model(
-    "DatasetInfoCreatePydantic",
-    **{
-        name: (Optional[field.annotation], None)
-        for name, field in DatasetInfoPydantic.model_fields.items()
-        if name != "dataset_id"
-    },
-    dataset_id=(Optional[int], Field(None, alias="datasetId")),
-)
+
+class DatasetInfoFields(_StrictModel):
+    root_directory: str | None = Field(default=None, max_length=500)
+    class_count: int = Field(default=0, ge=0)
+    train_sample_count: int = Field(default=0, ge=0)
+    test_sample_count: int = Field(default=0, ge=0)
+    anomaly_sample_count: int = Field(default=0, ge=0)
+
+    @field_validator("root_directory")
+    @classmethod
+    def validate_root_directory(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        path = PurePosixPath(value)
+        if not path.is_absolute() or ".." in path.parts:
+            raise ValueError("数据源目录必须是安全的绝对路径")
+        return value
+
+
+class DatasetCreatePydantic(DatasetInfoFields):
+    """数据集主记录与唯一详情的原子创建请求。"""
+
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    domain_type: str | None = Field(default=None, max_length=64)
+    root_directory: str = Field(min_length=1, max_length=500)
+
+
+class DatasetUpdatePydantic(DatasetCreatePydantic):
+    id: int = Field(gt=0)
+
+
+class DatasetInfoCreatePydantic(DatasetInfoFields):
+    """兼容历史缺失详情记录的修复入口；唯一约束仍由数据库裁决。"""
+
+    dataset_id: int = Field(alias="datasetId", gt=0)
+    root_directory: str = Field(min_length=1, max_length=500)
+
+
+class DatasetInfoUpdatePydantic(DatasetInfoFields):
+    id: int = Field(gt=0)
+    root_directory: str = Field(min_length=1, max_length=500)
+
+
+def _dataset_info_data(payload: DatasetInfoFields) -> dict:
+    return payload.model_dump(
+        include={
+            "root_directory",
+            "class_count",
+            "train_sample_count",
+            "test_sample_count",
+            "anomaly_sample_count",
+        }
+    )
 
 
 @router.get("/selectPage")
@@ -51,76 +84,101 @@ async def select_page(
     pageSize: int = Query(5, ge=1, le=100),
 ):
     query = Dataset.filter(deleted_at__isnull=True)
-    if name and name != '':
+    if name:
         query = query.filter(name__contains=name)
-
-    query = query.prefetch_related('dataset_infos', 'created_by').order_by('id')
+    query = query.prefetch_related("dataset_info", "created_by").order_by("id")
 
     total = await query.count()
-    datasets_list = await query.offset((pageNum - 1) * pageSize).limit(pageSize)
-
+    datasets = await query.offset((pageNum - 1) * pageSize).limit(pageSize)
     result = []
-    for ds in datasets_list:
-        info = ds.dataset_infos[0] if ds.dataset_infos else None
-        item = {
-            **DatasetPydantic.model_validate(ds).model_dump(exclude={'created_by_id'}),
-            "created_at": ds.created_at.strftime('%Y-%m-%d %H:%M:%S') if ds.created_at else None,
-            "updated_at": ds.updated_at.strftime('%Y-%m-%d %H:%M:%S') if ds.updated_at else None,
-            "created_by_name": ds.created_by.username if ds.created_by else None,
+    for dataset in datasets:
+        info = dataset.dataset_info
+        result.append({
+            "id": dataset.id,
+            "dataset_no": dataset.dataset_no,
+            "name": dataset.name,
+            "description": dataset.description,
+            "domain_type": dataset.domain_type,
+            "created_at": (
+                dataset.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                if dataset.created_at else None
+            ),
+            "updated_at": (
+                dataset.updated_at.strftime("%Y-%m-%d %H:%M:%S")
+                if dataset.updated_at else None
+            ),
+            "created_by_name": (
+                dataset.created_by.username if dataset.created_by else None
+            ),
             "root_directory": info.root_directory if info else None,
             "info_id": info.id if info else None,
             "class_count": info.class_count if info else 0,
             "train_sample_count": info.train_sample_count if info else 0,
             "test_sample_count": info.test_sample_count if info else 0,
             "anomaly_sample_count": info.anomaly_sample_count if info else 0,
-        }
-        result.append(item)
-
-    pageinfo = PageInfo(total=total, list=result)
-    return Result.success(pageinfo)
+        })
+    return Result.success(PageInfo(total=total, list=result))
 
 
 @router.post("/add", dependencies=[Depends(get_current_admin)])
 async def add(
-    dataset_pydantic: DatasetCreatePydantic,
+    payload: DatasetCreatePydantic,
     current_admin: dict = Depends(get_current_admin),
 ):
-    create_data = dataset_pydantic.model_dump(
-        exclude_unset=True,
-        exclude={
-            'id', 'dataset_no', 'created_by', 'created_at', 'updated_at',
-            'deleted_at',
-        },
+    main_data = payload.model_dump(
+        include={"name", "description", "domain_type"}
     )
-    create_data['created_by_id'] = current_admin['user_id']
-    # 编号 max+1 单调递增；并发分配冲突由唯一索引兜底并重试。
     for _ in range(3):
         try:
             async with in_transaction() as connection:
-                create_data['dataset_no'] = str(
+                main_data["dataset_no"] = str(
                     await next_sequential_number(
-                        Dataset, 'dataset_no', connection
+                        Dataset, "dataset_no", connection
                     )
                 )
-                dataset = await Dataset.create(using_db=connection, **create_data)
+                dataset = await Dataset.create(
+                    using_db=connection,
+                    created_by_id=current_admin["user_id"],
+                    **main_data,
+                )
+                await DatasetInfo.create(
+                    using_db=connection,
+                    dataset_id=dataset.id,
+                    **_dataset_info_data(payload),
+                )
             return Result.success(dataset.id)
         except IntegrityError:
             continue
-    raise CustomException("数据集编号分配冲突，请重试")
+    raise CustomException("数据集编号分配冲突，请重试", status_code=409)
 
 
 @router.put("/update", dependencies=[Depends(get_current_admin)])
-async def update(dataset_pydantic: DatasetCreatePydantic):
-    if not dataset_pydantic.id:
-        return Result.error("缺少 id")
-    update_data = dataset_pydantic.model_dump(
-        exclude_unset=True,
-        exclude={
-            'id', 'dataset_no', 'created_by', 'created_at', 'updated_at',
-            'deleted_at',
-        },
-    )
-    await Dataset.filter(id=dataset_pydantic.id).update(**update_data)
+async def update(payload: DatasetUpdatePydantic):
+    async with in_transaction() as connection:
+        dataset = await Dataset.filter(id=payload.id).using_db(
+            connection
+        ).select_for_update().first()
+        if dataset is None:
+            raise CustomException("数据集不存在", status_code=404)
+        await Dataset.filter(id=payload.id).using_db(connection).update(
+            **payload.model_dump(
+                include={"name", "description", "domain_type"}
+            )
+        )
+        info = await DatasetInfo.filter(dataset_id=payload.id).using_db(
+            connection
+        ).select_for_update().first()
+        info_data = _dataset_info_data(payload)
+        if info is None:
+            await DatasetInfo.create(
+                using_db=connection,
+                dataset_id=payload.id,
+                **info_data,
+            )
+        else:
+            await DatasetInfo.filter(id=info.id).using_db(connection).update(
+                **info_data
+            )
     return Result.success()
 
 
@@ -129,24 +187,36 @@ async def delete(id: int):
     try:
         async with in_transaction() as connection:
             await DatasetInfo.filter(dataset_id=id).using_db(connection).delete()
-            await Dataset.filter(id=id).using_db(connection).delete()
-    except IntegrityError:
-        # 训练任务对数据集是 RESTRICT 外键：被引用时拒绝删除而不是报系统错误。
-        raise CustomException("该数据集仍被训练任务引用，请先处理相关任务")
+            deleted = await Dataset.filter(id=id).using_db(connection).delete()
+            if deleted != 1:
+                raise CustomException("数据集不存在", status_code=404)
+    except IntegrityError as exc:
+        raise CustomException(
+            "该数据集仍被训练任务引用，请先处理相关任务",
+            status_code=409,
+        ) from exc
     return Result.success()
 
 
 @router.post("/info/add", dependencies=[Depends(get_current_admin)])
-async def add_info(info_pydantic: DatasetInfoCreatePydantic):
-    create_data = info_pydantic.model_dump(exclude_unset=True, exclude={'id'})
-    await DatasetInfo.create(**create_data)
+async def add_info(payload: DatasetInfoCreatePydantic):
+    if not await Dataset.filter(id=payload.dataset_id).exists():
+        raise CustomException("数据集不存在", status_code=404)
+    try:
+        await DatasetInfo.create(
+            dataset_id=payload.dataset_id,
+            **_dataset_info_data(payload),
+        )
+    except IntegrityError as exc:
+        raise CustomException("数据集详情已存在", status_code=409) from exc
     return Result.success()
 
 
 @router.put("/info/update", dependencies=[Depends(get_current_admin)])
-async def update_info(info_pydantic: DatasetInfoCreatePydantic):
-    if not info_pydantic.id:
-        return Result.error("缺少 id")
-    update_data = info_pydantic.model_dump(exclude_unset=True, exclude={'id'})
-    await DatasetInfo.filter(id=info_pydantic.id).update(**update_data)
+async def update_info(payload: DatasetInfoUpdatePydantic):
+    updated = await DatasetInfo.filter(id=payload.id).update(
+        **_dataset_info_data(payload)
+    )
+    if updated != 1:
+        raise CustomException("数据集详情不存在", status_code=404)
     return Result.success()
