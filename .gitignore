@@ -50,6 +50,7 @@ Thumbs.db
 *.sqlite
 *.sqlite3
 fastapi-app/chroma_db/
+fastapi-app/qdrant_db/
 
 # ==== 日志 ====
 *.log
@@ -79,3 +80,8 @@ htmlcov/
 
 # ==== RAG 评估报告（脚本生成）====
 reports/
+/RAG_SOURCE_CODE_ANALYSIS.md
+/Top100技术面试题逐题精答.md
+/项目真实性审计与Top100技术面试题.md
+/项目真实性审计与Top100技术面试题_参考答案.md
+/工业异常检测系统_118道技术面试题与参考答案_整合版.txt

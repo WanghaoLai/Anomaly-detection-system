@@ -226,10 +226,12 @@ class GpuServerService:
             raise GpuServerError("GPU 账号映射配置格式错误") from exc
         if not isinstance(account_map, dict):
             raise GpuServerError("GPU 账号映射配置必须是 JSON 对象")
-        # 精确映射优先；"*" 用于所有系统用户共用一个 Linux 账号。
-        linux_username = str(
-            account_map.get(app_username, account_map.get("*", app_username))
-        )
+        # GPU 文件系统身份必须来自管理员配置，不能由可编辑的应用账号名推导。
+        # "*" 仅用于管理员明确配置所有系统用户共用一个低权限 Linux 账号。
+        mapped_account = account_map.get(app_username, account_map.get("*"))
+        if mapped_account is None:
+            raise GpuServerError("当前用户未绑定 GPU 服务器账号")
+        linux_username = str(mapped_account).strip()
         if not LINUX_USERNAME_PATTERN.fullmatch(linux_username):
             raise GpuServerError("当前用户未绑定有效的 GPU 服务器账号")
         return linux_username

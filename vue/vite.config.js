@@ -45,5 +45,16 @@ export default defineConfig({
         `,
       }
     }
-  }
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          framework: ['vue', 'vue-router', 'axios'],
+          element: ['element-plus', '@element-plus/icons-vue'],
+          markdown: ['marked', 'dompurify'],
+        },
+      },
+    },
+  },
 })

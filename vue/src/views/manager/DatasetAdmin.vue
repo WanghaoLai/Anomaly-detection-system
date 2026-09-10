@@ -87,7 +87,7 @@
         </el-form-item>
         <el-divider />
         <div class="form-section-title">统计信息</div>
-        <el-form-item label="数据源目录">
+        <el-form-item label="数据源目录" prop="root_directory">
           <el-input v-model="data.form.root_directory" autocomplete="off" placeholder="请输入数据源目录路径" />
         </el-form-item>
         <el-row :gutter="16">
@@ -134,7 +134,6 @@ import { ElMessage, ElMessageBox } from "element-plus"
 const formRef = ref()
 
 const data = reactive({
-  user: JSON.parse(localStorage.getItem('system-user') || '{}'),
   form: {},
   formVisible: false,
   saving: false,
@@ -145,6 +144,7 @@ const data = reactive({
   tableData: [],
   rules: {
     name: [{ required: true, message: '请输入数据集名称', trigger: 'blur' }],
+    root_directory: [{ required: true, message: '请输入数据源目录', trigger: 'blur' }],
   }
 })
 
@@ -193,14 +193,6 @@ const add = async () => {
     name: data.form.name,
     description: data.form.description,
     domain_type: data.form.domain_type,
-    createdBy: data.user.id,
-  }
-  const res = ensureSuccess(
-    await request.post('/dataset/add', datasetData),
-    '数据集基本信息保存失败',
-  )
-  const infoData = {
-    datasetId: res.data,
     root_directory: data.form.root_directory,
     class_count: data.form.class_count,
     train_sample_count: data.form.train_sample_count,
@@ -208,8 +200,8 @@ const add = async () => {
     anomaly_sample_count: data.form.anomaly_sample_count,
   }
   ensureSuccess(
-    await request.post('/dataset/info/add', infoData),
-    '数据集统计信息保存失败',
+    await request.post('/dataset/add', datasetData),
+    '数据集保存失败',
   )
 }
 
@@ -219,32 +211,16 @@ const update = async () => {
     name: data.form.name,
     description: data.form.description,
     domain_type: data.form.domain_type,
-  }
-  ensureSuccess(
-    await request.put('/dataset/update', datasetData),
-    '数据集基本信息更新失败',
-  )
-  const infoData = {
-    id: data.form.info_id,
     root_directory: data.form.root_directory,
     class_count: data.form.class_count,
     train_sample_count: data.form.train_sample_count,
     test_sample_count: data.form.test_sample_count,
     anomaly_sample_count: data.form.anomaly_sample_count,
   }
-  if (data.form.info_id) {
-    ensureSuccess(
-      await request.put('/dataset/info/update', infoData),
-      '数据集统计信息更新失败',
-    )
-  } else {
-    delete infoData.id
-    infoData.datasetId = data.form.id
-    ensureSuccess(
-      await request.post('/dataset/info/add', infoData),
-      '数据集统计信息保存失败',
-    )
-  }
+  ensureSuccess(
+    await request.put('/dataset/update', datasetData),
+    '数据集更新失败',
+  )
 }
 
 const save = async () => {
@@ -252,7 +228,7 @@ const save = async () => {
   try {
     await formRef.value.validate()
   } catch {
-    ElMessage.warning('请填写数据集名称')
+    ElMessage.warning('请填写数据集名称和数据源目录')
     return
   }
 
@@ -264,23 +240,23 @@ const save = async () => {
     data.formVisible = false
     load()
   } catch (error) {
-    ElMessage.error(error?.message || '保存失败，请稍后重试')
+    ElMessage.error(error?.response?.data?.msg || error?.message || '保存失败，请稍后重试')
   } finally {
     data.saving = false
   }
 }
 
-const handleDelete = (id) => {
-  ElMessageBox.confirm('删除后数据无法恢复，您确定删除吗?', '删除确认', { type: 'warning' }).then(() => {
-    request.delete('/dataset/delete/' + id).then(res => {
-      if (res.code === '200') {
-        load()
-        ElMessage.success('操作成功')
-      } else {
-        ElMessage.error(res.msg)
-      }
-    })
-  }).catch(() => {})
+const handleDelete = async (id) => {
+  try {
+    await ElMessageBox.confirm('删除后数据无法恢复，您确定删除吗?', '删除确认', { type: 'warning' })
+    const res = await request.delete('/dataset/delete/' + id)
+    ensureSuccess(res, '删除数据集失败')
+    load()
+    ElMessage.success('操作成功')
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(error?.response?.data?.msg || error?.message || '删除失败，请稍后重试')
+  }
 }
 
 const reset = () => {

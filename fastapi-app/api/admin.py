@@ -1,9 +1,4 @@
-from datetime import datetime, timezone
-from typing import Optional
-
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, create_model
-from tortoise.contrib.pydantic import pydantic_model_creator
+from datetime import UTC, datetime
 
 from common.auth import (
     get_current_admin,
@@ -11,8 +6,20 @@ from common.auth import (
     validate_password_policy,
 )
 from common.exception_handler import CustomException
-from common.result import Result, PageInfo
-from models import Admin, AuthSession
+from common.result import PageInfo, Result
+from fastapi import APIRouter, Depends, Query
+from models import (
+    Admin,
+    Algorithm,
+    AuthSession,
+    Dataset,
+    InferenceJob,
+    TrainingJob,
+)
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from tortoise.contrib.pydantic import pydantic_model_creator
+from tortoise.exceptions import IntegrityError
+from tortoise.transactions import in_transaction
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(get_current_admin)])
 AdminPydantic = pydantic_model_creator(Admin)
@@ -20,24 +27,41 @@ AdminReadPydantic = pydantic_model_creator(
     Admin,
     exclude=("password", "token_version"),
 )
-AdminCreatePydantic = create_model(
-    "AdminPydantic",
-    **{
-        name: (Optional[field.annotation], None)
-        for name, field in AdminPydantic.model_fields.items()
-    }
-)
 
 
-class AdminPasswordResetRequest(BaseModel):
-    newPassword: str
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class AdminCreatePydantic(_StrictModel):
+    username: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=1, max_length=255)
+    name: str | None = Field(default=None, max_length=255)
+    avatar: str | None = Field(default=None, max_length=255)
+
+
+class AdminUpdatePydantic(_StrictModel):
+    id: int = Field(gt=0)
+    username: str = Field(default=None, min_length=1, max_length=255)
+    name: str | None = Field(default=None, max_length=255)
+    avatar: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def require_change(self):
+        if not (self.model_fields_set - {"id"}):
+            raise ValueError("至少提供一个需要更新的字段")
+        return self
+
+
+class AdminPasswordResetRequest(_StrictModel):
+    newPassword: str = Field(min_length=1, max_length=255)
 
 
 @router.post("/add")
 async def add(admin_create_pydantic: AdminCreatePydantic):
     admin = await Admin.get_or_none(username=admin_create_pydantic.username)
     if admin is not None:
-        raise CustomException("账号重复")
+        raise CustomException("账号重复", status_code=409)
     if admin_create_pydantic.name is None:
         admin_create_pydantic.name = admin_create_pydantic.username
     if (
@@ -50,23 +74,23 @@ async def add(admin_create_pydantic: AdminCreatePydantic):
     create_data.pop('token_version', None)
     create_data['password'] = hash_password(create_data['password'])
     create_data['role'] = '管理员'
-    await Admin.create(**create_data)
+    try:
+        await Admin.create(**create_data)
+    except IntegrityError as exc:
+        raise CustomException("账号重复", status_code=409) from exc
     return Result.success()
 
 
 @router.put("/update")
-async def update(admin_create_pydantic: AdminCreatePydantic):
+async def update(admin_create_pydantic: AdminUpdatePydantic):
     update_data = admin_create_pydantic.model_dump(exclude_unset=True, exclude={'id'})
-    # Admin 表中的账号角色是服务端不变量，不能由请求体修改。
-    update_data.pop('role', None)
-    # 密码只允许通过专用重置接口修改，避免通用资料更新误哈希或重复哈希。
-    update_data.pop('password', None)
-    update_data.pop('token_version', None)
-
     admin = await Admin.get_or_none(id=admin_create_pydantic.id)
     if admin is None:
-        raise CustomException("未找到管理员")
-    updated = await Admin.filter(id=admin.id).update(**update_data)
+        raise CustomException("未找到管理员", status_code=404)
+    try:
+        updated = await Admin.filter(id=admin.id).update(**update_data)
+    except IntegrityError as exc:
+        raise CustomException("账号重复", status_code=409) from exc
     if updated != 1:
         raise CustomException("管理员状态已变化，请重试")
     return Result.success()
@@ -83,7 +107,7 @@ async def reset_password(
 
     admin = await Admin.get_or_none(id=admin_id)
     if admin is None:
-        raise CustomException("未找到管理员")
+        raise CustomException("未找到管理员", status_code=404)
 
     updated = await Admin.filter(
         id=admin.id,
@@ -99,7 +123,7 @@ async def reset_password(
         user_id=admin.id,
         role="管理员",
         revoked_at__isnull=True,
-    ).update(revoked_at=datetime.now(timezone.utc))
+    ).update(revoked_at=datetime.now(UTC))
     return Result.success()
 
 
@@ -111,8 +135,59 @@ async def delete(
     # 删除自己会立即吊销当前会话，把操作者锁在系统外。
     if admin_id == current_admin["user_id"]:
         raise CustomException("不能删除当前登录的管理员账号")
-    await AuthSession.filter(user_id=admin_id, role="管理员").delete()
-    await Admin.filter(id=admin_id).delete()
+
+    try:
+        async with in_transaction() as connection:
+            admin = await Admin.filter(id=admin_id).using_db(
+                connection
+            ).select_for_update().first()
+            if admin is None:
+                raise CustomException("未找到管理员", status_code=404)
+
+            if await Algorithm.filter(created_by_id=admin_id).using_db(
+                connection
+            ).exists():
+                raise CustomException(
+                    "该管理员仍有关联算法，请先转移或删除相关算法",
+                    status_code=409,
+                )
+            if await Dataset.filter(created_by_id=admin_id).using_db(
+                connection
+            ).exists():
+                raise CustomException(
+                    "该管理员仍有关联数据集，请先转移或删除相关数据集",
+                    status_code=409,
+                )
+            if await TrainingJob.filter(
+                owner_id=admin_id,
+                owner_role="管理员",
+            ).using_db(connection).exists():
+                raise CustomException(
+                    "该管理员仍有关联训练任务，请先转移或清理相关任务",
+                    status_code=409,
+                )
+            if await InferenceJob.filter(
+                owner_id=admin_id,
+                owner_role="管理员",
+            ).using_db(connection).exists():
+                raise CustomException(
+                    "该管理员仍有关联推理任务，请先转移或清理相关任务",
+                    status_code=409,
+                )
+
+            await AuthSession.filter(
+                user_id=admin_id,
+                role="管理员",
+            ).using_db(connection).delete()
+            deleted = await Admin.filter(id=admin_id).using_db(connection).delete()
+            if deleted != 1:
+                raise CustomException("管理员状态已变化，请重试", status_code=409)
+    except IntegrityError as exc:
+        # 目标行锁可阻止大多数并发新增引用；外键约束仍作为最终兜底。
+        raise CustomException(
+            "该管理员仍有关联数据，暂时无法删除",
+            status_code=409,
+        ) from exc
     return Result.success()
 
 

@@ -98,7 +98,12 @@ const save = () => {
   formRef.value.validate(valid => {
     if (valid) {
       const api = data.user.role === '管理员' ? '/admin/update' : '/user/update'
-      request.put(api, data.user).then(res => {
+      const payload = {
+        id: data.user.id,
+        name: data.user.name,
+        avatar: data.user.avatar || null,
+      }
+      request.put(api, payload).then(res => {
         if (res.code === '200') {
           ElMessage.success('更新成功')
           localStorage.setItem('system-user', JSON.stringify(data.user))

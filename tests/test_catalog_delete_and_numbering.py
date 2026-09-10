@@ -18,6 +18,7 @@ from common.sequential_number import next_sequential_number  # noqa: E402
 from models import (  # noqa: E402
     Admin,
     Algorithm,
+    AlgorithmInfo,
     Conversation,
     Dataset,
     Message,
@@ -60,11 +61,22 @@ class CatalogNumberingAndDeleteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_add_assigns_max_plus_one_and_delete_keeps_numbers_stable(self):
         result = await algorithm_add(
-            AlgorithmCreatePydantic(name="NewAlg"), ADMIN
+            AlgorithmCreatePydantic(
+                name="NewAlg",
+                framework="PyTorch",
+                conda_env_name="newalg",
+                conda_env_path="/opt/conda/envs/newalg",
+                working_directory="/srv/newalg",
+                train_entrypoint="train.py",
+            ),
+            ADMIN,
         )
         new_id = result.data
         created = await Algorithm.get(id=new_id)
         self.assertEqual(created.algorithm_no, "6")
+        self.assertTrue(
+            await AlgorithmInfo.filter(algorithm_id=created.id).exists()
+        )
 
         # 删除中间编号的算法，剩余编号保持稳定，不触发全表重排。
         await algorithm_delete(2)
@@ -74,7 +86,15 @@ class CatalogNumberingAndDeleteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(list(remaining), ["1", "5", "6"])
 
         result = await algorithm_add(
-            AlgorithmCreatePydantic(name="AnotherAlg"), ADMIN
+            AlgorithmCreatePydantic(
+                name="AnotherAlg",
+                framework="PyTorch",
+                conda_env_name="another",
+                conda_env_path="/opt/conda/envs/another",
+                working_directory="/srv/another",
+                train_entrypoint="train.py",
+            ),
+            ADMIN,
         )
         another = await Algorithm.get(id=result.data)
         self.assertEqual(another.algorithm_no, "7")

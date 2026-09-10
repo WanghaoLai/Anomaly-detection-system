@@ -84,7 +84,14 @@ def evaluate(release_id: str, golden_path: Path, smoke_path: Path) -> dict:
     service = KnowledgeService()
     manifest = service.artifact_repository.releases.get(release_id)
     service._validate_shadow_manifest(manifest)
-    collection = service.client.get_collection(name=manifest["collection_name"])
+    provider = str(
+        (manifest.get("indexing") or {}).get(
+            "vector_store_provider", "chroma"
+        )
+    )
+    collection = service._database_for_provider(provider).get_collection(
+        name=manifest["collection_name"]
+    )
     snapshot = collection.get(include=["documents", "metadatas"])
     records = [{
         "node_id": str(node_id),

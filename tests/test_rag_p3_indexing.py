@@ -136,7 +136,7 @@ class LlamaIndexIndexWriterTests(unittest.TestCase):
 
     def test_vector_write_failure_removes_partial_shadow(self):
         with patch(
-            "services.rag.indexing.writer.LlamaChromaVectorStore.add",
+            "llama_index.vector_stores.chroma.ChromaVectorStore.add",
             side_effect=RuntimeError("故障注入: chroma write"),
         ):
             with self.assertRaisesRegex(RuntimeError, "chroma write"):
@@ -202,9 +202,19 @@ class P3ServiceIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.chroma_dir = tempfile.TemporaryDirectory()
         self.artifact_dir = tempfile.TemporaryDirectory()
+        self.config_patch = patch.dict(
+            knowledge_module.AI_CONFIG,
+            {
+                "vector_store_provider": "chroma",
+                "qdrant_mode": "local",
+                "rag_release_smoke_required": False,
+            },
+            clear=False,
+        )
         self.path_patch = patch.object(
             knowledge_module, "CHROMA_PATH", self.chroma_dir.name
         )
+        self.config_patch.start()
         self.path_patch.start()
         self.embedding = RecordingEmbedding(3)
         self.converter = MarkdownConverter()
@@ -217,6 +227,7 @@ class P3ServiceIntegrationTests(unittest.TestCase):
 
     def tearDown(self):
         self.path_patch.stop()
+        self.config_patch.stop()
         self.artifact_dir.cleanup()
         self.chroma_dir.cleanup()
 
@@ -268,7 +279,7 @@ class P3ServiceIntegrationTests(unittest.TestCase):
 
         async def run():
             with patch(
-                "services.rag.indexing.writer.LlamaChromaVectorStore.add",
+                "llama_index.vector_stores.chroma.ChromaVectorStore.add",
                 side_effect=RuntimeError("故障注入: async chroma write"),
             ):
                 return await self.service.stage_document_release_async(

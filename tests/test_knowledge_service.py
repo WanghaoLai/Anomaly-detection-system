@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 BACKEND_DIR = Path(__file__).parents[1] / "fastapi-app"
 sys.path.insert(0, str(BACKEND_DIR))
 
+import services.knowledge_service as knowledge_module  # noqa: E402
 from services.knowledge_service import (  # noqa: E402
     INGESTION_SCHEMA_VERSION,
     KnowledgeService,
@@ -58,6 +59,21 @@ class FakeSearchCollection:
 
 
 class KnowledgeServiceTests(unittest.TestCase):
+    def setUp(self):
+        self.config_patch = patch.dict(
+            knowledge_module.AI_CONFIG,
+            {
+                "vector_store_provider": "chroma",
+                "qdrant_mode": "local",
+                "rag_release_smoke_required": False,
+            },
+            clear=False,
+        )
+        self.config_patch.start()
+
+    def tearDown(self):
+        self.config_patch.stop()
+
     def test_duplicate_detection_requires_current_ingestion_schema(self):
         snapshot = {
             "ids": ["chunk-1"],
@@ -67,6 +83,26 @@ class KnowledgeServiceTests(unittest.TestCase):
         self.assertFalse(KnowledgeService._snapshot_is_same_content(snapshot, "same"))
         snapshot["metadatas"][0]["ingestion_schema_version"] = INGESTION_SCHEMA_VERSION
         self.assertTrue(KnowledgeService._snapshot_is_same_content(snapshot, "same"))
+
+    def test_search_consistency_validation_is_cached_per_release(self):
+        service = KnowledgeService(markdown_converter=FakeMarkdownConverter())
+        active = {"release_id": "release-1"}
+        service.current_release_id = Mock(
+            side_effect=lambda: active["release_id"]
+        )
+        service.active_vector_store_provider = Mock(return_value="chroma")
+        service.validate_embedding_config = Mock(return_value={
+            "consistent": True,
+            "issues": [],
+        })
+
+        self.assertTrue(service._ensure_consistent_or_warn("search-1"))
+        self.assertTrue(service._ensure_consistent_or_warn("search-2"))
+        service.validate_embedding_config.assert_called_once_with()
+
+        active["release_id"] = "release-2"
+        self.assertTrue(service._ensure_consistent_or_warn("search-3"))
+        self.assertEqual(service.validate_embedding_config.call_count, 2)
 
     def test_pdf_preprocessing_removes_repeated_boundaries_and_detects_titles(self):
         markdown = """实验室手册

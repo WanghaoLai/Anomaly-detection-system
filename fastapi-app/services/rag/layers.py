@@ -31,6 +31,8 @@ ADAPTER_MODULES = (
     "services.rag.indexing.embedding",
     "services.rag.indexing.vector_store",
     "services.rag.indexing.writer",
+    "services.rag.indexing.qdrant_store",
+    "services.rag.indexing.qdrant_writer",
     "services.rag.search.reranking",
 )
 
@@ -71,6 +73,7 @@ FORBIDDEN_APPLICATION_IMPORTS = frozenset({
     "dashscope",
     "llama_index",
     "markitdown",
+    "qdrant_client",
 })
 
 

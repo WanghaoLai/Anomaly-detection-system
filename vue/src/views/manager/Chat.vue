@@ -111,8 +111,7 @@
 import { reactive, ref, nextTick, onMounted } from 'vue'
 import { Plus, Delete, ChatDotRound, Collection, Monitor, Promotion } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import request from '@/utils/request'
-import { API_BASE_URL, getCsrfToken } from '@/utils/auth'
+import request, { authenticatedFetch } from '@/utils/request'
 import { renderMarkdown } from '@/utils/markdown'
 
 const messagesContainer = ref(null)
@@ -222,12 +221,11 @@ const sendMessage = async () => {
   data.messages.push({ role: 'assistant', content: '' })
 
   try {
-    const response = await fetch(`${API_BASE_URL}/chat/send`, {
+    const response = await authenticatedFetch('/chat/send', {
       method: 'POST',
       credentials: 'include',
       headers: {
-        'Content-Type': 'application/json',
-        'X-CSRF-Token': getCsrfToken()
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({ conversation_id: data.currentConversation, message: userMessage })
     })

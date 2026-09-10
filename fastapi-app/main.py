@@ -9,10 +9,12 @@ from tortoise.contrib.fastapi import register_tortoise
 from api import api_router
 from api.admin_chat import _llm_service
 from api.chat import llm_service
+from api.knowledge import recover_pending_knowledge_releases
 from common.exception_handler import setup_exceptions
+from common.migrations import check_schema_current
 
 from common.result import Result
-from settings import CORS_ALLOWED_ORIGINS, TORTOISE_ORM
+from settings import CORS_ALLOWED_ORIGINS, DB_SCHEMA_CHECK_ENABLED, TORTOISE_ORM
 from services.knowledge_service import knowledge_service
 from services.training_executor_service import training_executor_service
 from services.inference_executor_service import inference_executor_service
@@ -22,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if DB_SCHEMA_CHECK_ENABLED:
+        # 在任何后台任务启动前 fail closed，禁止新代码运行在旧表结构上。
+        await check_schema_current()
+    # 元数据事务已提交但指针尚未切换的 release 必须先恢复，避免用户看到
+    # MySQL 与实际检索版本不一致的知识库。
+    await recover_pending_knowledge_releases()
     report = knowledge_service.validate_embedding_config()
     if not report["consistent"]:
         logger.warning(

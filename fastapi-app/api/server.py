@@ -1,16 +1,17 @@
-from fastapi import APIRouter, Depends, Query
-
 from common.auth import get_current_admin, get_current_user
 from common.result import Result
+from fastapi import APIRouter, Depends, HTTPException, Query
 from services.gpu_server_service import GpuServerError, gpu_server_service
-
 
 router = APIRouter(prefix="/server", dependencies=[Depends(get_current_user)])
 
 
 @router.get("/summary")
 async def get_server_summary(refresh: bool = False):
-    return Result.success(await gpu_server_service.get_summary(force=refresh))
+    try:
+        return Result.success(await gpu_server_service.get_summary(force=refresh))
+    except GpuServerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/files")
@@ -31,7 +32,7 @@ async def get_account_files(
         )
         return Result.success(data)
     except GpuServerError as exc:
-        return Result.error(str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/file-roots")
@@ -41,7 +42,7 @@ async def get_account_file_roots(current_user: dict = Depends(get_current_user))
             gpu_server_service.get_file_roots(current_user["username"])
         )
     except GpuServerError as exc:
-        return Result.error(str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/conda-environments", dependencies=[Depends(get_current_admin)])
@@ -49,4 +50,4 @@ async def get_conda_environments():
     try:
         return Result.success(await gpu_server_service.get_conda_environments())
     except GpuServerError as exc:
-        return Result.error(str(exc))
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

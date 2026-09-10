@@ -111,11 +111,11 @@ async def training_options():
     algorithms = await Algorithm.filter(
         abbreviation__in=list(algorithm_allowlist),
         deleted_at__isnull=True,
-    ).prefetch_related("algorithm_infos").order_by("id")
+    ).prefetch_related("algorithm_info").order_by("id")
     datasets = await Dataset.filter(
         name__in=list(dataset_allowlist),
         deleted_at__isnull=True,
-    ).prefetch_related("dataset_infos").order_by("id")
+    ).prefetch_related("dataset_info").order_by("id")
     dataset_items = [
         {
             "id": dataset.id,
@@ -123,13 +123,13 @@ async def training_options():
             "description": dataset.description,
         }
         for dataset in datasets
-        if dataset.dataset_infos
+        if dataset.dataset_info
     ]
     algorithm_items = []
     for algorithm in algorithms:
-        if not algorithm.algorithm_infos:
+        if not algorithm.algorithm_info:
             continue
-        info = algorithm.algorithm_infos[0]
+        info = algorithm.algorithm_info
         adapter = algorithm_adapter_registry.get(algorithm.abbreviation or "")
         if adapter is None:
             continue

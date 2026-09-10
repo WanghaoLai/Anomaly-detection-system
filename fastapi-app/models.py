@@ -56,6 +56,24 @@ class LoginThrottle(Model):
         table = 'login_throttle'
 
 
+class StoredFile(Model):
+    """用持久化元数据将不可猜测的磁盘路径还原为可授权的业务对象。"""
+
+    id = fields.CharField(max_length=36, primary_key=True)
+    category = fields.CharField(max_length=32, db_index=True)
+    relative_path = fields.CharField(max_length=500, unique=True)
+    original_name = fields.CharField(max_length=255)
+    owner_id = fields.IntField(db_index=True)
+    owner_role = fields.CharField(max_length=20, db_index=True)
+    access_scope = fields.CharField(max_length=20, default='OWNER')
+    size_bytes = fields.BigIntField()
+    media_type = fields.CharField(max_length=128, null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = 'stored_files'
+
+
 class Notice(Model):
     id = fields.IntField(primary_key=True, null=False)
     name = fields.CharField(max_length=255, null=True)
@@ -126,6 +144,21 @@ class Knowledge(Model):
         table = 'knowledge'
 
 
+class KnowledgeReleaseOperation(Model):
+    """跨 MySQL 元数据与向量索引指针的可恢复发布记录。"""
+
+    release_id = fields.CharField(max_length=64, primary_key=True)
+    operation = fields.CharField(max_length=16)
+    status = fields.CharField(max_length=20, default='PENDING', db_index=True)
+    payload_json = fields.JSONField()
+    error_message = fields.CharField(max_length=1000, null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = 'knowledge_release_operations'
+
+
 class RagRetrievalTrace(Model):
     """RAG 请求的版本化检索、引用和耗时审计。"""
 
@@ -175,7 +208,14 @@ class Dataset(Model):
 
 class DatasetInfo(Model):
     id = fields.IntField(primary_key=True, null=False)
-    dataset = fields.ForeignKeyField('models.Dataset', null=False, related_name='dataset_infos', description='关联所属数据集')
+    dataset = fields.OneToOneField(
+        'models.Dataset',
+        null=False,
+        related_name='dataset_info',
+        source_field='dataset_id',
+        on_delete=fields.RESTRICT,
+        description='关联所属数据集',
+    )
     root_directory = fields.CharField(max_length=500, null=True, description='数据根目录路径')
     class_count = fields.IntField(default=0, null=False, description='类别数量')
     train_sample_count = fields.IntField(default=0, null=False, description='训练集样本数')
@@ -204,7 +244,14 @@ class Algorithm(Model):
 
 class AlgorithmInfo(Model):
     id = fields.IntField(primary_key=True, null=False)
-    algorithm = fields.ForeignKeyField('models.Algorithm', null=False, related_name='algorithm_infos', source_field='algorithm_id', description='关联所属算法')
+    algorithm = fields.OneToOneField(
+        'models.Algorithm',
+        null=False,
+        related_name='algorithm_info',
+        source_field='algorithm_id',
+        on_delete=fields.RESTRICT,
+        description='关联所属算法',
+    )
     framework = fields.CharField(max_length=64, null=False, description='所使用的框架')
     framework_version = fields.CharField(max_length=64, null=True, description='框架版本号')
     python_version = fields.CharField(max_length=32, null=True, description='Python 版本要求')
@@ -215,7 +262,7 @@ class AlgorithmInfo(Model):
     train_entrypoint = fields.CharField(max_length=500, null=False, description='训练入口脚本路径')
     inference_entrypoint = fields.CharField(max_length=500, null=True, description='推理入口脚本路径')
     executor_type = fields.CharField(max_length=32, null=False, default='GPU', description='执行器类型')
-    process_manager = fields.CharField(max_length=32, null=False, default='SYSTEMD', description='任务进程管理方式')
+    process_manager = fields.CharField(max_length=32, null=False, default='PROCESS_GROUP', description='任务进程管理方式')
     protocol_version = fields.CharField(max_length=32, null=False, default='1.0', description='JSONL 训练协议版本')
     sse_enabled = fields.BooleanField(null=False, default=True, description='是否支持 SSE 实时推送')
     parameter_schema_json = fields.JSONField(null=True, description='参数结构定义')
@@ -433,3 +480,21 @@ class InferenceJob(Model):
     class Meta:
         table = 'inference_jobs'
         indexes = (('status', 'assigned_gpu'), ('owner_role', 'owner_id'))
+
+
+class GpuLease(Model):
+    """训练与推理共享的 GPU 独占租约。
+
+    ``gpu_index`` 主键把跨任务表、跨进程的互斥交给数据库唯一约束，避免
+    TrainingJob 与 InferenceJob 分别查询后同时认领同一块 GPU。
+    """
+
+    gpu_index = fields.IntField(primary_key=True)
+    workload_type = fields.CharField(max_length=16)
+    workload_id = fields.BigIntField()
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = 'gpu_leases'
+        unique_together = (('workload_type', 'workload_id'),)

@@ -226,31 +226,45 @@ const handleResetPassword = (row) => {
         ElMessage.error(res.msg)
       }
     })
-  }).catch(() => {})
-}
-
-const add = () => {
-  request.post('/admin/add', data.form).then(res => {
-    if (res.code === '200') {
-      load()
-      ElMessage.success('操作成功')
-      data.formVisible = false
-    } else {
-      ElMessage.error(res.msg)
-    }
+  }).catch(error => {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(backendError(error, '密码重置失败，请稍后重试'))
   })
 }
 
-const update = () => {
-  request.put('/admin/update', data.form).then(res => {
-    if (res.code === '200') {
-      load()
-      ElMessage.success('操作成功')
-      data.formVisible = false
-    } else {
-      ElMessage.error(res.msg)
-    }
-  })
+const backendError = (error, fallback) =>
+  error?.response?.data?.msg || error?.message || fallback
+
+const add = async () => {
+  try {
+    await request.post('/admin/add', {
+      username: data.form.username,
+      password: data.form.password,
+      name: data.form.name,
+      avatar: data.form.avatar,
+    })
+    load()
+    ElMessage.success('操作成功')
+    data.formVisible = false
+  } catch (error) {
+    ElMessage.error(backendError(error, '新增管理员失败，请稍后重试'))
+  }
+}
+
+const update = async () => {
+  try {
+    await request.put('/admin/update', {
+      id: data.form.id,
+      username: data.form.username,
+      name: data.form.name,
+      avatar: data.form.avatar,
+    })
+    load()
+    ElMessage.success('操作成功')
+    data.formVisible = false
+  } catch (error) {
+    ElMessage.error(backendError(error, '更新管理员失败，请稍后重试'))
+  }
 }
 
 const save = () => {
@@ -261,17 +275,16 @@ const save = () => {
   })
 }
 
-const handleDelete = (id) => {
-  ElMessageBox.confirm('删除后数据无法恢复，您确定删除吗?', '删除确认', { type: 'warning' }).then(() => {
-    request.delete('/admin/delete/' + id).then(res => {
-      if (res.code === '200') {
-        load()
-        ElMessage.success('操作成功')
-      } else {
-        ElMessage.error(res.msg)
-      }
-    })
-  }).catch(() => {})
+const handleDelete = async (id) => {
+  try {
+    await ElMessageBox.confirm('删除后数据无法恢复，您确定删除吗?', '删除确认', { type: 'warning' })
+    await request.delete('/admin/delete/' + id)
+    load()
+    ElMessage.success('操作成功')
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(backendError(error, '删除失败，请稍后重试'))
+  }
 }
 
 const reset = () => {

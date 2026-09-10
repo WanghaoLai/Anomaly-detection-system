@@ -1,0 +1,26 @@
+{
+  "schema_version": "qdrant-orphan-cleanup-result-v1",
+  "completed_at": "2026-09-01T14:07:59Z",
+  "dry_run_file": "docs/qdrant-cloud-orphan-cleanup-dry-run.json",
+  "dry_run_sha256": "0e7bca29955f93dee7112112052b5f1e19dcdc8db1af0b9d247896a2d1225c76",
+  "preflight": {
+    "passed": true,
+    "candidate_count": 74,
+    "active_collection": "knowledge_shadow_2ecaec37b4324301bb04d852aa53e873",
+    "active_point_count": 58
+  },
+  "deletion": {
+    "deleted_count": 74,
+    "failed_count": 0,
+    "remaining_candidate_count": 0
+  },
+  "verification": {
+    "cloud_collection_count_after": 1,
+    "cloud_collections_after": [
+      "knowledge_shadow_2ecaec37b4324301bb04d852aa53e873"
+    ],
+    "active_collection_present": true,
+    "active_point_count_after": 58,
+    "verified": true
+  }
+}

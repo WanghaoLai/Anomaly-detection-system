@@ -1,7 +1,9 @@
 import asyncio
 import sys
+import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -12,12 +14,90 @@ sys.path.insert(0, str(BACKEND_DIR))
 from services.chat_service import ChatService  # noqa: E402
 from services.rag.core.access import AccessPrincipal  # noqa: E402
 from services.rag.operations.audit import RagAuditRecorder  # noqa: E402
-from services.rag.search.lexical import BM25Index  # noqa: E402
+from services.rag.search.lexical import BM25Index, ReleaseBM25Cache  # noqa: E402
 from services.rag.search.reranking import CrossEncoderReranker  # noqa: E402
 from services.rag.indexing.vector_store import ChromaVectorStore  # noqa: E402
 
 
 class RagP6RetrievalTests(unittest.TestCase):
+    def test_release_bm25_cache_does_not_reload_snapshot_on_hit(self):
+        active = {"release_id": "release-1"}
+        loaded = []
+
+        def snapshot(release_id):
+            loaded.append(release_id)
+            return [{
+                "doc_id": "doc-1",
+                "node_id": f"node-{release_id}",
+                "content": "GPU 使用 nvidia-smi 查看。",
+            }]
+
+        cache = ReleaseBM25Cache(
+            lambda: active["release_id"],
+            snapshot,
+        )
+
+        cache.search("nvidia-smi", top_k=3, allowed_doc_ids={"doc-1"})
+        cache.search("GPU", top_k=3, allowed_doc_ids={"doc-1"})
+        self.assertEqual(loaded, ["release-1"])
+
+        active["release_id"] = "release-2"
+        cache.search("GPU", top_k=3, allowed_doc_ids={"doc-1"})
+        self.assertEqual(loaded, ["release-1", "release-2"])
+
+    def test_release_bm25_cache_concurrent_cold_build_loads_once(self):
+        load_count = 0
+        count_lock = threading.Lock()
+
+        def snapshot(_release_id):
+            nonlocal load_count
+            with count_lock:
+                load_count += 1
+            time.sleep(0.05)
+            return [{
+                "doc_id": "doc-1",
+                "node_id": "node-1",
+                "content": "工业异常检测配置。",
+            }]
+
+        cache = ReleaseBM25Cache(lambda: "release-1", snapshot)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(lambda _: cache.index(), range(8)))
+
+        self.assertEqual(load_count, 1)
+        self.assertTrue(all(release_id == "release-1" for release_id, _ in results))
+        self.assertEqual(len({id(index) for _, index in results}), 1)
+
+    def test_waiting_cache_reader_observes_release_switch(self):
+        active = {"release_id": "release-1"}
+        cache = ReleaseBM25Cache(
+            lambda: active["release_id"],
+            lambda release_id: [{
+                "doc_id": "doc-1",
+                "node_id": f"node-{release_id}",
+                "content": "工业异常检测配置。",
+            }],
+        )
+        cache.index()
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        cache._lock.acquire()
+        lock_held = True
+        try:
+            future = executor.submit(cache.index)
+            time.sleep(0.02)
+            active["release_id"] = "release-2"
+            cache._lock.release()
+            lock_held = False
+            release_id, index = future.result(timeout=1)
+        finally:
+            if lock_held:
+                cache._lock.release()
+            executor.shutdown(wait=True)
+
+        self.assertEqual(release_id, "release-2")
+        self.assertEqual(index.records[0]["node_id"], "node-release-2")
+
     def test_bm25_filters_before_top_k(self):
         records = [
             {"doc_id": "forbidden", "node_id": "f", "content": "watch nvidia-smi"},
