@@ -220,7 +220,9 @@ try {
     }
 
     $OldBaseUrl = [Environment]::GetEnvironmentVariable("VITE_BASE_URL", "Process")
-    $env:VITE_BASE_URL = "http://127.0.0.1:$BackendPort"
+    $OldProxyTarget = [Environment]::GetEnvironmentVariable("VITE_PROXY_TARGET", "Process")
+    $env:VITE_BASE_URL = "/api"
+    $env:VITE_PROXY_TARGET = "http://127.0.0.1:$BackendPort"
     try {
         $FrontendProcess = Start-Process `
             -FilePath $NodeExe `
@@ -238,11 +240,12 @@ try {
     }
     finally {
         Restore-EnvironmentVariable "VITE_BASE_URL" $OldBaseUrl
+        Restore-EnvironmentVariable "VITE_PROXY_TARGET" $OldProxyTarget
     }
 
     Wait-ServiceReady `
         -Name "后端" `
-        -Url "http://127.0.0.1:$BackendPort/" `
+        -Url "http://127.0.0.1:$BackendPort/api/health" `
         -Process $BackendProcess `
         -LogFiles @($BackendLog, $BackendErrorLog)
     Wait-ServiceReady `

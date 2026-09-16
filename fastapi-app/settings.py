@@ -9,6 +9,12 @@ PROJECT_ROOT = BASE_DIR.parent
 load_dotenv(PROJECT_ROOT / ".env")
 load_dotenv(BASE_DIR / ".env")
 
+# Stable public boundary used by both the frontend and the reverse proxy.
+API_PREFIX = "/api"
+FILE_UPLOAD_DIR = Path(
+    os.getenv("FILE_UPLOAD_DIR") or BASE_DIR / "files"
+).expanduser().resolve()
+
 
 def _env_int(name: str, default: int) -> int:
     value = os.getenv(name)

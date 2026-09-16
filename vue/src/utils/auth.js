@@ -1,5 +1,6 @@
+const runtimeApiBaseUrl = window.__APP_CONFIG__?.apiBaseUrl
 const configuredBaseUrl = new URL(
-  import.meta.env.VITE_BASE_URL,
+  runtimeApiBaseUrl || import.meta.env.VITE_BASE_URL || '/api',
   window.location.origin,
 )
 

@@ -134,7 +134,8 @@ BACKEND_PID=$!
 
 (
   cd "$FRONTEND_DIR" || exit 1
-  VITE_BASE_URL="http://127.0.0.1:$BACKEND_PORT" \
+  VITE_BASE_URL="/api" \
+  VITE_PROXY_TARGET="http://127.0.0.1:$BACKEND_PORT" \
     "$NPM_BIN" run dev -- \
       --host 127.0.0.1 \
       --port "$FRONTEND_PORT" \
@@ -170,7 +171,7 @@ wait_until_ready() {
   return 1
 }
 
-if ! wait_until_ready "后端" "http://127.0.0.1:$BACKEND_PORT/" "$BACKEND_PID" "$BACKEND_LOG"; then
+if ! wait_until_ready "后端" "http://127.0.0.1:$BACKEND_PORT/api/health" "$BACKEND_PID" "$BACKEND_LOG"; then
   print_error_and_pause "后端未能正常启动，完整日志：$BACKEND_LOG"
 fi
 if ! wait_until_ready "前端" "http://127.0.0.1:$FRONTEND_PORT/" "$FRONTEND_PID" "$FRONTEND_LOG"; then
