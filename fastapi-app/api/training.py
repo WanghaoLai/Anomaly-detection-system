@@ -26,6 +26,7 @@ from services.training_executor_service import (
     training_executor_service,
 )
 from services.algorithm_adapters import algorithm_adapter_registry
+from services.gpu_server_service import GpuServerError, gpu_server_registry
 
 
 router = APIRouter(
@@ -37,6 +38,10 @@ router = APIRouter(
 class TrainingJobCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    server_id: str = Field(
+        alias="serverId", min_length=1, max_length=32,
+        pattern=r"^[a-z][a-z0-9_-]{0,31}$",
+    )
     algorithm_id: int = Field(alias="algorithmId", gt=0)
     dataset_id: int = Field(alias="datasetId", gt=0)
     parameters: dict[str, Any] = Field(default_factory=dict)
@@ -55,11 +60,22 @@ def _job_data(
     algorithm_name: str | None = None,
     dataset_name: str | None = None,
 ) -> dict[str, Any]:
+    try:
+        server = gpu_server_registry.public_identity(job.server_id)
+    except GpuServerError:
+        server = {
+            "server_id": job.server_id,
+            "server_name": "未配置的服务器",
+            "server_host": "--",
+        }
     return {
         "id": job.id,
         "jobNo": job.job_no,
         "ownerId": job.owner_id,
         "ownerRole": job.owner_role,
+        "serverId": server["server_id"],
+        "serverName": server["server_name"],
+        "serverHost": server["server_host"],
         "algorithmId": job.algorithm_id,
         "algorithmName": algorithm_name,
         "datasetId": job.dataset_id,
@@ -104,16 +120,20 @@ async def _accessible_job(job_id: int, current_user: dict) -> TrainingJob:
 
 
 @router.get("/options")
-async def training_options():
-    algorithm_allowlist = await training_executor_service.build_algorithm_allowlist()
-    dataset_allowlist = await training_executor_service.build_dataset_allowlist()
-
+async def training_options(
+    server_id: str = Query(default="", alias="serverId", max_length=32),
+):
+    try:
+        selected = gpu_server_registry.public_identity(server_id)
+        service = gpu_server_registry.get(selected["server_id"])
+    except GpuServerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     algorithms = await Algorithm.filter(
-        abbreviation__in=list(algorithm_allowlist),
+        algorithm_info__server_id=selected["server_id"],
         deleted_at__isnull=True,
     ).prefetch_related("algorithm_info").order_by("id")
     datasets = await Dataset.filter(
-        name__in=list(dataset_allowlist),
+        dataset_info__server_id=selected["server_id"],
         deleted_at__isnull=True,
     ).prefetch_related("dataset_info").order_by("id")
     dataset_items = [
@@ -121,6 +141,7 @@ async def training_options():
             "id": dataset.id,
             "name": dataset.name,
             "description": dataset.description,
+            "serverId": dataset.dataset_info.server_id,
         }
         for dataset in datasets
         if dataset.dataset_info
@@ -137,6 +158,7 @@ async def training_options():
             "id": algorithm.id,
             "name": algorithm.name,
             "abbreviation": algorithm.abbreviation,
+            "serverId": info.server_id,
             "parameterSchema": info.parameter_schema_json,
             "datasetParameterSchemas": {
                 str(dataset["id"]): adapter.parameter_schema_for_dataset(
@@ -149,9 +171,20 @@ async def training_options():
             "datasetRequirement": info.dataset_requirement_json,
         })
     return Result.success({
+        "servers": gpu_server_registry.public_options(),
+        "selectedServer": {
+            "id": selected["server_id"],
+            "name": selected["server_name"],
+            "host": selected["server_host"],
+        },
         "algorithms": algorithm_items,
         "datasets": dataset_items,
-        "gpuOptions": training_executor_service.config["gpu_allowlist"],
+        "gpuOptions": (
+            training_executor_service.config["gpu_allowlist"]
+            if selected["server_id"] == training_executor_service.server_id
+            else list(range(int(service.config.get("expected_gpu_count") or 0)))
+        ),
+        "executionEnabled": selected["server_id"] == training_executor_service.server_id,
         "maxPendingJobs": training_executor_service.config[
             "max_pending_jobs_per_user"
         ],
@@ -173,18 +206,20 @@ async def create_job(
     current_user: dict = Depends(get_current_user),
 ):
     try:
+        gpu_server_registry.get(request.server_id)
         job = await training_executor_service.submit_job(
             owner=current_user,
             algorithm_id=request.algorithm_id,
             dataset_id=request.dataset_id,
             parameters=request.parameters,
             requested_gpu=request.requested_gpu,
+            server_id=request.server_id,
         )
         # 立即触发一次调度；资源不足时保持 QUEUED。
         await training_executor_service.dispatch_queued_jobs()
         job = await TrainingJob.get(id=job.id)
         return Result.success(_job_data(job))
-    except TrainingExecutorError as exc:
+    except (TrainingExecutorError, GpuServerError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

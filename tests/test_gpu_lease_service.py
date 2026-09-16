@@ -80,6 +80,30 @@ class GpuLeaseCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(job.status == "STARTING" for job in jobs), 1)
         self.assertEqual(sum(job.status == "QUEUED" for job in jobs), 1)
 
+    async def test_same_gpu_index_on_different_servers_can_run_concurrently(self):
+        await InferenceJob.filter(id=self.inference.id).update(server_id="a100-server")
+        results = await asyncio.gather(
+            GpuLeaseCoordinator().acquire(
+                workload_type="TRAINING",
+                workload_id=self.training.id,
+                candidates=[0],
+                server_id="primary",
+            ),
+            GpuLeaseCoordinator().acquire(
+                workload_type="INFERENCE",
+                workload_id=self.inference.id,
+                candidates=[0],
+                server_id="a100-server",
+            ),
+        )
+
+        self.assertEqual(results, [0, 0])
+        self.assertEqual(await GpuLease.all().count(), 2)
+        self.assertEqual(
+            set(await GpuLease.all().values_list("server_id", flat=True)),
+            {"primary", "a100-server"},
+        )
+
     async def test_reconcile_removes_terminal_job_lease(self):
         await TrainingJob.filter(id=self.training.id).update(
             status="SUCCEEDED",

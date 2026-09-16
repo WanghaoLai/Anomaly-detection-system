@@ -208,6 +208,13 @@ class Dataset(Model):
 
 class DatasetInfo(Model):
     id = fields.IntField(primary_key=True, null=False)
+    server_id = fields.CharField(
+        max_length=32,
+        null=False,
+        default='primary',
+        db_index=True,
+        description='数据集所在 GPU 服务器的稳定 ID',
+    )
     dataset = fields.OneToOneField(
         'models.Dataset',
         null=False,
@@ -244,6 +251,13 @@ class Algorithm(Model):
 
 class AlgorithmInfo(Model):
     id = fields.IntField(primary_key=True, null=False)
+    server_id = fields.CharField(
+        max_length=32,
+        null=False,
+        default='primary',
+        db_index=True,
+        description='算法所在 GPU 服务器的稳定 ID',
+    )
     algorithm = fields.OneToOneField(
         'models.Algorithm',
         null=False,
@@ -279,6 +293,7 @@ class TrainingJob(Model):
     job_no = fields.CharField(max_length=36, unique=True, description='训练任务编号')
     owner_id = fields.IntField(db_index=True, description='系统用户或管理员 ID')
     owner_role = fields.CharField(max_length=20, db_index=True, description='任务所有者角色')
+    server_id = fields.CharField(max_length=32, default='primary', db_index=True)
     algorithm = fields.ForeignKeyField(
         'models.Algorithm',
         related_name='training_jobs',
@@ -437,6 +452,7 @@ class TrainingJobDeletion(Model):
     job_no = fields.CharField(max_length=36, unique=True)
     owner_id = fields.IntField(db_index=True)
     owner_role = fields.CharField(max_length=20)
+    server_id = fields.CharField(max_length=32, default='primary', db_index=True)
     algorithm_id = fields.BigIntField()
     dataset_id = fields.BigIntField()
     terminal_status = fields.CharField(max_length=24)
@@ -457,6 +473,7 @@ class InferenceJob(Model):
     job_no = fields.CharField(max_length=36, unique=True)
     owner_id = fields.IntField(db_index=True)
     owner_role = fields.CharField(max_length=20, db_index=True)
+    server_id = fields.CharField(max_length=32, default='primary', db_index=True)
     training_job = fields.ForeignKeyField(
         'models.TrainingJob',
         related_name='inference_jobs',
@@ -485,11 +502,13 @@ class InferenceJob(Model):
 class GpuLease(Model):
     """训练与推理共享的 GPU 独占租约。
 
-    ``gpu_index`` 主键把跨任务表、跨进程的互斥交给数据库唯一约束，避免
+    ``(server_id, gpu_index)`` 唯一键把跨任务表、跨进程的互斥交给数据库，避免
     TrainingJob 与 InferenceJob 分别查询后同时认领同一块 GPU。
     """
 
-    gpu_index = fields.IntField(primary_key=True)
+    id = fields.BigIntField(primary_key=True)
+    server_id = fields.CharField(max_length=32, default='primary', db_index=True)
+    gpu_index = fields.IntField()
     workload_type = fields.CharField(max_length=16)
     workload_id = fields.BigIntField()
     created_at = fields.DatetimeField(auto_now_add=True)
@@ -497,4 +516,4 @@ class GpuLease(Model):
 
     class Meta:
         table = 'gpu_leases'
-        unique_together = (('workload_type', 'workload_id'),)
+        unique_together = (('server_id', 'gpu_index'), ('workload_type', 'workload_id'))

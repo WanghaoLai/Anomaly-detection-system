@@ -306,6 +306,8 @@ CORS_ALLOWED_ORIGINS = _env_list(
 
 # 远程 GPU 服务器配置（凭据仅在后端使用）
 GPU_SERVER_CONFIG = {
+    "id": "primary",
+    "name": os.getenv("GPU_SERVER_NAME", "当前 GPU 服务器"),
     "host": os.getenv("GPU_SERVER_HOST", ""),
     "port": _env_int("GPU_SERVER_PORT", 22),
     "ssh_user": os.getenv("GPU_SERVER_SSH_USER", ""),
@@ -330,6 +332,11 @@ GPU_SERVER_CONFIG = {
     ),
     "conda_env_max_entries": _env_int("GPU_CONDA_ENV_MAX_ENTRIES", 500),
 }
+
+# 只读服务器信息页可追加多台 GPU 服务器。主服务器继续由上述
+# GPU_SERVER_* 提供，以保持旧部署完全兼容；追加项由服务层按严格白名单解析。
+# 该配置不改变训练/推理的 TRAINING_SERVER_* 调度目标。
+GPU_ADDITIONAL_SERVERS_JSON = os.getenv("GPU_ADDITIONAL_SERVERS_JSON", "[]")
 
 # 训练执行器使用独立低权限账号；运行目标只能来自管理员白名单。
 TRAINING_EXECUTOR_CONFIG = {

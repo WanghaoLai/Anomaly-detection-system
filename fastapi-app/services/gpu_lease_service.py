@@ -18,7 +18,7 @@ class GpuLeaseError(RuntimeError):
 
 
 class GpuLeaseCoordinator:
-    """以 ``gpu_leases.gpu_index`` 唯一键实现跨进程、跨任务表互斥。"""
+    """以 ``(server_id, gpu_index)`` 唯一键实现分服务器 GPU 互斥。"""
 
     @staticmethod
     async def _remove_stale_leases(connection) -> None:
@@ -31,6 +31,7 @@ class GpuLeaseCoordinator:
                 active = (
                     job is not None
                     and job.status in TRAINING_LEASE_STATUSES
+                    and job.server_id == lease.server_id
                     and job.assigned_gpu == lease.gpu_index
                 )
             elif lease.workload_type == "INFERENCE":
@@ -40,12 +41,13 @@ class GpuLeaseCoordinator:
                 active = (
                     job is not None
                     and job.status in INFERENCE_LEASE_STATUSES
+                    and job.server_id == lease.server_id
                     and job.assigned_gpu == lease.gpu_index
                 )
             else:
                 active = False
             if not active:
-                await GpuLease.filter(gpu_index=lease.gpu_index).using_db(
+                await GpuLease.filter(id=lease.id).using_db(
                     connection
                 ).delete()
 
@@ -74,6 +76,7 @@ class GpuLeaseCoordinator:
             if existing_workload is not None:
                 continue
             existing_gpu = await GpuLease.filter(
+                server_id=job.server_id,
                 gpu_index=job.assigned_gpu,
             ).using_db(connection).first()
             if existing_gpu is not None:
@@ -81,6 +84,7 @@ class GpuLeaseCoordinator:
                 # 整体阻塞，不会再分配给新任务。既有远程进程留给监控收敛。
                 continue
             await GpuLease.create(
+                server_id=job.server_id,
                 gpu_index=job.assigned_gpu,
                 workload_type=workload_type,
                 workload_id=job.id,
@@ -93,6 +97,7 @@ class GpuLeaseCoordinator:
         workload_type: str,
         workload_id: int,
         candidates: Iterable[int],
+        server_id: str = "primary",
     ) -> int | None:
         normalized_type = str(workload_type).strip().upper()
         if normalized_type not in {"TRAINING", "INFERENCE"}:
@@ -115,6 +120,7 @@ class GpuLeaseCoordinator:
                         # worker 都继续启动远程进程，因此必须把本次认领判为失败。
                         return None
                     await GpuLease.create(
+                        server_id=server_id,
                         gpu_index=gpu_index,
                         workload_type=normalized_type,
                         workload_id=workload_id,
@@ -127,6 +133,7 @@ class GpuLeaseCoordinator:
                     )
                     updated = await model.filter(
                         id=workload_id,
+                        server_id=server_id,
                         status="QUEUED",
                     ).using_db(connection).update(
                         status="STARTING",

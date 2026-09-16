@@ -1,4 +1,6 @@
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
+import time
 
 from fastapi import FastAPI
 import logging
@@ -30,18 +32,25 @@ def _validate_rag_startup_state() -> None:
     真正存在 PENDING 发布时的恢复仍由
     ``recover_pending_knowledge_releases`` 在此之前执行并 fail closed。
     """
+    started_at = time.perf_counter()
     try:
-        report = knowledge_service.validate_embedding_config()
-    except Exception:
-        logger.exception(
-            "RAG 向量库启动检查不可用，知识库将暂时降级，"
-            "其余系统功能继续启动"
-        )
-        return
-    if not report["consistent"]:
-        logger.warning(
-            "RAG embedding 配置不一致，新增文档与检索将被拒绝/降级：\n  %s",
-            "\n  ".join(report["issues"]),
+        try:
+            report = knowledge_service.validate_embedding_config()
+        except Exception:
+            logger.exception(
+                "RAG 向量库启动检查不可用，知识库将暂时降级，"
+                "其余系统功能继续启动"
+            )
+            return
+        if not report["consistent"]:
+            logger.warning(
+                "RAG embedding 配置不一致，新增文档与检索将被拒绝/降级：\n  %s",
+                "\n  ".join(report["issues"]),
+            )
+    finally:
+        logger.info(
+            "RAG 向量库后台启动检查已完成，耗时 %.2f 秒",
+            time.perf_counter() - started_at,
         )
 
 
@@ -53,10 +62,19 @@ async def lifespan(app: FastAPI):
     # 元数据事务已提交但指针尚未切换的 release 必须先恢复，避免用户看到
     # MySQL 与实际检索版本不一致的知识库。
     await recover_pending_knowledge_releases()
-    _validate_rag_startup_state()
     await training_executor_service.start_monitor()
     await inference_executor_service.start_monitor()
+    # 远程 Qdrant 只读检查在网络不佳时可能等待数秒。它只用于
+    # 提前记录配置警告，不应阻塞健康接口与其他完整功能就绪。
+    rag_validation_task = asyncio.create_task(
+        asyncio.to_thread(_validate_rag_startup_state),
+        name="rag-startup-validation",
+    )
     yield
+    if not rag_validation_task.done():
+        rag_validation_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await rag_validation_task
     # API 单例复用的 Qwen HTTP 连接池在应用退出时显式关闭。
     await llm_service.aclose()
     await _llm_service.aclose()

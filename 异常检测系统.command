@@ -26,8 +26,10 @@ LOG_DIR="$SCRIPT_DIR/logs"
 BACKEND_START_PORT="${BACKEND_PORT:-9090}"
 FRONTEND_START_PORT="${FRONTEND_PORT:-5173}"
 STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-90}"
+STARTUP_POLL_INTERVAL="${STARTUP_POLL_INTERVAL:-0.2}"
 BACKEND_PID=""
 FRONTEND_PID=""
+STARTUP_STARTED_AT="$SECONDS"
 
 print_error_and_pause() {
   echo
@@ -49,10 +51,10 @@ else
   print_error_and_pause "未找到 Python 3。"
 fi
 
-if command -v npm >/dev/null 2>&1; then
-  NPM_BIN="$(command -v npm)"
+if command -v node >/dev/null 2>&1; then
+  NODE_BIN="$(command -v node)"
 else
-  print_error_and_pause "未找到 npm，请先安装 Node.js。"
+  print_error_and_pause "未找到 Node.js。"
 fi
 
 if [ ! -f "$BACKEND_DIR/main.py" ] || [ ! -f "$FRONTEND_DIR/package.json" ]; then
@@ -61,6 +63,11 @@ fi
 
 if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
   print_error_and_pause "前端依赖尚未安装，请先在 vue 目录运行 npm install。"
+fi
+
+VITE_BIN="$FRONTEND_DIR/node_modules/.bin/vite"
+if [ ! -x "$VITE_BIN" ]; then
+  print_error_and_pause "未找到 Vite，请先在 vue 目录运行 npm install。"
 fi
 
 if ! "$PYTHON_BIN" -c "import fastapi, uvicorn, tortoise" >/dev/null 2>&1; then
@@ -125,7 +132,8 @@ echo "正在启动前端：http://127.0.0.1:$FRONTEND_PORT"
 
 (
   cd "$BACKEND_DIR" || exit 1
-  CORS_ALLOWED_ORIGINS="http://localhost:$FRONTEND_PORT,http://127.0.0.1:$FRONTEND_PORT" \
+  exec env \
+    CORS_ALLOWED_ORIGINS="http://localhost:$FRONTEND_PORT,http://127.0.0.1:$FRONTEND_PORT" \
     "$PYTHON_BIN" -m uvicorn main:app \
       --host 127.0.0.1 \
       --port "$BACKEND_PORT"
@@ -134,9 +142,11 @@ BACKEND_PID=$!
 
 (
   cd "$FRONTEND_DIR" || exit 1
-  VITE_BASE_URL="/api" \
-  VITE_PROXY_TARGET="http://127.0.0.1:$BACKEND_PORT" \
-    "$NPM_BIN" run dev -- \
+  exec env \
+    PATH="$(dirname "$NODE_BIN"):$PATH" \
+    VITE_BASE_URL="/api" \
+    VITE_PROXY_TARGET="http://127.0.0.1:$BACKEND_PORT" \
+    "$VITE_BIN" \
       --host 127.0.0.1 \
       --port "$FRONTEND_PORT" \
       --strictPort
@@ -148,9 +158,9 @@ wait_until_ready() {
   service_url="$2"
   service_pid="$3"
   service_log="$4"
-  elapsed=0
+  deadline=$((SECONDS + STARTUP_TIMEOUT))
 
-  while [ "$elapsed" -lt "$STARTUP_TIMEOUT" ]; do
+  while [ "$SECONDS" -lt "$deadline" ]; do
     if ! kill -0 "$service_pid" 2>/dev/null; then
       echo
       echo "${service_name}进程意外退出，最近的日志："
@@ -161,8 +171,7 @@ wait_until_ready() {
       echo "${service_name}已就绪。"
       return 0
     fi
-    sleep 1
-    elapsed=$((elapsed + 1))
+    sleep "$STARTUP_POLL_INTERVAL"
   done
 
   echo
@@ -181,6 +190,7 @@ fi
 FRONTEND_URL="http://127.0.0.1:$FRONTEND_PORT/"
 echo
 echo "异常检测系统已启动完成：$FRONTEND_URL"
+echo "启动耗时：$((SECONDS - STARTUP_STARTED_AT)) 秒"
 echo "后端日志：$BACKEND_LOG"
 echo "前端日志：$FRONTEND_LOG"
 echo "按 Control+C 可同时停止所有服务。"

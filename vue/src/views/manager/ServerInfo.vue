@@ -14,6 +14,27 @@
           <span>{{ data.summary.processes.length }} 个计算进程</span>
         </div>
       </div>
+      <div class="server-selector">
+        <span>查询服务器</span>
+        <el-select
+          v-model="data.selectedServerId"
+          :disabled="data.serverOptions.length <= 1 || data.refreshing"
+          placeholder="请选择 GPU 服务器"
+          @change="changeServer"
+        >
+          <el-option
+            v-for="server in data.serverOptions"
+            :key="server.id"
+            :label="server.name"
+            :value="server.id"
+          >
+            <div class="server-option">
+              <span>{{ server.name }}</span>
+              <small>{{ server.host }}</small>
+            </div>
+          </el-option>
+        </el-select>
+      </div>
       <div class="header-actions">
         <div class="update-time">更新于 {{ formatDate(data.summary.lastUpdated) }}</div>
         <el-tag :type="data.summary.online ? 'success' : 'danger'" effect="light" round>
@@ -136,7 +157,7 @@
           </template>
         </el-tab-pane>
 
-        <el-tab-pane name="files">
+        <el-tab-pane v-if="selectedServer?.supportsFiles" name="files">
           <template #label>
             <span class="tab-label"><el-icon><Files /></el-icon>账号文件</span>
           </template>
@@ -247,7 +268,10 @@
           </div>
         </el-tab-pane>
 
-        <el-tab-pane v-if="data.user.role === '管理员'" name="conda">
+        <el-tab-pane
+          v-if="data.user.role === '管理员' && selectedServer?.supportsConda"
+          name="conda"
+        >
           <template #label>
             <span class="tab-label"><el-icon><SetUp /></el-icon>Conda 环境列表</span>
           </template>
@@ -334,6 +358,8 @@ import { ElMessage } from 'element-plus'
 import request from '@/utils/request'
 
 const emptySummary = () => ({
+  serverId: '',
+  serverName: '',
   configured: false,
   online: false,
   host: '未配置',
@@ -370,6 +396,8 @@ const emptyConda = () => ({
 
 const data = reactive({
   user: JSON.parse(localStorage.getItem('system-user') || '{}'),
+  serverOptions: [],
+  selectedServerId: '',
   summary: emptySummary(),
   files: emptyFiles(),
   activeTab: 'gpu',
@@ -399,17 +427,44 @@ const displayedGpus = computed(() => {
   }))
 })
 
+const selectedServer = computed(() => (
+  data.serverOptions.find((server) => server.id === data.selectedServerId) || null
+))
+
 const pathParts = computed(() => data.files.path ? data.files.path.split('/').filter(Boolean) : [])
 const selectedRootName = computed(() => {
   const selected = data.fileRoots.find((directory) => directory.id === data.selectedRootId)
   return selected?.name || data.files.rootName || '授权目录'
 })
 
+const serverParams = () => ({ serverId: data.selectedServerId })
+
+const loadServerOptions = async () => {
+  try {
+    const res = await request.get('/server/servers')
+    if (res.code !== '200') throw new Error(res.msg || '服务器列表获取失败')
+    data.serverOptions = res.data || []
+    const selectedExists = data.serverOptions.some((item) => item.id === data.selectedServerId)
+    if (!selectedExists) {
+      const preferred = data.serverOptions.find((item) => item.isDefault) || data.serverOptions[0]
+      data.selectedServerId = preferred?.id || ''
+    }
+  } catch {
+    data.serverOptions = []
+    data.selectedServerId = ''
+    data.summary.error = '无法获取 GPU 服务器列表'
+  }
+}
+
 const loadSummary = async (force = false) => {
   if (data.refreshing) return
   data.refreshing = true
+  const requestedServerId = data.selectedServerId
   try {
-    const res = await request.get('/server/summary', { params: { refresh: force } })
+    const res = await request.get('/server/summary', {
+      params: { refresh: force, serverId: requestedServerId },
+    })
+    if (requestedServerId !== data.selectedServerId) return
     if (res.code === '200') {
       data.summary = { ...emptySummary(), ...res.data }
     } else {
@@ -435,6 +490,7 @@ const loadFiles = async () => {
   try {
     const res = await request.get('/server/files', {
       params: {
+        ...serverParams(),
         root_id: data.selectedRootId,
         path: data.files.path,
         page: data.files.page,
@@ -464,7 +520,7 @@ const loadFileRoots = async () => {
   data.filesError = ''
   let shouldLoadFiles = false
   try {
-    const res = await request.get('/server/file-roots')
+    const res = await request.get('/server/file-roots', { params: serverParams() })
     if (res.code === '200') {
       data.fileRoots = res.data?.directories || []
       const selectedExists = data.fileRoots.some((item) => item.id === data.selectedRootId)
@@ -493,6 +549,32 @@ const refreshAll = async () => {
     await loadCondaEnvironments()
   }
   ElMessage.success('服务器信息已刷新')
+}
+
+const resetSelectedServerData = () => {
+  data.summary = emptySummary()
+  data.files = emptyFiles()
+  data.fileRoots = []
+  data.selectedRootId = ''
+  data.filesLoaded = false
+  data.filesError = ''
+  data.conda = emptyConda()
+  data.condaLoaded = false
+  data.condaError = ''
+  data.initialLoading = true
+}
+
+const changeServer = async () => {
+  resetSelectedServerData()
+  if (
+    (data.activeTab === 'files' && !selectedServer.value?.supportsFiles)
+    || (data.activeTab === 'conda' && !selectedServer.value?.supportsConda)
+  ) {
+    data.activeTab = 'gpu'
+  }
+  await loadSummary(true)
+  if (data.activeTab === 'files' && data.summary.online) await loadFileRoots()
+  if (data.activeTab === 'conda' && data.summary.online) await loadCondaEnvironments()
 }
 
 const handleTabChange = (tabName) => {
@@ -532,7 +614,9 @@ const loadCondaEnvironments = async () => {
   data.condaLoading = true
   data.condaError = ''
   try {
-    const res = await request.get('/server/conda-environments')
+    const res = await request.get('/server/conda-environments', {
+      params: serverParams(),
+    })
     if (res.code === '200') {
       data.conda = { ...emptyConda(), ...res.data }
       data.condaLoaded = true
@@ -632,7 +716,9 @@ const formatDate = (value) => {
 }
 
 onMounted(async () => {
-  await loadSummary()
+  await loadServerOptions()
+  if (data.selectedServerId) await loadSummary()
+  else data.initialLoading = false
   refreshTimer = window.setInterval(() => {
     if (!document.hidden) loadSummary()
   }, 5000)
@@ -664,6 +750,7 @@ onUnmounted(() => {
 }
 
 .header-actions,
+.server-selector,
 .tab-label,
 .account-cell,
 .file-toolbar,
@@ -672,6 +759,28 @@ onUnmounted(() => {
 .file-name {
   display: flex;
   align-items: center;
+}
+
+.server-selector {
+  flex: 0 0 auto;
+  gap: 8px;
+  color: #747d8c;
+  font-size: 12px;
+}
+
+.server-selector .el-select {
+  width: 190px;
+}
+
+.server-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.server-option small {
+  color: #9aa1ad;
 }
 
 .page-icon {

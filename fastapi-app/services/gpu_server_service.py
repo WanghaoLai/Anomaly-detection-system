@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any
 
-from settings import GPU_SERVER_CONFIG
+from settings import GPU_ADDITIONAL_SERVERS_JSON, GPU_SERVER_CONFIG
 
 try:
     import asyncssh
@@ -22,6 +22,7 @@ except ImportError:  # 依赖未安装时保持主应用可启动
 
 logger = logging.getLogger(__name__)
 LINUX_USERNAME_PATTERN = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+SERVER_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 GPU_QUERY = (
     "nvidia-smi --query-gpu="
@@ -43,8 +44,8 @@ class GpuServerError(RuntimeError):
 
 
 class GpuServerService:
-    def __init__(self) -> None:
-        self.config = GPU_SERVER_CONFIG
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
+        self.config = config or GPU_SERVER_CONFIG
         self._summary_cache: dict[str, Any] | None = None
         self._cache_time = 0.0
         self._summary_lock = asyncio.Lock()
@@ -161,6 +162,8 @@ class GpuServerService:
 
     def _base_summary(self) -> dict[str, Any]:
         return {
+            "serverId": self.config.get("id", "primary"),
+            "serverName": self.config.get("name", "GPU 服务器"),
             "configured": self.configured,
             "online": False,
             "host": self.config["host"] or "未配置",
@@ -522,5 +525,193 @@ class GpuServerService:
             connection.close()
             await connection.wait_closed()
 
+class GpuServerRegistry:
+    """只读 GPU 服务器白名单。
 
-gpu_server_service = GpuServerService()
+    客户端只能选择已在环境变量中注册的稳定 ID，不能传入主机、
+    端口或凭据，避免将 SSH 监控接口变成任意网络探测器。
+    """
+
+    _OVERRIDABLE_FIELDS = {
+        "host",
+        "port",
+        "ssh_user",
+        "ssh_password",
+        "private_key_path",
+        "known_hosts_path",
+        "connect_timeout",
+        "command_timeout",
+        "status_cache_seconds",
+        "expected_gpu_count",
+        "account_root_template",
+        "file_max_entries",
+        "conda_env_max_entries",
+    }
+    _JSON_FIELDS = {
+        "account_map": "account_map_json",
+        "allowed_directories": "allowed_directories_json",
+        "conda_env_roots": "conda_env_roots_json",
+    }
+
+    def __init__(self, configs: list[dict[str, Any]]) -> None:
+        if not configs:
+            raise GpuServerError("至少需要一个 GPU 服务器配置")
+        self._services: dict[str, GpuServerService] = {}
+        self._default_id = str(configs[0].get("id") or "primary")
+        for config in configs:
+            server_id = str(config.get("id") or "").strip()
+            if not SERVER_ID_PATTERN.fullmatch(server_id):
+                raise GpuServerError(f"GPU 服务器 ID 无效: {server_id or '<empty>'}")
+            if server_id in self._services:
+                raise GpuServerError(f"GPU 服务器 ID 重复: {server_id}")
+            self._services[server_id] = GpuServerService(dict(config))
+
+    @classmethod
+    def from_environment(
+        cls,
+        primary_config: dict[str, Any],
+        additional_json: str,
+    ) -> "GpuServerRegistry":
+        try:
+            entries = json.loads(additional_json or "[]")
+        except json.JSONDecodeError as exc:
+            raise GpuServerError("GPU 追加服务器配置不是有效 JSON") from exc
+        if not isinstance(entries, list):
+            raise GpuServerError("GPU 追加服务器配置必须是 JSON 数组")
+
+        configs = [dict(primary_config)]
+        allowed_keys = {"id", "name"} | cls._OVERRIDABLE_FIELDS | set(cls._JSON_FIELDS)
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise GpuServerError(f"第 {index + 1} 个 GPU 追加服务器必须是 JSON 对象")
+            unknown = set(entry) - allowed_keys
+            if unknown:
+                raise GpuServerError(
+                    f"第 {index + 1} 个 GPU 服务器存在未支持字段: "
+                    + ", ".join(sorted(unknown))
+                )
+            config = dict(primary_config)
+            # 追加服务器不得隐式复用主服务器的凭据、账号映射或目录授权。
+            # 共享超时、数量上限等不会扩大访问范围的默认值。
+            config.update({
+                "host": "",
+                "ssh_user": "",
+                "ssh_password": "",
+                "private_key_path": "",
+                "known_hosts_path": "",
+                "account_map_json": "{}",
+                "allowed_directories_json": "{}",
+                "conda_env_roots_json": "{}",
+            })
+            config.update({key: entry[key] for key in cls._OVERRIDABLE_FIELDS if key in entry})
+            config["id"] = str(entry.get("id") or "").strip()
+            config["name"] = str(entry.get("name") or "").strip()
+            if not config["name"]:
+                raise GpuServerError(f"第 {index + 1} 个 GPU 服务器缺少显示名称")
+            if not str(config["host"]).strip():
+                raise GpuServerError(f"第 {index + 1} 个 GPU 服务器缺少主机地址")
+            if not str(config["ssh_user"]).strip():
+                raise GpuServerError(f"第 {index + 1} 个 GPU 服务器缺少 SSH 账号")
+            if not (
+                str(config["private_key_path"]).strip()
+                or str(config["ssh_password"]).strip()
+            ):
+                raise GpuServerError(f"第 {index + 1} 个 GPU 服务器缺少 SSH 凭据")
+            if not str(config["known_hosts_path"]).strip():
+                raise GpuServerError(
+                    f"第 {index + 1} 个 GPU 服务器缺少 known_hosts 指纹文件"
+                )
+            for key, minimum, maximum in (
+                ("port", 1, 65535),
+                ("expected_gpu_count", 0, 1024),
+                ("file_max_entries", 1, 1_000_000),
+                ("conda_env_max_entries", 1, 1_000_000),
+            ):
+                value = config[key]
+                if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                    raise GpuServerError(
+                        f"第 {index + 1} 个 GPU 服务器的 {key} 无效"
+                    )
+            for key in ("connect_timeout", "command_timeout", "status_cache_seconds"):
+                value = config[key]
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+                    raise GpuServerError(
+                        f"第 {index + 1} 个 GPU 服务器的 {key} 无效"
+                    )
+            for public_name, internal_name in cls._JSON_FIELDS.items():
+                if public_name in entry:
+                    value = entry[public_name]
+                    if not isinstance(value, (dict, list)):
+                        raise GpuServerError(
+                            f"第 {index + 1} 个 GPU 服务器的 {public_name} "
+                            "必须是 JSON 对象或数组"
+                        )
+                    config[internal_name] = json.dumps(value, ensure_ascii=False)
+            configs.append(config)
+        return cls(configs)
+
+    @property
+    def default_service(self) -> GpuServerService:
+        return self._services[self._default_id]
+
+    @property
+    def default_id(self) -> str:
+        return self._default_id
+
+    def get(self, server_id: str = "") -> GpuServerService:
+        selected_id = (server_id or self._default_id).strip()
+        service = self._services.get(selected_id)
+        if service is None:
+            raise GpuServerError("所选 GPU 服务器不存在或未经管理员配置")
+        return service
+
+    def public_identity(self, server_id: str = "") -> dict[str, str]:
+        """返回可写入业务响应的服务器身份，不暴露任何 SSH 凭据。"""
+        selected_id = (server_id or self._default_id).strip()
+        service = self.get(selected_id)
+        return {
+            "server_id": selected_id,
+            "server_name": str(service.config.get("name") or "GPU 服务器"),
+            "server_host": str(service.config.get("host") or "未配置"),
+        }
+
+    def public_options(self) -> list[dict[str, Any]]:
+        def has_json_entries(raw: Any) -> bool:
+            try:
+                value = json.loads(raw or "{}")
+            except (TypeError, json.JSONDecodeError):
+                return False
+            return isinstance(value, (dict, list)) and bool(value)
+
+        return [
+            {
+                "id": server_id,
+                "name": service.config.get("name") or "GPU 服务器",
+                "host": service.config.get("host") or "未配置",
+                "configured": service.configured,
+                "expectedGpuCount": service.config.get("expected_gpu_count", 0),
+                "supportsFiles": has_json_entries(
+                    service.config.get("account_map_json")
+                ),
+                "supportsConda": has_json_entries(
+                    service.config.get("conda_env_roots_json")
+                ),
+                "isDefault": server_id == self._default_id,
+            }
+            for server_id, service in self._services.items()
+        ]
+
+
+try:
+    gpu_server_registry = GpuServerRegistry.from_environment(
+        GPU_SERVER_CONFIG,
+        GPU_ADDITIONAL_SERVERS_JSON,
+    )
+except GpuServerError:
+    # 监控页的追加配置错误不应阻止训练、推理等核心模块启动。
+    # 保留主服务器并记录完整异常，管理员可从日志修正 JSON。
+    logger.exception("GPU 追加服务器配置无效，已回退到主服务器")
+    gpu_server_registry = GpuServerRegistry([GPU_SERVER_CONFIG])
+
+# 保留旧单例导出，避免历史测试与内部调用失效。
+gpu_server_service = gpu_server_registry.default_service

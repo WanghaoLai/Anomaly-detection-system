@@ -93,6 +93,11 @@ class InferenceExecutorService:
     ) -> tuple[Any, Any, dict[str, Any], dict[str, Any], Any, dict[str, Any]]:
         if source.status != "SUCCEEDED":
             raise InferencePermanentError("只有训练成功的任务可以用于推理")
+        config_server_id = str((source.config_json or {}).get("server_id") or source.server_id)
+        if config_server_id != source.server_id:
+            raise InferencePermanentError("训练任务的服务器快照与任务归属不一致")
+        if source.server_id != training_executor_service.server_id:
+            raise InferencePermanentError("来源训练任务所属服务器的推理路由尚未启用")
         if source.cleanup_status != "RETAINED" or not source.remote_run_dir:
             raise InferencePermanentError("训练产物已清理或运行目录不可用")
         try:
@@ -110,6 +115,7 @@ class InferenceExecutorService:
             await training_executor_service._resolve_whitelisted_runtime(
                 source.algorithm_id,
                 source.dataset_id,
+                source.server_id,
             )
         )
         if algorithm_adapter_registry.get(adapter.key) is None:
@@ -151,6 +157,7 @@ class InferenceExecutorService:
             pending = await InferenceJob.filter(
                 owner_id=owner["user_id"],
                 owner_role=owner["role"],
+                server_id=source.server_id,
                 status__in=INFERENCE_ACTIVE,
             ).using_db(connection).count()
             if pending >= self.config["max_pending_jobs_per_user"]:
@@ -160,9 +167,11 @@ class InferenceExecutorService:
                 job_no=str(uuid.uuid4()),
                 owner_id=owner["user_id"],
                 owner_role=owner["role"],
+                server_id=source.server_id,
                 training_job_id=source.id,
                 status="QUEUED",
                 config_json={
+                    "server_id": source.server_id,
                     "parameters": normalized,
                     "requested_gpu": requested_gpu,
                     "adapter": {
@@ -216,6 +225,7 @@ class InferenceExecutorService:
                     workload_type="INFERENCE",
                     workload_id=job.id,
                     candidates=gpu_candidates,
+                    server_id=source.server_id,
                 )
                 if gpu is None:
                     return job
@@ -473,9 +483,15 @@ class InferenceExecutorService:
             await connection.wait_closed()
 
     async def dispatch_queued_jobs(self) -> None:
-        running = await InferenceJob.filter(status__in={"STARTING", "RUNNING"}).count()
+        running = await InferenceJob.filter(
+            server_id=training_executor_service.server_id,
+            status__in={"STARTING", "RUNNING"},
+        ).count()
         capacity = max(0, self.config["max_concurrent_jobs"] - running)
-        jobs = await InferenceJob.filter(status="QUEUED").order_by("submitted_at").limit(capacity)
+        jobs = await InferenceJob.filter(
+            server_id=training_executor_service.server_id,
+            status="QUEUED",
+        ).order_by("submitted_at").limit(capacity)
         for job in jobs:
             try:
                 dispatched = await self.dispatch_job(job.id)
@@ -485,7 +501,10 @@ class InferenceExecutorService:
                 continue
 
     async def _monitor_once(self) -> None:
-        active_jobs = await InferenceJob.filter(status__in={"STARTING", "RUNNING"})
+        active_jobs = await InferenceJob.filter(
+            server_id=training_executor_service.server_id,
+            status__in={"STARTING", "RUNNING"},
+        )
         if active_jobs:
             # 一轮监控共享一条 SSH 连接，避免逐任务重建会话。
             shared_connection = None

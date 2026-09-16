@@ -149,6 +149,54 @@ class InferenceReadOutputMissingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不存在", str(ctx.exception))
 
 
+class InferenceServerInheritanceTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        await Tortoise.init(
+            db_url="sqlite://:memory:",
+            modules={"models": ["models"]},
+        )
+        self.addAsyncCleanup(self._shutdown_db)
+        await Tortoise.generate_schemas()
+        await Admin.create(id=1, username="server-admin", password="x", role="管理员")
+        await Algorithm.create(id=1, algorithm_no="1", name="PBAS", created_by_id=1)
+        await Dataset.create(id=1, dataset_no="1", name="MVTec AD", created_by_id=1)
+        self.source = await TrainingJob.create(
+            id=1,
+            job_no="server-source",
+            owner_id=1,
+            owner_role="管理员",
+            server_id="a100-server",
+            algorithm_id=1,
+            dataset_id=1,
+            status="SUCCEEDED",
+            config_json={"server_id": "a100-server"},
+        )
+
+    @staticmethod
+    async def _shutdown_db():
+        await connections.close_all(discard=True)
+        await Tortoise._reset_apps()
+
+    async def test_inference_job_inherits_training_server(self):
+        adapter = SimpleNamespace(key="PBAS", protocol_version="1.0")
+        service = InferenceExecutorService()
+        with mock.patch.object(
+            service,
+            "_resolve_source",
+            new=mock.AsyncMock(
+                return_value=(None, None, {}, {}, adapter, {"classes": []})
+            ),
+        ):
+            job = await service.submit_job(
+                {"user_id": 1, "role": "管理员"},
+                self.source.id,
+                {"classes": []},
+                None,
+            )
+
+        self.assertEqual(job.server_id, "a100-server")
+        self.assertEqual(job.config_json["server_id"], "a100-server")
+
 def _async_value(value):
     async def _connect():
         return value

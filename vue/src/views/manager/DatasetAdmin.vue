@@ -17,6 +17,14 @@
           clearable
           @keyup.enter="load"
         />
+        <el-select v-model="data.serverId" style="width: 220px" clearable placeholder="全部服务器" @change="load">
+          <el-option
+            v-for="server in data.serverOptions"
+            :key="server.id"
+            :label="`${server.name} (${server.host})`"
+            :value="server.id"
+          />
+        </el-select>
         <div class="toolbar-actions">
           <el-button type="primary" @click="load">查询</el-button>
           <el-button @click="reset">重置</el-button>
@@ -33,6 +41,14 @@
         >
           <el-table-column label="编号" prop="dataset_no" width="70" align="center" />
           <el-table-column label="名称" prop="name" width="100" show-overflow-tooltip />
+          <el-table-column label="所属服务器" width="150" align="center">
+            <template #default="scope">
+              <div class="cell-stack">
+                <span>{{ scope.row.server_name || scope.row.server_id }}</span>
+                <span class="cell-sub">{{ scope.row.server_host || '--' }}</span>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column label="描述" prop="description" min-width="140" show-overflow-tooltip />
           <el-table-column label="领域类型" prop="domain_type" width="100" align="center" />
           <el-table-column label="数据源目录" prop="root_directory" width="120" align="center" show-overflow-tooltip />
@@ -75,6 +91,16 @@
             :model-value="data.form.id ? data.form.dataset_no : '保存后由系统自动生成'"
             disabled
           />
+        </el-form-item>
+        <el-form-item label="所属服务器" prop="server_id">
+          <el-select v-model="data.form.server_id" style="width: 100%" placeholder="请选择数据集实际所在服务器">
+            <el-option
+              v-for="server in data.serverOptions"
+              :key="server.id"
+              :label="`${server.name} (${server.host})`"
+              :value="server.id"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="名称" prop="name">
           <el-input v-model="data.form.name" autocomplete="off" placeholder="请输入数据集名称" />
@@ -142,8 +168,11 @@ const data = reactive({
   pageSize: 8,
   total: 0,
   tableData: [],
+  serverId: '',
+  serverOptions: [],
   rules: {
     name: [{ required: true, message: '请输入数据集名称', trigger: 'blur' }],
+    server_id: [{ required: true, message: '请选择所属服务器', trigger: 'change' }],
     root_directory: [{ required: true, message: '请输入数据源目录', trigger: 'blur' }],
   }
 })
@@ -161,7 +190,7 @@ const tableHeight = computed(() =>
 
 const load = () => {
   request.get('/dataset/selectPage', {
-    params: { pageNum: data.pageNum, pageSize: data.pageSize, name: data.name, userId: 0 }
+    params: { pageNum: data.pageNum, pageSize: data.pageSize, name: data.name, serverId: data.serverId, userId: 0 }
   }).then(res => {
     if (res.code === '200') {
       data.tableData = res.data?.list
@@ -171,10 +200,24 @@ const load = () => {
     }
   })
 }
-load()
+
+const loadServerOptions = async () => {
+  const res = await request.get('/server/servers')
+  if (res.code !== '200') throw new Error(res.msg || '服务器列表加载失败')
+  data.serverOptions = res.data || []
+}
+
+loadServerOptions().catch(error => ElMessage.error(error.message)).finally(load)
 
 const handleAdd = () => {
-  data.form = { class_count: 0, train_sample_count: 0, test_sample_count: 0, anomaly_sample_count: 0 }
+  const defaultServer = data.serverOptions.find(item => item.isDefault) || data.serverOptions[0]
+  data.form = {
+    server_id: data.serverId || defaultServer?.id || 'primary',
+    class_count: 0,
+    train_sample_count: 0,
+    test_sample_count: 0,
+    anomaly_sample_count: 0,
+  }
   data.formVisible = true
 }
 
@@ -190,6 +233,7 @@ const ensureSuccess = (res, fallback) => {
 
 const add = async () => {
   const datasetData = {
+    server_id: data.form.server_id,
     name: data.form.name,
     description: data.form.description,
     domain_type: data.form.domain_type,
@@ -208,6 +252,7 @@ const add = async () => {
 const update = async () => {
   const datasetData = {
     id: data.form.id,
+    server_id: data.form.server_id,
     name: data.form.name,
     description: data.form.description,
     domain_type: data.form.domain_type,
@@ -261,6 +306,7 @@ const handleDelete = async (id) => {
 
 const reset = () => {
   data.name = null
+  data.serverId = ''
   load()
 }
 </script>
@@ -342,6 +388,17 @@ const reset = () => {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+.cell-stack {
+  display: flex;
+  flex-direction: column;
+  line-height: 18px;
+}
+
+.cell-sub {
+  color: #9097a5;
+  font-size: 11px;
 }
 
 .table-area :deep(.el-table) {

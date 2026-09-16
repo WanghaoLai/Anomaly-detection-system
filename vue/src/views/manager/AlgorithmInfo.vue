@@ -32,6 +32,14 @@
         >
           <el-table-column label="编号" prop="algorithm_no" width="70" align="center" />
           <el-table-column label="名称" prop="name" width="100" show-overflow-tooltip />
+          <el-table-column label="所属服务器" width="160" align="center">
+            <template #default="scope">
+              <div class="cell-stack">
+                <span>{{ scope.row.server_name || scope.row.server_id }}</span>
+                <span class="cell-sub">{{ scope.row.server_host || '--' }}</span>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column label="简称" prop="abbreviation" width="100" align="center" show-overflow-tooltip />
           <el-table-column label="描述" prop="description" min-width="160" show-overflow-tooltip />
           <el-table-column label="任务类别" prop="task_category" width="150" align="center" show-overflow-tooltip />
@@ -88,6 +96,8 @@
       <el-descriptions :column="2" border>
         <el-descriptions-item label="算法编号">{{ detailValue('algorithm_no') }}</el-descriptions-item>
         <el-descriptions-item label="算法名称">{{ detailValue('name') }}</el-descriptions-item>
+        <el-descriptions-item label="所属服务器">{{ detailValue('server_name') }}（{{ detailValue('server_id') }}）</el-descriptions-item>
+        <el-descriptions-item label="服务器地址">{{ detailValue('server_host') }}</el-descriptions-item>
         <el-descriptions-item label="算法简称">{{ detailValue('abbreviation') }}</el-descriptions-item>
         <el-descriptions-item label="任务类别">{{ detailValue('task_category') }}</el-descriptions-item>
         <el-descriptions-item label="算法描述" :span="2">{{ detailValue('description') }}</el-descriptions-item>

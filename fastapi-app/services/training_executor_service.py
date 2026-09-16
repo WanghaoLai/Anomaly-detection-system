@@ -28,7 +28,7 @@ from models import (
     TrainingMetric,
     User,
 )
-from settings import TRAINING_EXECUTOR_CONFIG
+from settings import GPU_SERVER_CONFIG, TRAINING_EXECUTOR_CONFIG
 from tortoise import connections
 from tortoise.exceptions import IntegrityError
 from tortoise.transactions import in_transaction
@@ -121,6 +121,9 @@ def _isolated_output_root(
 class TrainingExecutorService:
     def __init__(self) -> None:
         self.config = TRAINING_EXECUTOR_CONFIG
+        # 当前执行器仍连接主 GPU 服务器。目录记录归属其他服务器时必须
+        # 显式拒绝，直到多服务器训练路由在后续阶段接入。
+        self.server_id = str(GPU_SERVER_CONFIG.get("id") or "primary")
         self._monitor_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._reconcile_lock = asyncio.Lock()
@@ -238,6 +241,8 @@ class TrainingExecutorService:
         for algo in algorithms:
             if not algo.algorithm_info:
                 continue
+            if algo.algorithm_info.server_id != self.server_id:
+                continue
             key = (algo.abbreviation or "").upper()
             adapter = algorithm_adapter_registry.get(key)
             if adapter is None:
@@ -276,6 +281,8 @@ class TrainingExecutorService:
         for ds in datasets:
             if not ds.dataset_info:
                 continue
+            if ds.dataset_info.server_id != self.server_id:
+                continue
             info = ds.dataset_info
             allowlist[ds.name] = {
                 "root_directory": info.root_directory or "",
@@ -286,6 +293,7 @@ class TrainingExecutorService:
         self,
         algorithm_id: int,
         dataset_id: int,
+        server_id: str | None = None,
     ) -> tuple[
         Algorithm,
         Dataset,
@@ -305,6 +313,18 @@ class TrainingExecutorService:
             raise TrainingExecutorError("算法不存在或缺少运行配置")
         if dataset is None or not dataset.dataset_info:
             raise TrainingExecutorError("数据集不存在或缺少路径配置")
+
+        algorithm_server_id = algorithm.algorithm_info.server_id
+        dataset_server_id = dataset.dataset_info.server_id
+        if algorithm_server_id != dataset_server_id:
+            raise TrainingExecutorError("算法和数据集不属于同一 GPU 服务器，禁止跨服务器混用路径")
+        expected_server_id = server_id or self.server_id
+        if algorithm_server_id != expected_server_id:
+            raise TrainingExecutorError("所选算法或数据集不属于当前选择的 GPU 服务器")
+        if algorithm_server_id != self.server_id:
+            raise TrainingExecutorError(
+                "所选算法和数据集属于其他 GPU 服务器，该服务器的训练路由尚未启用"
+            )
 
         algorithm_allowlist = await self.build_algorithm_allowlist()
         dataset_allowlist = await self.build_dataset_allowlist()
@@ -394,6 +414,7 @@ class TrainingExecutorService:
             workload_type="TRAINING",
             workload_id=job_id,
             candidates=candidates,
+            server_id=self.server_id,
         )
         if selected is None:
             raise NoGpuAvailableError(
@@ -452,11 +473,12 @@ class TrainingExecutorService:
         dataset_id: int,
         parameters: dict[str, Any],
         requested_gpu: int | None = None,
+        server_id: str = "primary",
         retry_of_job_id: int | None = None,
         attempt: int = 1,
     ) -> TrainingJob:
         algorithm, dataset, runtime, dataset_runtime, adapter = (
-            await self._resolve_whitelisted_runtime(algorithm_id, dataset_id)
+            await self._resolve_whitelisted_runtime(algorithm_id, dataset_id, server_id)
         )
         del runtime
         validated = self._validate_adapter_job_parameters(
@@ -478,6 +500,7 @@ class TrainingExecutorService:
             pending_count = await TrainingJob.filter(
                 owner_id=owner["user_id"],
                 owner_role=owner["role"],
+                server_id=server_id,
                 status__in=ACTIVE_STATUSES,
             ).using_db(connection).count()
             if pending_count >= self.config["max_pending_jobs_per_user"]:
@@ -489,10 +512,12 @@ class TrainingExecutorService:
                 job_no=job_no,
                 owner_id=owner["user_id"],
                 owner_role=owner["role"],
+                server_id=server_id,
                 algorithm_id=algorithm.id,
                 dataset_id=dataset.id,
                 status="QUEUED",
                 config_json={
+                    "server_id": algorithm.algorithm_info.server_id,
                     "parameters": validated,
                     "requested_gpu": requested_gpu,
                     "adapter": {
@@ -517,6 +542,7 @@ class TrainingExecutorService:
             owner,
             "创建训练任务",
             {
+                "server_id": algorithm.algorithm_info.server_id,
                 "algorithm_id": algorithm.id,
                 "dataset_id": dataset.id,
                 "requested_gpu": requested_gpu,
@@ -530,8 +556,12 @@ class TrainingExecutorService:
             raise TrainingExecutorError("训练任务不存在")
         if job.status != "QUEUED":
             return job
+        if job.server_id != self.server_id:
+            raise TrainingExecutorError("该训练任务属于其他 GPU 服务器，当前执行器拒绝调度")
         algorithm, dataset, runtime, dataset_runtime, adapter = (
-            await self._resolve_whitelisted_runtime(job.algorithm_id, job.dataset_id)
+            await self._resolve_whitelisted_runtime(
+                job.algorithm_id, job.dataset_id, job.server_id
+            )
         )
         config = job.config_json or {}
         configured_adapter = (config.get("adapter") or {}).get("key")
@@ -616,6 +646,7 @@ class TrainingExecutorService:
         dataset_id: int,
         parameters: dict[str, Any],
         requested_gpu: int | None = None,
+        server_id: str = "primary",
     ) -> TrainingJob:
         """阶段 1 兼容入口：提交后立即尝试调度。"""
         job = await self.submit_job(
@@ -624,6 +655,7 @@ class TrainingExecutorService:
             dataset_id,
             parameters,
             requested_gpu,
+            server_id,
         )
         return await self.dispatch_job(job.id)
 
@@ -662,6 +694,7 @@ class TrainingExecutorService:
             dataset_id=source.dataset_id,
             parameters=config.get("parameters") or {},
             requested_gpu=config.get("requested_gpu"),
+            server_id=source.server_id,
             retry_of_job_id=source.id,
             attempt=source.attempt + 1,
         )
@@ -738,6 +771,7 @@ class TrainingExecutorService:
 
         snapshot = {
             "executor_protocol": "adapter-v1",
+            "server_id": algorithm.algorithm_info.server_id,
             "ssh_account": self.config["ssh_user"],
             "algorithm": adapter.key,
             "algorithm_id": algorithm.id,
@@ -1372,6 +1406,7 @@ class TrainingExecutorService:
                     "job_no": locked.job_no,
                     "owner_id": locked.owner_id,
                     "owner_role": locked.owner_role,
+                    "server_id": locked.server_id,
                     "algorithm_id": locked.algorithm_id,
                     "dataset_id": locked.dataset_id,
                     "status": locked.status,
@@ -1411,6 +1446,7 @@ class TrainingExecutorService:
                 job_no=locked.job_no,
                 owner_id=locked.owner_id,
                 owner_role=locked.owner_role,
+                server_id=locked.server_id,
                 algorithm_id=locked.algorithm_id,
                 dataset_id=locked.dataset_id,
                 terminal_status=locked.status,
@@ -1701,7 +1737,10 @@ class TrainingExecutorService:
         if not self.enabled:
             logger.info("Training executor is disabled")
             return
-        jobs = await TrainingJob.filter(status__in=REMOTE_ACTIVE_STATUSES)
+        jobs = await TrainingJob.filter(
+            server_id=self.server_id,
+            status__in=REMOTE_ACTIVE_STATUSES,
+        )
         if not jobs:
             return
         # 一轮监控共享一条 SSH 连接，避免每个任务每 5 秒重建 TCP+SSH 会话。
@@ -1732,6 +1771,7 @@ class TrainingExecutorService:
             return
         async with self._dispatch_lock:
             active_count = await TrainingJob.filter(
+                server_id=self.server_id,
                 status__in=REMOTE_ACTIVE_STATUSES,
             ).count()
             available_slots = max(
@@ -1740,7 +1780,10 @@ class TrainingExecutorService:
             )
             if available_slots == 0:
                 return
-            jobs = await TrainingJob.filter(status="QUEUED").order_by(
+            jobs = await TrainingJob.filter(
+                server_id=self.server_id,
+                status="QUEUED",
+            ).order_by(
                 "submitted_at",
                 "id",
             ).limit(available_slots)

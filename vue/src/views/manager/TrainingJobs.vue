@@ -46,6 +46,9 @@
           </el-table-column>
           <el-table-column label="算法" prop="algorithmName" min-width="170" show-overflow-tooltip />
           <el-table-column label="数据集" prop="datasetName" width="110" />
+          <el-table-column label="GPU 服务器" width="150" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.serverName || row.serverId }} · {{ row.serverHost }}</template>
+          </el-table-column>
           <el-table-column label="状态" width="100" align="center">
             <template #default="{ row }">
               <el-tag :type="statusType(row.status)" effect="light" round>{{ statusLabel(row.status) }}</el-tag>
@@ -115,8 +118,26 @@
 
     <el-dialog v-model="data.createVisible" title="创建训练任务" align="center" width="680px" :close-on-click-modal="false">
       <el-form ref="createFormRef" :model="data.createForm" label-width="120px">
+        <el-form-item label="GPU 服务器" required>
+          <el-select v-model="data.createForm.serverId" style="width: 100%" placeholder="请先选择 GPU 服务器" @change="serverChanged">
+            <el-option
+              v-for="server in data.options.servers"
+              :key="server.id"
+              :label="`${server.name} (${server.host})`"
+              :value="server.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-alert
+          v-if="data.createForm.serverId && data.options.executionEnabled === false"
+          type="warning"
+          :closable="false"
+          title="该服务器尚未部署训练执行器，当前只能查看资源，不能提交任务。"
+          show-icon
+          style="margin-bottom: 16px"
+        />
         <el-form-item label="算法" required>
-          <el-select v-model="data.createForm.algorithmId" style="width: 100%" placeholder="请选择白名单算法" @change="algorithmChanged">
+          <el-select v-model="data.createForm.algorithmId" :disabled="!data.createForm.serverId" style="width: 100%" placeholder="请选择当前服务器中的算法" @change="algorithmChanged">
             <el-option
               v-for="item in data.options.algorithms"
               :key="item.id"
@@ -126,7 +147,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="数据集" required>
-          <el-select v-model="data.createForm.datasetId" style="width: 100%" placeholder="请选择数据集" @change="datasetChanged">
+          <el-select v-model="data.createForm.datasetId" :disabled="!data.createForm.serverId" style="width: 100%" placeholder="请选择当前服务器中的数据集" @change="datasetChanged">
             <el-option v-for="item in data.options.datasets" :key="item.id" :label="item.name" :value="item.id" />
           </el-select>
         </el-form-item>
@@ -211,6 +232,7 @@
           </el-descriptions-item>
           <el-descriptions-item label="算法">{{ data.detail.algorithmName }}</el-descriptions-item>
           <el-descriptions-item label="数据集">{{ data.detail.datasetName }}</el-descriptions-item>
+          <el-descriptions-item label="GPU 服务器">{{ data.detail.serverName || data.detail.serverId }} · {{ data.detail.serverHost }}</el-descriptions-item>
           <el-descriptions-item label="GPU">{{ data.detail.assignedGpu ?? '--' }}</el-descriptions-item>
           <el-descriptions-item label="尝试次数">#{{ data.detail.attempt }}</el-descriptions-item>
           <el-descriptions-item label="退出码">{{ data.detail.exitCode ?? '--' }}</el-descriptions-item>
@@ -440,7 +462,7 @@ const calcPageSize = () => {
 
 const data = reactive({
   user: JSON.parse(localStorage.getItem('system-user') || '{}'),
-  options: { algorithms: [], datasets: [], gpuOptions: [] },
+  options: { servers: [], algorithms: [], datasets: [], gpuOptions: [] },
   jobs: [],
   total: 0,
   pageNum: 1,
@@ -455,7 +477,7 @@ const data = reactive({
   detailTab: 'monitor',
   streamState: 'closed',
   detail: {},
-  createForm: { algorithmId: null, datasetId: null, requestedGpu: null, parameters: {} },
+  createForm: { serverId: null, algorithmId: null, datasetId: null, requestedGpu: null, parameters: {} },
 })
 
 const selectedAlgorithm = computed(() =>
@@ -581,10 +603,26 @@ const streamTagType = computed(() => ({
   connecting: 'warning', open: 'success', closed: 'info', error: 'danger',
 }[data.streamState] || 'info'))
 
-const loadOptions = async () => {
-  const res = await request.get('/training/options')
+const loadOptions = async (serverId = '') => {
+  const res = await request.get('/training/options', { params: { serverId } })
   if (res.code !== '200') throw new Error(res.msg)
   data.options = res.data
+}
+
+const serverChanged = async serverId => {
+  data.createForm.algorithmId = null
+  data.createForm.datasetId = null
+  data.createForm.requestedGpu = null
+  data.createForm.parameters = {}
+  try {
+    await loadOptions(serverId)
+    if (data.options.algorithms?.length === 1) {
+      data.createForm.algorithmId = data.options.algorithms[0].id
+      algorithmChanged()
+    }
+  } catch (error) {
+    ElMessage.error(errorMessage(error))
+  }
 }
 
 const loadJobs = async (silent = false) => {
@@ -630,7 +668,10 @@ const algorithmChanged = () => {
 const datasetChanged = () => resetParameters()
 
 const openCreate = () => {
-  data.createForm = { algorithmId: null, datasetId: null, requestedGpu: null, parameters: {} }
+  const defaultServer = data.options.selectedServer?.id
+    || data.options.servers?.find(item => item.isDefault)?.id
+    || null
+  data.createForm = { serverId: defaultServer, algorithmId: null, datasetId: null, requestedGpu: null, parameters: {} }
   data.createVisible = true
   if (data.options.algorithms?.length === 1) {
     data.createForm.algorithmId = data.options.algorithms[0].id
@@ -639,6 +680,8 @@ const openCreate = () => {
 }
 
 const validateCreate = () => {
+  if (!data.createForm.serverId) return '请先选择 GPU 服务器'
+  if (data.options.executionEnabled === false) return '所选服务器尚未启用训练执行器'
   if (!data.createForm.algorithmId || !data.createForm.datasetId) return '请选择算法和数据集'
   for (const name of requiredFields.value) {
     const value = data.createForm.parameters[name]
