@@ -23,11 +23,15 @@
               <el-option
                 v-for="item in state.options.models"
                 :key="item.id"
-                :label="`${item.algorithmName} · ${item.datasetName} · ${shortNo(item.jobNo)}`"
+                :label="`${item.serverName} · ${item.algorithmName} · ${item.datasetName} · ${shortNo(item.jobNo)}`"
                 :value="item.id"
               />
             </el-select>
             <div v-if="selectedModel" class="model-summary">
+              <div class="summary-item">
+                <span>限定服务器</span>
+                <strong>{{ selectedModel.serverName }}（{{ selectedModel.serverHost }}）</strong>
+              </div>
               <div class="summary-item">
                 <span>当前算法</span>
                 <strong>{{ selectedModel.algorithmName }}</strong>
@@ -50,8 +54,9 @@
           </el-form-item>
           <el-form-item label="GPU">
             <el-select v-model="form.requestedGpu" clearable placeholder="自动选择" style="width: 220px">
-              <el-option v-for="gpu in state.options.gpuOptions" :key="gpu" :label="`GPU ${gpu}`" :value="gpu" />
+              <el-option v-for="gpu in selectedModel?.gpuOptions || []" :key="gpu" :label="`GPU ${gpu}`" :value="gpu" />
             </el-select>
+            <div class="hint">GPU 只能从来源训练任务所属的服务器中选择。</div>
           </el-form-item>
           <el-form-item>
             <el-button type="primary" :icon="Promotion" :loading="state.submitting" @click="submit">开始推理</el-button>
@@ -77,6 +82,9 @@
           </el-table-column>
           <el-table-column prop="algorithmName" label="算法" min-width="160" show-overflow-tooltip />
           <el-table-column prop="datasetName" label="数据集" min-width="120" show-overflow-tooltip />
+          <el-table-column label="GPU 服务器" min-width="160" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.serverName || row.serverId }} · {{ row.serverHost }}</template>
+          </el-table-column>
           <el-table-column label="评估类别" min-width="180">
             <template #default="{ row }">{{ row.config?.parameters?.classes?.join(', ') || '全部类别' }}</template>
           </el-table-column>
@@ -123,6 +131,7 @@
       <el-descriptions v-if="state.detail" :column="2" border>
         <el-descriptions-item label="算法">{{ state.detail.algorithmName || '--' }}</el-descriptions-item>
         <el-descriptions-item label="数据集">{{ state.detail.datasetName || '--' }}</el-descriptions-item>
+        <el-descriptions-item label="GPU 服务器">{{ state.detail.serverName || state.detail.serverId }} · {{ state.detail.serverHost }}</el-descriptions-item>
         <el-descriptions-item label="状态">
           <el-tag :type="statusType(state.detail.status)" effect="light" round>{{ statusLabel(state.detail.status) }}</el-tag>
         </el-descriptions-item>
@@ -155,7 +164,7 @@ import request from '@/utils/request'
 import router from '@/router'
 
 const state = reactive({
-  options: { models: [], gpuOptions: [] }, jobs: [], total: 0, pageNum: 1, pageSize: 10,
+  options: { models: [] }, jobs: [], total: 0, pageNum: 1, pageSize: 10,
   loading: false, submitting: false, detailVisible: false, detail: null,
 })
 const form = reactive({ trainingJobId: null, classes: [], requestedGpu: null })
@@ -173,7 +182,10 @@ const duration = (startedAt, finishedAt) => {
 }
 const statusLabel = value => ({ QUEUED: '排队中', STARTING: '启动中', RUNNING: '推理中', SUCCEEDED: '成功', FAILED: '失败', STOPPED: '已停止', LOST: '失联' }[value] || value)
 const statusType = value => ({ SUCCEEDED: 'success', FAILED: 'danger', LOST: 'danger', RUNNING: 'primary', STARTING: 'warning', QUEUED: 'info' }[value] || 'info')
-const modelChanged = () => { form.classes = [] }
+const modelChanged = () => {
+  form.classes = []
+  form.requestedGpu = null
+}
 const openResults = () => router.push({ path: '/manager/experimentResults', query: { sourceType: 'INFERENCE' } })
 
 const loadOptions = async () => {
@@ -313,7 +325,7 @@ onUnmounted(() => clearInterval(timer))
 
 .model-summary {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   margin-top: 10px;
   padding: 12px 16px;

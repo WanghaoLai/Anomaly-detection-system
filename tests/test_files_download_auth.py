@@ -1,5 +1,6 @@
 import sys
 import asyncio
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,9 @@ sys.path.insert(0, str(BACKEND_DIR))
 import api.files as files_api  # noqa: E402
 from api.files import router  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
+from PIL import Image  # noqa: E402
+from common.auth import get_current_user  # noqa: E402
+from settings import API_PREFIX  # noqa: E402
 
 
 def _client() -> TestClient:
@@ -40,6 +44,35 @@ class FilesDownloadAuthTests(unittest.TestCase):
     def test_upload_route_is_unchanged_and_also_requires_auth(self):
         response = _client().post("/files/upload")
         self.assertEqual(response.status_code, 401)
+
+    def test_upload_returns_relative_prefixed_download_url(self):
+        image_bytes = io.BytesIO()
+        Image.new("RGB", (1, 1), color="white").save(image_bytes, format="PNG")
+        app = FastAPI()
+        app.include_router(router, prefix=API_PREFIX)
+        app.dependency_overrides[get_current_user] = lambda: {
+            "user_id": 7,
+            "role": "用户",
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            files_api,
+            "UPLOAD_DIR",
+            Path(directory),
+        ), patch.object(
+            files_api.StoredFile,
+            "create",
+            new=AsyncMock(),
+        ):
+            response = TestClient(app).post(
+                f"{API_PREFIX}/files/upload?category=avatar",
+                files={"file": ("avatar.png", image_bytes.getvalue(), "image/png")},
+                headers={"Host": "untrusted-proxy.internal:8443"},
+            )
+        self.assertEqual(response.status_code, 200)
+        download_url = response.json()["data"]
+        self.assertTrue(download_url.startswith(f"{API_PREFIX}/files/download/"))
+        self.assertNotIn("untrusted-proxy.internal", download_url)
+        self.assertNotIn("://", download_url)
 
     def _download(self, record, current_user):
         with tempfile.TemporaryDirectory() as directory:

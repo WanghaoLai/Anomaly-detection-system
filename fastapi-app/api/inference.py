@@ -13,6 +13,7 @@ from services.inference_executor_service import (
     inference_executor_service,
 )
 from services.algorithm_adapters import algorithm_adapter_registry
+from services.gpu_server_service import GpuServerError, gpu_server_registry
 
 
 router = APIRouter(
@@ -30,10 +31,21 @@ class InferenceJobCreate(BaseModel):
 
 
 def _data(job: InferenceJob, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    try:
+        server = gpu_server_registry.public_identity(job.server_id)
+    except GpuServerError:
+        server = {
+            "server_id": job.server_id,
+            "server_name": "未配置的服务器",
+            "server_host": "--",
+        }
     return {
         "id": job.id,
         "jobNo": job.job_no,
         "trainingJobId": job.training_job_id,
+        "serverId": server["server_id"],
+        "serverName": server["server_name"],
+        "serverHost": server["server_host"],
         "status": job.status,
         "config": job.config_json,
         "result": job.result_json,
@@ -73,6 +85,7 @@ async def _metadata(jobs: list[InferenceJob]) -> dict[int, dict[str, Any]]:
             "algorithmAbbreviation": algorithm.abbreviation if algorithm else None,
             "datasetId": source.dataset_id,
             "datasetName": dataset.name if dataset else None,
+            "serverId": source.server_id,
         }
     return result
 
@@ -109,18 +122,31 @@ async def options(current_user: dict = Depends(get_current_user)):
         adapter = algorithm_adapter_registry.get(str(adapter_key))
         if adapter is None or not adapter.supports_inference or not job.remote_run_dir:
             continue
+        try:
+            server = gpu_server_registry.public_identity(job.server_id)
+            server_service = gpu_server_registry.get(job.server_id)
+        except GpuServerError:
+            continue
+        gpu_options = (
+            inference_executor_service.config["gpu_allowlist"]
+            if job.server_id == "primary"
+            else list(range(int(server_service.config.get("expected_gpu_count") or 0)))
+        )
         items.append({
             "id": job.id,
             "jobNo": job.job_no,
             "algorithmName": algorithm.name if algorithm else None,
             "algorithmAbbreviation": algorithm.abbreviation if algorithm else None,
             "datasetName": datasets.get(job.dataset_id),
+            "serverId": server["server_id"],
+            "serverName": server["server_name"],
+            "serverHost": server["server_host"],
+            "gpuOptions": gpu_options,
             "classes": ((job.config_json or {}).get("parameters") or {}).get("classes") or [],
             "finishedAt": job.finished_at,
         })
     return Result.success({
         "models": items,
-        "gpuOptions": inference_executor_service.config["gpu_allowlist"],
         "maxConcurrentJobs": inference_executor_service.config["max_concurrent_jobs"],
     })
 

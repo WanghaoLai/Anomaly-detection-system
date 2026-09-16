@@ -67,21 +67,21 @@
     }
   },
   "api_routes": [
-    {"path": "/knowledge/preview", "method": "post", "authenticated": true, "request_content_type": "multipart/form-data", "required_fields": ["file"]},
-    {"path": "/knowledge/upload", "method": "post", "authenticated": true, "request_content_type": "multipart/form-data", "required_fields": ["file"]},
-    {"path": "/knowledge/list", "method": "get", "authenticated": true},
-    {"path": "/knowledge/delete/{doc_id}", "method": "delete", "authenticated": true, "path_parameters": ["doc_id"]},
-    {"path": "/knowledge/stats", "method": "get", "authenticated": true},
-    {"path": "/knowledge/health", "method": "get", "authenticated": true},
-    {"path": "/chat/conversation", "method": "post", "authenticated": true, "request_content_type": "application/json", "required_fields": []},
-    {"path": "/chat/conversations", "method": "get", "authenticated": true},
-    {"path": "/chat/messages/{conversation_id}", "method": "get", "authenticated": true, "path_parameters": ["conversation_id"]},
-    {"path": "/chat/send", "method": "post", "authenticated": true, "request_content_type": "application/json", "required_fields": ["conversation_id", "message"]},
-    {"path": "/chat/conversation/{conversation_id}", "method": "delete", "authenticated": true, "path_parameters": ["conversation_id"]},
-    {"path": "/admin/chat/conversation", "method": "post", "authenticated": true, "request_content_type": "application/json", "required_fields": []},
-    {"path": "/admin/chat/conversations", "method": "get", "authenticated": true},
-    {"path": "/admin/chat/messages/{conversation_id}", "method": "get", "authenticated": true, "path_parameters": ["conversation_id"]},
-    {"path": "/admin/chat/send", "method": "post", "authenticated": true, "request_content_type": "application/json", "required_fields": ["conversation_id", "message"]},
-    {"path": "/admin/chat/conversation/{conversation_id}", "method": "delete", "authenticated": true, "path_parameters": ["conversation_id"]}
+    {"path": "/api/knowledge/preview", "method": "post", "authenticated": true, "request_content_type": "multipart/form-data", "required_fields": ["file"]},
+    {"path": "/api/knowledge/upload", "method": "post", "authenticated": true, "request_content_type": "multipart/form-data", "required_fields": ["file"]},
+    {"path": "/api/knowledge/list", "method": "get", "authenticated": true},
+    {"path": "/api/knowledge/delete/{doc_id}", "method": "delete", "authenticated": true, "path_parameters": ["doc_id"]},
+    {"path": "/api/knowledge/stats", "method": "get", "authenticated": true},
+    {"path": "/api/knowledge/health", "method": "get", "authenticated": true},
+    {"path": "/api/chat/conversation", "method": "post", "authenticated": true, "request_content_type": "application/json", "required_fields": []},
+    {"path": "/api/chat/conversations", "method": "get", "authenticated": true},
+    {"path": "/api/chat/messages/{conversation_id}", "method": "get", "authenticated": true, "path_parameters": ["conversation_id"]},
+    {"path": "/api/chat/send", "method": "post", "authenticated": true, "request_content_type": "application/json", "required_fields": ["conversation_id", "message"]},
+    {"path": "/api/chat/conversation/{conversation_id}", "method": "delete", "authenticated": true, "path_parameters": ["conversation_id"]},
+    {"path": "/api/admin/chat/conversation", "method": "post", "authenticated": true, "request_content_type": "application/json", "required_fields": []},
+    {"path": "/api/admin/chat/conversations", "method": "get", "authenticated": true},
+    {"path": "/api/admin/chat/messages/{conversation_id}", "method": "get", "authenticated": true, "path_parameters": ["conversation_id"]},
+    {"path": "/api/admin/chat/send", "method": "post", "authenticated": true, "request_content_type": "application/json", "required_fields": ["conversation_id", "message"]},
+    {"path": "/api/admin/chat/conversation/{conversation_id}", "method": "delete", "authenticated": true, "path_parameters": ["conversation_id"]}
   ]
 }

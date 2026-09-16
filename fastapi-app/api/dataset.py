@@ -3,10 +3,11 @@ from common.exception_handler import CustomException
 from common.result import PageInfo, Result
 from common.sequential_number import next_sequential_number
 from fastapi import APIRouter, Depends, Query
-from models import Dataset, DatasetInfo
+from models import Dataset, DatasetInfo, TrainingJob
 from pathlib import PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from services.gpu_server_service import GpuServerError, gpu_server_registry
 from tortoise.exceptions import IntegrityError
 from tortoise.transactions import in_transaction
 
@@ -22,6 +23,13 @@ class _StrictModel(BaseModel):
 
 
 class DatasetInfoFields(_StrictModel):
+    server_id: str = Field(
+        default="primary",
+        alias="serverId",
+        min_length=1,
+        max_length=32,
+        pattern=r"^[a-z][a-z0-9_-]{0,31}$",
+    )
     root_directory: str | None = Field(default=None, max_length=500)
     class_count: int = Field(default=0, ge=0)
     train_sample_count: int = Field(default=0, ge=0)
@@ -67,6 +75,7 @@ class DatasetInfoUpdatePydantic(DatasetInfoFields):
 def _dataset_info_data(payload: DatasetInfoFields) -> dict:
     return payload.model_dump(
         include={
+            "server_id",
             "root_directory",
             "class_count",
             "train_sample_count",
@@ -76,9 +85,28 @@ def _dataset_info_data(payload: DatasetInfoFields) -> dict:
     )
 
 
+def _validate_server(server_id: str) -> dict[str, str]:
+    try:
+        return gpu_server_registry.public_identity(server_id)
+    except GpuServerError as exc:
+        raise CustomException(str(exc), status_code=400) from exc
+
+
+def _server_identity_for_response(server_id: str | None) -> dict[str, str]:
+    try:
+        return gpu_server_registry.public_identity(server_id or "primary")
+    except GpuServerError:
+        return {
+            "server_id": server_id or "primary",
+            "server_name": "未配置的服务器",
+            "server_host": "--",
+        }
+
+
 @router.get("/selectPage")
 async def select_page(
     name: str = "",
+    serverId: str = "",
     userId: int = 0,
     pageNum: int = Query(1, ge=1),
     pageSize: int = Query(5, ge=1, le=100),
@@ -86,6 +114,9 @@ async def select_page(
     query = Dataset.filter(deleted_at__isnull=True)
     if name:
         query = query.filter(name__contains=name)
+    if serverId:
+        _validate_server(serverId)
+        query = query.filter(dataset_info__server_id=serverId)
     query = query.prefetch_related("dataset_info", "created_by").order_by("id")
 
     total = await query.count()
@@ -93,6 +124,7 @@ async def select_page(
     result = []
     for dataset in datasets:
         info = dataset.dataset_info
+        server = _server_identity_for_response(info.server_id if info else None)
         result.append({
             "id": dataset.id,
             "dataset_no": dataset.dataset_no,
@@ -111,6 +143,7 @@ async def select_page(
                 dataset.created_by.username if dataset.created_by else None
             ),
             "root_directory": info.root_directory if info else None,
+            **server,
             "info_id": info.id if info else None,
             "class_count": info.class_count if info else 0,
             "train_sample_count": info.train_sample_count if info else 0,
@@ -125,6 +158,7 @@ async def add(
     payload: DatasetCreatePydantic,
     current_admin: dict = Depends(get_current_admin),
 ):
+    _validate_server(payload.server_id)
     main_data = payload.model_dump(
         include={"name", "description", "domain_type"}
     )
@@ -154,6 +188,7 @@ async def add(
 
 @router.put("/update", dependencies=[Depends(get_current_admin)])
 async def update(payload: DatasetUpdatePydantic):
+    _validate_server(payload.server_id)
     async with in_transaction() as connection:
         dataset = await Dataset.filter(id=payload.id).using_db(
             connection
@@ -176,6 +211,16 @@ async def update(payload: DatasetUpdatePydantic):
                 **info_data,
             )
         else:
+            if (
+                info.server_id != payload.server_id
+                and await TrainingJob.filter(dataset_id=payload.id).using_db(
+                    connection
+                ).exists()
+            ):
+                raise CustomException(
+                    "该数据集已被训练任务引用，不能更换所属服务器；请为新服务器新增一条数据集记录",
+                    status_code=409,
+                )
             await DatasetInfo.filter(id=info.id).using_db(connection).update(
                 **info_data
             )
@@ -200,6 +245,7 @@ async def delete(id: int):
 
 @router.post("/info/add", dependencies=[Depends(get_current_admin)])
 async def add_info(payload: DatasetInfoCreatePydantic):
+    _validate_server(payload.server_id)
     if not await Dataset.filter(id=payload.dataset_id).exists():
         raise CustomException("数据集不存在", status_code=404)
     try:
@@ -214,9 +260,24 @@ async def add_info(payload: DatasetInfoCreatePydantic):
 
 @router.put("/info/update", dependencies=[Depends(get_current_admin)])
 async def update_info(payload: DatasetInfoUpdatePydantic):
-    updated = await DatasetInfo.filter(id=payload.id).update(
-        **_dataset_info_data(payload)
-    )
-    if updated != 1:
-        raise CustomException("数据集详情不存在", status_code=404)
+    _validate_server(payload.server_id)
+    async with in_transaction() as connection:
+        info = await DatasetInfo.filter(id=payload.id).using_db(
+            connection
+        ).select_for_update().first()
+        if info is None:
+            raise CustomException("数据集详情不存在", status_code=404)
+        if (
+            info.server_id != payload.server_id
+            and await TrainingJob.filter(dataset_id=info.dataset_id).using_db(
+                connection
+            ).exists()
+        ):
+            raise CustomException(
+                "该数据集已被训练任务引用，不能更换所属服务器；请为新服务器新增一条数据集记录",
+                status_code=409,
+            )
+        await DatasetInfo.filter(id=payload.id).using_db(connection).update(
+            **_dataset_info_data(payload)
+        )
     return Result.success()

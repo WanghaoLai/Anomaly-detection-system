@@ -17,6 +17,7 @@ from typing import Any, BinaryIO
 from models import Algorithm, Dataset, InferenceJob, TrainingArtifact, TrainingJob
 from services.training_executor_service import TrainingExecutorError, training_executor_service
 from services.training_reliability import safe_artifact_path
+from services.gpu_server_service import GpuServerError, gpu_server_registry
 
 
 class ExperimentResultError(RuntimeError):
@@ -52,6 +53,11 @@ def _visualization_items(job: InferenceJob) -> list[dict[str, Any]]:
 
 
 class ExperimentResultService:
+    @staticmethod
+    def _ensure_readable_server(server_id: str) -> None:
+        if server_id != training_executor_service.server_id:
+            raise ExperimentResultError("该实验结果所属服务器的读取路由尚未启用")
+
     async def _training_job(
         self,
         job_id: int,
@@ -60,6 +66,7 @@ class ExperimentResultService:
         job = await _owned(TrainingJob.filter(id=job_id), current_user).first()
         if job is None:
             raise ExperimentResultError("实验结果不存在")
+        self._ensure_readable_server(job.server_id)
         return job
 
     async def _inference_job(
@@ -70,6 +77,10 @@ class ExperimentResultService:
         job = await _owned(InferenceJob.filter(id=job_id), current_user).first()
         if job is None:
             raise ExperimentResultError("实验结果不存在")
+        source = await TrainingJob.get_or_none(id=job.training_job_id)
+        if source is None or job.server_id != source.server_id:
+            raise ExperimentResultError("推理结果与来源训练任务的服务器归属不一致")
+        self._ensure_readable_server(job.server_id)
         return job
 
     async def options(self, current_user: dict[str, Any]) -> dict[str, Any]:
@@ -224,11 +235,22 @@ class ExperimentResultService:
         algorithm = algorithms.get(source.algorithm_id)
         dataset = datasets.get(source.dataset_id)
         parameters = (source.config_json or {}).get("parameters") or {}
+        try:
+            server = gpu_server_registry.public_identity(source.server_id)
+        except GpuServerError:
+            server = {
+                "server_id": source.server_id,
+                "server_name": "未配置的服务器",
+                "server_host": "--",
+            }
         return {
             "sourceType": source_type,
             "id": job.id,
             "jobNo": job.job_no,
             "trainingJobId": source.id,
+            "serverId": server["server_id"],
+            "serverName": server["server_name"],
+            "serverHost": server["server_host"],
             "algorithmId": source.algorithm_id,
             "algorithmName": algorithm.name if algorithm else None,
             "algorithmAbbreviation": algorithm.abbreviation if algorithm else None,

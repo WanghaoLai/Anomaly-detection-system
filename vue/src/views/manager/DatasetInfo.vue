@@ -32,6 +32,14 @@
         >
           <el-table-column label="编号" prop="dataset_no" width="70" align="center" />
           <el-table-column label="名称" prop="name" min-width="170" show-overflow-tooltip />
+          <el-table-column label="所属服务器" width="160" align="center">
+            <template #default="scope">
+              <div class="cell-stack">
+                <span>{{ scope.row.server_name || scope.row.server_id }}</span>
+                <span class="cell-sub">{{ scope.row.server_host || '--' }}</span>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column label="描述" prop="description" min-width="220" show-overflow-tooltip />
           <el-table-column label="领域类型" prop="domain_type" width="120" align="center" />
           <el-table-column label="类别数量" prop="class_count" width="100" align="center" />
@@ -64,6 +72,8 @@
       <el-descriptions :column="2" border>
         <el-descriptions-item label="数据集编号">{{ detailValue('dataset_no') }}</el-descriptions-item>
         <el-descriptions-item label="数据集名称">{{ detailValue('name') }}</el-descriptions-item>
+        <el-descriptions-item label="所属服务器">{{ detailValue('server_name') }}（{{ detailValue('server_id') }}）</el-descriptions-item>
+        <el-descriptions-item label="服务器地址">{{ detailValue('server_host') }}</el-descriptions-item>
         <el-descriptions-item label="领域类型">{{ detailValue('domain_type') }}</el-descriptions-item>
         <el-descriptions-item label="类别数量">{{ countValue('class_count') }}</el-descriptions-item>
         <el-descriptions-item label="数据集描述" :span="2">{{ detailValue('description') }}</el-descriptions-item>

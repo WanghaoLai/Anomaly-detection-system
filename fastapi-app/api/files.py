@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query
 from PIL import Image, UnidentifiedImageError
 from starlette.responses import FileResponse
 
@@ -15,11 +15,11 @@ from common.auth import get_current_user
 from common.exception_handler import CustomException
 from common.result import Result
 from models import Admin, StoredFile, User
-from settings import BASE_DIR
+from settings import API_PREFIX, FILE_UPLOAD_DIR
 
 logger = logging.getLogger(__name__)
 
-UPLOAD_DIR = (BASE_DIR / "files").resolve()
+UPLOAD_DIR = FILE_UPLOAD_DIR
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 CATEGORY_DIRS = {
@@ -55,7 +55,6 @@ def _matches_signatures(ext: str, content: bytes) -> bool:
 
 @router.post("/upload")
 async def upload_file(
-    request: Request,
     file: UploadFile = File(...),
     category: str = Query("avatar", description="文件分类: avatar / image / inference"),
     current_user: dict = Depends(get_current_user),
@@ -125,8 +124,7 @@ async def upload_file(
         logger.exception("文件与元数据持久化失败: file_id=%s", file_id)
         raise CustomException("文件保存失败")
 
-    base_url = str(request.base_url).rstrip("/")
-    return Result.success(f"{base_url}/files/download/{file_id}")
+    return Result.success(f"{API_PREFIX}/files/download/{file_id}")
 
 
 def _is_authorized(record: StoredFile, current_user: dict) -> bool:

@@ -11,7 +11,10 @@ from api.algorithm import AlgorithmCreatePydantic
 from api.algorithm import add as add_algorithm
 from api.dataset import DatasetCreatePydantic
 from api.dataset import add as add_dataset
+from api.dataset import select_page as select_dataset_page
 from api.user import UserCreatePydantic, UserUpdatePydantic
+from api.training import TrainingJobCreate
+from api.inference import InferenceJobCreate
 from api.user import update as update_user
 from common.exception_handler import CustomException
 from models import Admin, Algorithm, AlgorithmInfo, Dataset, DatasetInfo, User
@@ -55,12 +58,39 @@ class CatalogInvariantTests(unittest.IsolatedAsyncioTestCase):
 
         dataset = await Dataset.get(id=result.data).prefetch_related("dataset_info")
         self.assertEqual(dataset.dataset_info.root_directory, "/datasets/mvtec")
+        self.assertEqual(dataset.dataset_info.server_id, "primary")
         self.assertEqual(
             await DatasetInfo.filter(dataset_id=dataset.id).count(),
             1,
         )
         with self.assertRaises(IntegrityError):
             await DatasetInfo.create(dataset_id=dataset.id)
+
+        page = await select_dataset_page(
+            name="",
+            serverId="primary",
+            userId=0,
+            pageNum=1,
+            pageSize=5,
+        )
+        self.assertEqual(page.data["total"], 1)
+        self.assertEqual(page.data["list"][0]["server_id"], "primary")
+        self.assertTrue(page.data["list"][0]["server_name"])
+        self.assertIn("server_host", page.data["list"][0])
+
+    async def test_unknown_catalog_server_is_rejected_before_writing(self):
+        with self.assertRaises(CustomException) as context:
+            await add_dataset(
+                DatasetCreatePydantic(
+                    name="unknown-server-dataset",
+                    root_directory="/datasets/example",
+                    serverId="missing-server",
+                ),
+                ADMIN,
+            )
+
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertFalse(await Dataset.filter(name="unknown-server-dataset").exists())
 
     async def test_algorithm_detail_failure_rolls_back_primary_record(self):
         payload = AlgorithmCreatePydantic(
@@ -115,6 +145,20 @@ class StrictRequestModelTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             AlgorithmCreatePydantic(name="Incomplete")
 
+    def test_catalog_server_id_accepts_alias_and_rejects_unsafe_values(self):
+        payload = DatasetCreatePydantic(
+            name="dataset",
+            root_directory="/datasets/example",
+            serverId="a100-server",
+        )
+        self.assertEqual(payload.server_id, "a100-server")
+        with self.assertRaises(ValidationError):
+            DatasetCreatePydantic(
+                name="dataset",
+                root_directory="/datasets/example",
+                serverId="../../other-host",
+            )
+
     def test_server_owned_and_unknown_fields_are_rejected(self):
         with self.assertRaises(ValidationError):
             DatasetCreatePydantic(name="dataset", createdBy=99)
@@ -134,3 +178,23 @@ class StrictRequestModelTests(unittest.TestCase):
     def test_non_nullable_update_field_rejects_explicit_null(self):
         with self.assertRaises(ValidationError):
             UserUpdatePydantic(id=1, username=None)
+
+    def test_training_requires_server_but_inference_cannot_override_it(self):
+        with self.assertRaises(ValidationError):
+            TrainingJobCreate(
+                algorithmId=1,
+                datasetId=1,
+                parameters={},
+            )
+        request = TrainingJobCreate(
+            serverId="primary",
+            algorithmId=1,
+            datasetId=1,
+            parameters={},
+        )
+        self.assertEqual(request.server_id, "primary")
+        with self.assertRaises(ValidationError):
+            InferenceJobCreate(
+                trainingJobId=1,
+                serverId="a100-server",
+            )

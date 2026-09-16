@@ -7,8 +7,9 @@ from common.exception_handler import CustomException
 from common.result import PageInfo, Result
 from common.sequential_number import next_sequential_number
 from fastapi import APIRouter, Depends, Query
-from models import Algorithm, AlgorithmInfo
+from models import Algorithm, AlgorithmInfo, TrainingJob
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from services.gpu_server_service import GpuServerError, gpu_server_registry
 from tortoise.exceptions import IntegrityError
 from tortoise.transactions import in_transaction
 
@@ -24,6 +25,13 @@ class _StrictModel(BaseModel):
 
 
 class AlgorithmInfoFields(_StrictModel):
+    server_id: str = Field(
+        default="primary",
+        alias="serverId",
+        min_length=1,
+        max_length=32,
+        pattern=r"^[a-z][a-z0-9_-]{0,31}$",
+    )
     framework: str = Field(min_length=1, max_length=64)
     framework_version: str | None = Field(default=None, max_length=64)
     python_version: str | None = Field(default=None, max_length=32)
@@ -75,7 +83,7 @@ class AlgorithmInfoUpdatePydantic(AlgorithmInfoFields):
 
 
 ALGORITHM_INFO_FIELDS = {
-    "framework", "framework_version", "python_version", "cuda_requirement",
+    "server_id", "framework", "framework_version", "python_version", "cuda_requirement",
     "conda_env_name", "conda_env_path", "working_directory",
     "train_entrypoint", "inference_entrypoint", "executor_type",
     "process_manager", "protocol_version", "sse_enabled",
@@ -88,6 +96,24 @@ def _algorithm_info_data(payload: AlgorithmInfoFields) -> dict:
     return payload.model_dump(include=ALGORITHM_INFO_FIELDS)
 
 
+def _validate_server(server_id: str) -> dict[str, str]:
+    try:
+        return gpu_server_registry.public_identity(server_id)
+    except GpuServerError as exc:
+        raise CustomException(str(exc), status_code=400) from exc
+
+
+def _server_identity_for_response(server_id: str | None) -> dict[str, str]:
+    try:
+        return gpu_server_registry.public_identity(server_id or "primary")
+    except GpuServerError:
+        return {
+            "server_id": server_id or "primary",
+            "server_name": "未配置的服务器",
+            "server_host": "--",
+        }
+
+
 def _serialize_json_field(value):
     if value is None:
         return None
@@ -97,6 +123,7 @@ def _serialize_json_field(value):
 @router.get("/selectPage")
 async def select_page(
     name: str = "",
+    serverId: str = "",
     userId: int = 0,
     pageNum: int = Query(1, ge=1),
     pageSize: int = Query(5, ge=1, le=100),
@@ -104,6 +131,9 @@ async def select_page(
     query = Algorithm.filter(deleted_at__isnull=True)
     if name:
         query = query.filter(name__contains=name)
+    if serverId:
+        _validate_server(serverId)
+        query = query.filter(algorithm_info__server_id=serverId)
     query = query.prefetch_related("algorithm_info", "created_by").order_by("id")
 
     total = await query.count()
@@ -111,6 +141,7 @@ async def select_page(
     result = []
     for algorithm in algorithms:
         info = algorithm.algorithm_info
+        server = _server_identity_for_response(info.server_id if info else None)
         result.append({
             "id": algorithm.id,
             "algorithm_no": algorithm.algorithm_no,
@@ -121,6 +152,7 @@ async def select_page(
             "created_at": algorithm.created_at.strftime("%Y-%m-%d %H:%M:%S") if algorithm.created_at else None,
             "updated_at": algorithm.updated_at.strftime("%Y-%m-%d %H:%M:%S") if algorithm.updated_at else None,
             "framework": info.framework if info else None,
+            **server,
             "info_id": info.id if info else None,
             "framework_version": info.framework_version if info else None,
             "python_version": info.python_version if info else None,
@@ -148,6 +180,7 @@ async def add(
     payload: AlgorithmCreatePydantic,
     current_admin: dict = Depends(get_current_admin),
 ):
+    _validate_server(payload.server_id)
     main_data = payload.model_dump(
         include={"name", "abbreviation", "description", "task_category"}
     )
@@ -177,6 +210,7 @@ async def add(
 
 @router.put("/update", dependencies=[Depends(get_current_admin)])
 async def update(payload: AlgorithmUpdatePydantic):
+    _validate_server(payload.server_id)
     async with in_transaction() as connection:
         algorithm = await Algorithm.filter(id=payload.id).using_db(
             connection
@@ -199,6 +233,16 @@ async def update(payload: AlgorithmUpdatePydantic):
                 **info_data,
             )
         else:
+            if (
+                info.server_id != payload.server_id
+                and await TrainingJob.filter(algorithm_id=payload.id).using_db(
+                    connection
+                ).exists()
+            ):
+                raise CustomException(
+                    "该算法已被训练任务引用，不能更换所属服务器；请为新服务器新增一条算法记录",
+                    status_code=409,
+                )
             await AlgorithmInfo.filter(id=info.id).using_db(connection).update(
                 **info_data
             )
@@ -223,6 +267,7 @@ async def delete(id: int):
 
 @router.post("/info/add", dependencies=[Depends(get_current_admin)])
 async def add_info(payload: AlgorithmInfoCreatePydantic):
+    _validate_server(payload.server_id)
     if not await Algorithm.filter(id=payload.algorithm_id).exists():
         raise CustomException("算法不存在", status_code=404)
     try:
@@ -237,9 +282,24 @@ async def add_info(payload: AlgorithmInfoCreatePydantic):
 
 @router.put("/info/update", dependencies=[Depends(get_current_admin)])
 async def update_info(payload: AlgorithmInfoUpdatePydantic):
-    updated = await AlgorithmInfo.filter(id=payload.id).update(
-        **_algorithm_info_data(payload)
-    )
-    if updated != 1:
-        raise CustomException("算法运行配置不存在", status_code=404)
+    _validate_server(payload.server_id)
+    async with in_transaction() as connection:
+        info = await AlgorithmInfo.filter(id=payload.id).using_db(
+            connection
+        ).select_for_update().first()
+        if info is None:
+            raise CustomException("算法运行配置不存在", status_code=404)
+        if (
+            info.server_id != payload.server_id
+            and await TrainingJob.filter(algorithm_id=info.algorithm_id).using_db(
+                connection
+            ).exists()
+        ):
+            raise CustomException(
+                "该算法已被训练任务引用，不能更换所属服务器；请为新服务器新增一条算法记录",
+                status_code=409,
+            )
+        await AlgorithmInfo.filter(id=payload.id).using_db(connection).update(
+            **_algorithm_info_data(payload)
+        )
     return Result.success()

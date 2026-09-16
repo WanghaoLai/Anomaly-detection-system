@@ -210,9 +210,9 @@ def check_api_contract(contract: dict) -> list[str]:
     actual_routes = {
         (path, method)
         for path, operations in openapi["paths"].items()
-        if path.startswith("/knowledge")
-        or path.startswith("/chat")
-        or path.startswith("/admin/chat")
+        if path.startswith("/api/knowledge")
+        or path.startswith("/api/chat")
+        or path.startswith("/api/admin/chat")
         for method in operations
         if method in {"get", "post", "put", "delete", "patch"}
     }

@@ -1,0 +1,21 @@
+[Unit]
+Description=Industrial Anomaly Detection API
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=anomaly-detection
+Group=anomaly-detection
+WorkingDirectory=/srv/anomaly-detection-system/fastapi-app
+EnvironmentFile=/etc/anomaly-detection-system/app.env
+StateDirectory=anomaly-detection-system
+StateDirectoryMode=0750
+ExecStart=/srv/anomaly-detection-system/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 9090 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

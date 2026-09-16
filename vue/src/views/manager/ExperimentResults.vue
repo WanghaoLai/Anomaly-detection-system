@@ -39,7 +39,7 @@
           <el-tag :type="run.sourceType === 'TRAINING' ? 'primary' : 'success'" effect="light" round>
             {{ run.sourceType === 'TRAINING' ? '训练结果' : '推理结果' }}
           </el-tag>
-          <span>{{ dateTime(run.finishedAt) }}</span>
+          <span>{{ run.serverName || run.serverId }} · {{ dateTime(run.finishedAt) }}</span>
         </div>
         <div class="algorithm-line">
           <span class="algorithm-mark">{{ initials(run.algorithmAbbreviation || run.algorithmName) }}</span>
@@ -87,6 +87,7 @@
               {{ state.activeRun.sourceType === 'TRAINING' ? '训练结果' : '推理结果' }}
             </el-tag>
             <h2>{{ state.activeRun.algorithmName }} · {{ state.activeRun.datasetName }}</h2>
+            <span class="drawer-server">{{ state.activeRun.serverName || state.activeRun.serverId }} · {{ state.activeRun.serverHost }}</span>
           </div>
           <el-button
             type="primary"
