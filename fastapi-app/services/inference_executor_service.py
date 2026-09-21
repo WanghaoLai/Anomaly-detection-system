@@ -81,6 +81,7 @@ class InferenceExecutorService:
         self._monitor_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._dispatch_lock = asyncio.Lock()
+        self._submit_lock = asyncio.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -148,38 +149,44 @@ class InferenceExecutorService:
         if requested_gpu is not None and requested_gpu not in self.config["gpu_allowlist"]:
             raise InferenceExecutorError("请求的 GPU 不在管理员白名单中")
         owner_model = Admin if owner["role"] == "管理员" else User
-        async with in_transaction() as connection:
-            principal = await owner_model.filter(id=owner["user_id"]).using_db(
-                connection
-            ).select_for_update().first()
-            if principal is None:
-                raise InferenceExecutorError("任务所有者不存在或已被删除")
-            pending = await InferenceJob.filter(
-                owner_id=owner["user_id"],
-                owner_role=owner["role"],
-                server_id=source.server_id,
-                status__in=INFERENCE_ACTIVE,
-            ).using_db(connection).count()
-            if pending >= self.config["max_pending_jobs_per_user"]:
-                raise InferenceExecutorError("当前用户的活动推理任务已达上限")
-            return await InferenceJob.create(
-                using_db=connection,
-                job_no=str(uuid.uuid4()),
-                owner_id=owner["user_id"],
-                owner_role=owner["role"],
-                server_id=source.server_id,
-                training_job_id=source.id,
-                status="QUEUED",
-                config_json={
-                    "server_id": source.server_id,
-                    "parameters": normalized,
-                    "requested_gpu": requested_gpu,
-                    "adapter": {
-                        "key": adapter.key,
-                        "protocol_version": adapter.protocol_version,
+        async with self._submit_lock:
+            async with in_transaction() as connection:
+                principal = await owner_model.filter(id=owner["user_id"]).using_db(
+                    connection
+                ).select_for_update().first()
+                if principal is None:
+                    raise InferenceExecutorError("任务所有者不存在或已被删除")
+                active_query = InferenceJob.filter(
+                    server_id=source.server_id,
+                    status__in=INFERENCE_ACTIVE,
+                ).using_db(connection)
+                total_pending = await active_query.count()
+                if total_pending >= self.config["max_pending_jobs_total"]:
+                    raise InferenceExecutorError("系统推理队列已满，请稍后再试")
+                pending = await active_query.filter(
+                    owner_id=owner["user_id"],
+                    owner_role=owner["role"],
+                ).count()
+                if pending >= self.config["max_pending_jobs_per_user"]:
+                    raise InferenceExecutorError("当前用户的活动推理任务已达上限")
+                return await InferenceJob.create(
+                    using_db=connection,
+                    job_no=str(uuid.uuid4()),
+                    owner_id=owner["user_id"],
+                    owner_role=owner["role"],
+                    server_id=source.server_id,
+                    training_job_id=source.id,
+                    status="QUEUED",
+                    config_json={
+                        "server_id": source.server_id,
+                        "parameters": normalized,
+                        "requested_gpu": requested_gpu,
+                        "adapter": {
+                            "key": adapter.key,
+                            "protocol_version": adapter.protocol_version,
+                        },
                     },
-                },
-            )
+                )
 
     async def _gpu_candidates(self, requested: int | None) -> list[int]:
         free = await training_executor_service._gpu_free_memory()

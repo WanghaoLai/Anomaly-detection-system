@@ -36,13 +36,18 @@
 
       <div class="chat-main">
         <div class="messages-container" ref="messagesContainer">
+          <div v-if="data.hasMoreMessages" class="history-loader">
+            <el-button link type="primary" :loading="data.loadingHistory" @click="loadOlderMessages">
+              加载更早消息
+            </el-button>
+          </div>
           <div v-if="data.messages.length === 0" class="empty-state">
             <div class="empty-icon"><el-icon :size="40"><ChatDotRound /></el-icon></div>
             <div class="empty-title">管理员智能助手</div>
             <div class="empty-desc">输入您的问题，我将协助您管理系统的数据集、算法、训练与知识库</div>
           </div>
 
-          <div v-for="(msg, index) in data.messages" :key="index" :class="['message', msg.role]">
+          <div v-for="(msg, index) in data.messages" :key="msg.id || index" :class="['message', msg.role]">
             <div class="message-avatar">
               <img v-if="msg.role === 'user'" :src="data.user.avatar || 'https://cube.elemecdn.com/3/7c/3ea6beec64369c2642b92c6726f1epng.png'" class="avatar-img" />
               <div v-else class="avatar-ai"><el-icon><Monitor /></el-icon></div>
@@ -121,6 +126,9 @@ const data = reactive({
   conversations: [],
   currentConversation: null,
   messages: [],
+  hasMoreMessages: false,
+  nextBeforeId: null,
+  loadingHistory: false,
   inputMessage: '',
   loading: false
 })
@@ -172,6 +180,8 @@ const createConversation = async () => {
       await loadConversations()
       data.currentConversation = res.data.id
       data.messages = []
+      data.hasMoreMessages = false
+      data.nextBeforeId = null
     }
   } catch (error) {
     ElMessage.error('创建会话失败')
@@ -183,11 +193,36 @@ const switchConversation = async (conversationId) => {
   try {
     const res = await request.get(`/admin/chat/messages/${conversationId}`)
     if (res.code === '200') {
-      data.messages = res.data || []
+      data.messages = res.data?.items || []
+      data.hasMoreMessages = res.data?.hasMore === true
+      data.nextBeforeId = res.data?.nextBeforeId || null
       scrollToBottom()
     }
   } catch (error) {
     ElMessage.error('加载消息失败')
+  }
+}
+
+const loadOlderMessages = async () => {
+  if (!data.currentConversation || !data.hasMoreMessages || data.loadingHistory) return
+  data.loadingHistory = true
+  const container = messagesContainer.value
+  const previousHeight = container?.scrollHeight || 0
+  try {
+    const res = await request.get(`/admin/chat/messages/${data.currentConversation}`, {
+      params: { beforeId: data.nextBeforeId, pageSize: 50 }
+    })
+    if (res.code === '200') {
+      data.messages = [...(res.data?.items || []), ...data.messages]
+      data.hasMoreMessages = res.data?.hasMore === true
+      data.nextBeforeId = res.data?.nextBeforeId || null
+      await nextTick()
+      if (container) container.scrollTop += container.scrollHeight - previousHeight
+    }
+  } catch {
+    ElMessage.error('加载更早消息失败')
+  } finally {
+    data.loadingHistory = false
   }
 }
 
@@ -200,6 +235,8 @@ const deleteConversation = async (conversationId) => {
       if (data.currentConversation === conversationId) {
         data.currentConversation = null
         data.messages = []
+        data.hasMoreMessages = false
+        data.nextBeforeId = null
       }
       await loadConversations()
     }

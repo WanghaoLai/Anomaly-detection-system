@@ -128,6 +128,7 @@ class TrainingExecutorService:
         self._stop_event = asyncio.Event()
         self._reconcile_lock = asyncio.Lock()
         self._dispatch_lock = asyncio.Lock()
+        self._submit_lock = asyncio.Lock()
         self._log_sync_locks: dict[int, asyncio.Lock] = {}
         self._event_locks: dict[int, asyncio.Lock] = {}
 
@@ -477,6 +478,8 @@ class TrainingExecutorService:
         retry_of_job_id: int | None = None,
         attempt: int = 1,
     ) -> TrainingJob:
+        if not self.enabled:
+            raise TrainingExecutorError("训练执行器未启用或配置不完整")
         algorithm, dataset, runtime, dataset_runtime, adapter = (
             await self._resolve_whitelisted_runtime(algorithm_id, dataset_id, server_id)
         )
@@ -491,45 +494,53 @@ class TrainingExecutorService:
             raise TrainingExecutorError("请求的 GPU 不在管理员白名单中")
         job_no = str(uuid.uuid4())
         owner_model = Admin if owner["role"] == "管理员" else User
-        async with in_transaction() as connection:
-            principal = await owner_model.filter(id=owner["user_id"]).using_db(
-                connection
-            ).select_for_update().first()
-            if principal is None:
-                raise TrainingExecutorError("任务所有者不存在或已被删除")
-            pending_count = await TrainingJob.filter(
-                owner_id=owner["user_id"],
-                owner_role=owner["role"],
-                server_id=server_id,
-                status__in=ACTIVE_STATUSES,
-            ).using_db(connection).count()
-            if pending_count >= self.config["max_pending_jobs_per_user"]:
-                raise TrainingExecutorError(
-                    f"每个用户最多保留 {self.config['max_pending_jobs_per_user']} 个活动或排队任务"
-                )
-            job = await TrainingJob.create(
-                using_db=connection,
-                job_no=job_no,
-                owner_id=owner["user_id"],
-                owner_role=owner["role"],
-                server_id=server_id,
-                algorithm_id=algorithm.id,
-                dataset_id=dataset.id,
-                status="QUEUED",
-                config_json={
-                    "server_id": algorithm.algorithm_info.server_id,
-                    "parameters": validated,
-                    "requested_gpu": requested_gpu,
-                    "adapter": {
-                        "key": adapter.key,
-                        "protocol_version": adapter.protocol_version,
+        # 生产部署使用单 worker；提交锁让不同账号的并发请求也在同一个
+        # 全局容量检查点串行化，避免按用户锁无法阻止的总量竞态。
+        async with self._submit_lock:
+            async with in_transaction() as connection:
+                principal = await owner_model.filter(id=owner["user_id"]).using_db(
+                    connection
+                ).select_for_update().first()
+                if principal is None:
+                    raise TrainingExecutorError("任务所有者不存在或已被删除")
+                active_query = TrainingJob.filter(
+                    server_id=server_id,
+                    status__in=ACTIVE_STATUSES,
+                ).using_db(connection)
+                total_pending = await active_query.count()
+                if total_pending >= self.config["max_pending_jobs_total"]:
+                    raise TrainingExecutorError("系统训练队列已满，请稍后再试")
+                pending_count = await active_query.filter(
+                    owner_id=owner["user_id"],
+                    owner_role=owner["role"],
+                ).count()
+                if pending_count >= self.config["max_pending_jobs_per_user"]:
+                    raise TrainingExecutorError(
+                        f"每个用户最多保留 {self.config['max_pending_jobs_per_user']} 个活动或排队任务"
+                    )
+                job = await TrainingJob.create(
+                    using_db=connection,
+                    job_no=job_no,
+                    owner_id=owner["user_id"],
+                    owner_role=owner["role"],
+                    server_id=server_id,
+                    algorithm_id=algorithm.id,
+                    dataset_id=dataset.id,
+                    status="QUEUED",
+                    config_json={
+                        "server_id": algorithm.algorithm_info.server_id,
+                        "parameters": validated,
+                        "requested_gpu": requested_gpu,
+                        "adapter": {
+                            "key": adapter.key,
+                            "protocol_version": adapter.protocol_version,
+                        },
                     },
-                },
-                retry_of_job_id=retry_of_job_id,
-                attempt=attempt,
-                total_epochs=adapter.total_epochs(validated),
-                timeout_seconds=self.config["max_runtime_seconds"],
-            )
+                    retry_of_job_id=retry_of_job_id,
+                    attempt=attempt,
+                    total_epochs=adapter.total_epochs(validated),
+                    timeout_seconds=self.config["max_runtime_seconds"],
+                )
         await self._event(
             job.id,
             "JOB_CREATED",

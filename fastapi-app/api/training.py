@@ -184,9 +184,15 @@ async def training_options(
             if selected["server_id"] == training_executor_service.server_id
             else list(range(int(service.config.get("expected_gpu_count") or 0)))
         ),
-        "executionEnabled": selected["server_id"] == training_executor_service.server_id,
+        "executionEnabled": (
+            selected["server_id"] == training_executor_service.server_id
+            and training_executor_service.enabled
+        ),
         "maxPendingJobs": training_executor_service.config[
             "max_pending_jobs_per_user"
+        ],
+        "maxPendingJobsTotal": training_executor_service.config[
+            "max_pending_jobs_total"
         ],
         "maxConcurrentJobs": training_executor_service.config[
             "max_concurrent_jobs"

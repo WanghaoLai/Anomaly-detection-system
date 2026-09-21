@@ -1,5 +1,6 @@
 """由已训练模型驱动的通用算法推理 API。"""
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,6 +21,7 @@ router = APIRouter(
     prefix="/inference",
     dependencies=[Depends(get_current_user)],
 )
+logger = logging.getLogger(__name__)
 
 
 class InferenceJobCreate(BaseModel):
@@ -163,7 +165,18 @@ async def create_job(
             {"classes": request.classes},
             request.requested_gpu,
         )
-        await inference_executor_service.dispatch_job(job.id)
+        # 任务一旦提交成功，数据库中的 QUEUED 记录就是用户可追踪的事实。
+        # 即时调度只是降低等待时间的优化；SSH、GPU 探测等瞬时故障不能把
+        # 已经创建的任务伪装成“创建失败”，否则用户重试会产生重复任务。
+        try:
+            await inference_executor_service.dispatch_job(job.id)
+        except InferenceExecutorError:
+            logger.warning(
+                "Inference job %s was persisted but immediate dispatch failed; "
+                "the background scheduler will retry it",
+                job.id,
+                exc_info=True,
+            )
         created = await InferenceJob.get(id=job.id)
         metadata = await _metadata([created])
         return Result.success(_data(created, metadata.get(created.id)))

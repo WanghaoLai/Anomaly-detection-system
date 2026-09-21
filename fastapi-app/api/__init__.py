@@ -5,7 +5,7 @@ from typing import Literal
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from tortoise.exceptions import IntegrityError
 
 from common.auth import (
@@ -22,6 +22,8 @@ from common.auth import (
 )
 from common.exception_handler import CustomException
 from common.login_rate_limiter import login_rate_limiter
+from common.registration_rate_limiter import registration_rate_limiter
+from common.registration_policy import is_registration_enabled
 from common.result import Result
 from models import Admin, AuthSession, User
 from settings import (
@@ -36,12 +38,15 @@ class Account(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int = None
-    username: str = None
+    # 上限与 user 表 varchar(255) 列宽对齐：超长输入在 422 入口层
+    # 拒绝，而不是穿透到 INSERT 时冒泡为 500。密码不在此限制，
+    # 由 validate_password_policy 以字节口径给出更具体的提示。
+    username: str = Field(default=None, max_length=255)
     password: str = None
     newPassword: str = None
     role: str = None
-    name: str = None
-    avatar: str = None
+    name: str = Field(default=None, max_length=255)
+    avatar: str = Field(default=None, max_length=255)
 
 
 class PasswordUpdateRequest(BaseModel):
@@ -198,9 +203,19 @@ async def logout(request: Request, response: Response):
     return Result.success()
 
 
+@api_router.get("/registration-policy")
+async def registration_policy():
+    return Result.success({"enabled": await is_registration_enabled()})
+
+
 # 注册
 @api_router.post("/register")
-async def register(account: Account):
+async def register(account: Account, request: Request = None):
+    if not await is_registration_enabled():
+        raise HTTPException(status_code=403, detail="系统未开放自主注册，请联系管理员创建账号")
+    client_ip = request.client.host if request and request.client else "unknown"
+    if request is not None:
+        await registration_rate_limiter.check(client_ip)
     if (
         not account.username
         or not account.username.strip()
@@ -223,6 +238,8 @@ async def register(account: Account):
     except IntegrityError:
         # 唯一索引兜底：并发注册同名账号时，先查后建存在竞态窗口。
         raise CustomException("账号已存在")
+    if request is not None:
+        await registration_rate_limiter.record_registration(client_ip)
     return Result.success()
 
 

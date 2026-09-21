@@ -3,12 +3,14 @@ import logging
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from common.auth import get_current_user
+from common.resource_limits import llm_capacity_limiter
 from common.result import Result
+from common.chat_history import message_page, recent_messages
 from models import Conversation, Message
 from services import LLMService, ChatService
 from services.knowledge_service import knowledge_service
@@ -95,24 +97,30 @@ async def get_conversations(
 @router.get("/messages/{conversation_id}")
 async def get_messages(
     conversation_id: int,
+    before_id: int | None = Query(default=None, alias="beforeId", gt=0),
+    page_size: int = Query(default=50, alias="pageSize", ge=1, le=100),
     current_user: dict = Depends(get_current_chat_user),
 ):
     conversation = await _get_owned_conversation(
         conversation_id,
         current_user["user_id"],
     )
-    messages = await Message.filter(
-        conversation_id=conversation.id
-    ).order_by("created_at")
-    result = []
-    for msg in messages:
-        result.append({
+    page = await message_page(
+        Message,
+        conversation_id=conversation.id,
+        before_id=before_id,
+        page_size=page_size,
+    )
+    page["items"] = [
+        {
             "id": msg.id,
             "role": msg.role,
             "content": msg.content,
             "created_at": msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
-        })
-    return Result.success(result)
+        }
+        for msg in page["items"]
+    ]
+    return Result.success(page)
 
 
 @router.post("/send")
@@ -126,16 +134,23 @@ async def send_message(
         current_user["user_id"],
     )
 
-    user_message = await Message.create(
-        conversation_id=conversation.id,
-        role="user",
-        content=data.message
-    )
+    await llm_capacity_limiter.acquire()
+    try:
+        user_message = await Message.create(
+            conversation_id=conversation.id,
+            role="user",
+            content=data.message
+        )
 
-    history = await Message.filter(
-        conversation_id=conversation.id
-    ).order_by("created_at")
-    history_list = [{"role": msg.role, "content": msg.content} for msg in history]
+        history = await recent_messages(
+            Message,
+            conversation_id=conversation.id,
+            history_limit=int(AI_CONFIG["max_history"]),
+        )
+        history_list = [{"role": msg.role, "content": msg.content} for msg in history]
+    except BaseException:
+        llm_capacity_limiter.release()
+        raise
     request_id = str(uuid.uuid4())
 
     async def generate():
@@ -221,6 +236,7 @@ async def send_message(
                 "done": True,
             }, event="done")
         finally:
+            llm_capacity_limiter.release()
             if not terminal:
                 logger.info(
                     "SSE 流非正常终止: conversation=%s status=disconnected",

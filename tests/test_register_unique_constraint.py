@@ -8,6 +8,7 @@ BACKEND_DIR = Path(__file__).parents[1] / "fastapi-app"
 sys.path.insert(0, str(BACKEND_DIR))
 
 from tortoise import Tortoise, connections  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 from common.auth import validate_password_policy  # noqa: E402
 from common.exception_handler import CustomException  # noqa: E402
@@ -23,6 +24,12 @@ class RegisterUniqueConstraintTests(unittest.IsolatedAsyncioTestCase):
     """🔴#2 回归：username 唯一索引 + 并发注册竞态的 IntegrityError 兜底。"""
 
     async def asyncSetUp(self):
+        self.registration_patch = mock.patch(
+            "api.is_registration_enabled", new_callable=mock.AsyncMock,
+            return_value=True,
+        )
+        self.registration_patch.start()
+        self.addCleanup(self.registration_patch.stop)
         await Tortoise.init(
             db_url="sqlite://:memory:",
             modules={"models": ["models"]},
@@ -107,9 +114,31 @@ class PasswordPolicyTests(unittest.TestCase):
                 Account(username="policy-user", password="abc123")
             )
 
-        with self.assertRaises(CustomException) as ctx:
-            asyncio.run(call_register())
+        with mock.patch("api.is_registration_enabled", new_callable=mock.AsyncMock, return_value=True):
+            with self.assertRaises(CustomException) as ctx:
+                asyncio.run(call_register())
         self.assertIn("不能少于", str(ctx.exception))
+
+
+class AccountFieldLimitTests(unittest.TestCase):
+    """🟡#11 回归：注册字段超长必须在入口层 422 拒绝，不能穿透到数据库 500。"""
+
+    def test_oversize_username_rejected(self):
+        with self.assertRaises(ValidationError):
+            Account(username="a" * 256, password="pass123456")
+
+    def test_oversize_name_rejected(self):
+        with self.assertRaises(ValidationError):
+            Account(username="limit-user", password="pass123456", name="名" * 256)
+
+    def test_oversize_avatar_rejected(self):
+        with self.assertRaises(ValidationError):
+            Account(username="limit-user", password="pass123456", avatar="x" * 256)
+
+    def test_boundary_length_accepted(self):
+        # 255 恰好等于 user 表列宽，必须放行。
+        account = Account(username="a" * 255, password="pass123456")
+        self.assertEqual(len(account.username), 255)
 
 
 if __name__ == "__main__":

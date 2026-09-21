@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 异常检测系统一键启动脚本（macOS / Linux）
+# 异常检测科研平台一键启动脚本（macOS / Linux）
 #
 # 使用方法：
 #   1. macOS：在 Finder 中双击本脚本；首次运行若被系统拦截，请右键选择“打开”。
@@ -106,7 +106,7 @@ FRONTEND_LOG="$LOG_DIR/frontend-$RUN_ID.log"
 cleanup() {
   trap - EXIT INT TERM
   echo
-  echo "正在停止异常检测系统..."
+  echo "正在停止异常检测科研平台..."
   if [ -n "$FRONTEND_PID" ] && kill -0 "$FRONTEND_PID" 2>/dev/null; then
     kill "$FRONTEND_PID" 2>/dev/null || true
   fi
@@ -189,7 +189,7 @@ fi
 
 FRONTEND_URL="http://127.0.0.1:$FRONTEND_PORT/"
 echo
-echo "异常检测系统已启动完成：$FRONTEND_URL"
+echo "异常检测科研平台已启动完成：$FRONTEND_URL"
 echo "启动耗时：$((SECONDS - STARTUP_STARTED_AT)) 秒"
 echo "后端日志：$BACKEND_LOG"
 echo "前端日志：$FRONTEND_LOG"

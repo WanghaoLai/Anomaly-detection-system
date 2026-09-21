@@ -213,7 +213,12 @@
       </el-form>
       <template #footer>
         <el-button @click="data.createVisible = false">取消</el-button>
-        <el-button type="primary" :loading="data.submitting" @click="submitJob">提交任务</el-button>
+        <el-button
+          type="primary"
+          :loading="data.submitting"
+          :disabled="data.options.executionEnabled === false"
+          @click="submitJob"
+        >提交任务</el-button>
       </template>
     </el-dialog>
 

@@ -702,16 +702,43 @@ class GpuServerRegistry:
         ]
 
 
-try:
-    gpu_server_registry = GpuServerRegistry.from_environment(
-        GPU_SERVER_CONFIG,
-        GPU_ADDITIONAL_SERVERS_JSON,
+def build_gpu_server_registry(
+    primary_config: dict[str, Any],
+    additional_json: str,
+) -> tuple[GpuServerRegistry, dict[str, Any]]:
+    """构建注册表并返回可安全展示给管理员的配置健康状态。"""
+    try:
+        registry = GpuServerRegistry.from_environment(
+            primary_config,
+            additional_json,
+        )
+        return registry, {
+            "healthy": True,
+            "fallbackToPrimary": False,
+            "activeServerCount": len(registry.public_options()),
+            "error": None,
+        }
+    except GpuServerError as exc:
+        # 监控页配置错误不应阻止训练、推理等核心模块启动；同时必须
+        # 保存结构化降级状态，不能只依赖容易被忽略的启动日志。
+        registry = GpuServerRegistry([primary_config])
+        return registry, {
+            "healthy": False,
+            "fallbackToPrimary": True,
+            "activeServerCount": 1,
+            "error": str(exc),
+        }
+
+
+gpu_server_registry, gpu_server_configuration_status = build_gpu_server_registry(
+    GPU_SERVER_CONFIG,
+    GPU_ADDITIONAL_SERVERS_JSON,
+)
+if not gpu_server_configuration_status["healthy"]:
+    logger.error(
+        "GPU 追加服务器配置无效，已回退到主服务器: %s",
+        gpu_server_configuration_status["error"],
     )
-except GpuServerError:
-    # 监控页的追加配置错误不应阻止训练、推理等核心模块启动。
-    # 保留主服务器并记录完整异常，管理员可从日志修正 JSON。
-    logger.exception("GPU 追加服务器配置无效，已回退到主服务器")
-    gpu_server_registry = GpuServerRegistry([GPU_SERVER_CONFIG])
 
 # 保留旧单例导出，避免历史测试与内部调用失效。
 gpu_server_service = gpu_server_registry.default_service

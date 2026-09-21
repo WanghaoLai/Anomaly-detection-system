@@ -31,6 +31,18 @@ class User(Model):
         table = 'user'
 
 
+class RegistrationPolicy(Model):
+    """自主注册开关；固定主键 1，供所有后端实例读取。"""
+
+    id = fields.IntField(primary_key=True)
+    enabled = fields.BooleanField()
+    updated_by = fields.IntField(null=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = 'registration_policy'
+
+
 class AuthSession(Model):
     id = fields.CharField(max_length=36, primary_key=True)
     user_id = fields.IntField(db_index=True)

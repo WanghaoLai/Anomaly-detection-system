@@ -3,7 +3,7 @@ chcp 65001 >nul
 setlocal EnableExtensions
 
 REM ================================================================
-REM 异常检测系统 Windows 一键启动脚本
+REM 异常检测科研平台 Windows 一键启动脚本
 REM
 REM 使用方法：
 REM   1. 直接双击“异常检测系统.bat”。

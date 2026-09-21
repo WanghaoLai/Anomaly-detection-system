@@ -44,6 +44,7 @@ class ProductionDeploymentConfigTests(unittest.TestCase):
             self.assertFalse(values[name], name)
         self.assertEqual(values["JWT_COOKIE_SECURE"], "true")
         self.assertEqual(values["DB_SCHEMA_CHECK_ENABLED"], "true")
+        self.assertEqual(values["SELF_REGISTRATION_ENABLED"], "false")
         self.assertEqual(values["AI_VECTOR_STORE_PROVIDER"], "qdrant")
         self.assertEqual(values["AI_QDRANT_MODE"], "server")
         self.assertEqual(

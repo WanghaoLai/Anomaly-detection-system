@@ -1,4 +1,4 @@
-﻿# 异常检测系统 Windows 启动器内部实现。
+﻿# 异常检测科研平台 Windows 启动器内部实现。
 # 普通用户请双击项目根目录的“异常检测系统.bat”，无需单独运行本文件。
 # 本启动器负责：选择空闲端口、启动前后端、等待就绪、打开浏览器及退出清理。
 
@@ -256,7 +256,7 @@ try {
 
     $FrontendUrl = "http://127.0.0.1:$FrontendPort/"
     Write-Host ""
-    Write-Host "异常检测系统已启动完成：$FrontendUrl" -ForegroundColor Green
+    Write-Host "异常检测科研平台已启动完成：$FrontendUrl" -ForegroundColor Green
     Write-Host "后端日志：$BackendLog"
     Write-Host "前端日志：$FrontendLog"
     Write-Host "按 Ctrl+C 可同时停止所有服务。"
@@ -279,7 +279,7 @@ catch {
 finally {
     if ($null -ne $FrontendProcess -or $null -ne $BackendProcess) {
         Write-Host ""
-        Write-Host "正在停止异常检测系统..."
+        Write-Host "正在停止异常检测科研平台..."
         Stop-ProcessTree $FrontendProcess
         Stop-ProcessTree $BackendProcess
         Write-Host "前端和后端已停止。"

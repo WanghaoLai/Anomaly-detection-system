@@ -18,7 +18,7 @@ from common.migrations import (  # noqa: E402
 class MigrationDiscoveryTests(unittest.TestCase):
     def test_project_migrations_are_contiguous_and_checksummed(self):
         migrations = discover_migrations(BACKEND_DIR / "migrations")
-        self.assertEqual([item.version for item in migrations], list(range(1, 19)))
+        self.assertEqual([item.version for item in migrations], list(range(1, 20)))
         for item in migrations:
             self.assertEqual(
                 item.checksum,
