@@ -1,6 +1,34 @@
 """普通用户与管理员对话共用的有界历史查询。"""
 
 from typing import Any
+from datetime import datetime
+
+from tortoise.expressions import Q
+
+
+async def conversation_page(
+    query,
+    *,
+    before_at: datetime | None,
+    before_id: int | None,
+    page_size: int,
+) -> dict[str, Any]:
+    """按最近活动时间和主键稳定分页，单次只读取有界数量。"""
+    if before_at is not None:
+        query = query.filter(
+            Q(updated_at__lt=before_at)
+            | Q(updated_at=before_at, id__lt=before_id)
+        )
+    fetched = await query.order_by("-updated_at", "-id").limit(page_size + 1)
+    has_more = len(fetched) > page_size
+    rows = fetched[:page_size]
+    last = rows[-1] if has_more else None
+    return {
+        "items": rows,
+        "hasMore": has_more,
+        "nextBeforeAt": last.updated_at.isoformat() if last else None,
+        "nextBeforeId": last.id if last else None,
+    }
 
 
 async def message_page(

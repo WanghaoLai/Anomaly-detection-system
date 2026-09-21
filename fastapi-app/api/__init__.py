@@ -112,7 +112,15 @@ async def login(
     if needs_upgrade:
         hashed = hash_password(account.password)
         model = Admin if account.role == "管理员" else User
-        await model.filter(id=user.id).update(password=hashed)
+        # 遗留明文升级只能替换刚刚验证过的值。并发密码重置会改变密码和
+        # token_version；此时拒绝本次登录，不能把旧密码重新写回数据库。
+        updated = await model.filter(
+            id=user.id,
+            password=user.password,
+            token_version=user.token_version,
+        ).update(password=hashed)
+        if updated != 1:
+            raise HTTPException(status_code=401, detail="账号状态已变更，请重新登录")
         user.password = hashed
 
     await login_rate_limiter.record_success(
@@ -215,7 +223,7 @@ async def register(account: Account, request: Request = None):
         raise HTTPException(status_code=403, detail="系统未开放自主注册，请联系管理员创建账号")
     client_ip = request.client.host if request and request.client else "unknown"
     if request is not None:
-        await registration_rate_limiter.check(client_ip)
+        await registration_rate_limiter.consume(client_ip)
     if (
         not account.username
         or not account.username.strip()
@@ -238,8 +246,6 @@ async def register(account: Account, request: Request = None):
     except IntegrityError:
         # 唯一索引兜底：并发注册同名账号时，先查后建存在竞态窗口。
         raise CustomException("账号已存在")
-    if request is not None:
-        await registration_rate_limiter.record_registration(client_ip)
     return Result.success()
 
 

@@ -54,14 +54,15 @@ class RegistrationRateLimiter:
                 headers={"Retry-After": str(retry_after)},
             )
 
-    async def record_registration(self, client_ip: str) -> None:
+    async def consume(self, client_ip: str) -> None:
+        """在数据库事务内检查并占用一次注册额度，失败请求同样计数。"""
         key = self._key(client_ip)
-        now = datetime.now(timezone.utc)
         window = timedelta(seconds=REGISTRATION_RATE_LIMIT_WINDOW_SECONDS)
         async with self._lock:
             for attempt in range(3):
                 try:
                     async with in_transaction() as connection:
+                        now = datetime.now(timezone.utc)
                         record = await LoginThrottle.filter(key=key).using_db(
                             connection
                         ).select_for_update().first()
@@ -69,25 +70,38 @@ class RegistrationRateLimiter:
                         if started is not None and started.tzinfo is None:
                             started = started.replace(tzinfo=timezone.utc)
                         if record is None or started is None or now - started >= window:
-                            count, started = 1, now
+                            count, started = 0, now
                         else:
-                            count = record.failures + 1
+                            count = record.failures
+                        if count >= REGISTRATION_RATE_LIMIT_ATTEMPTS:
+                            retry_after = max(
+                                1, int((window - (now - started)).total_seconds())
+                            )
+                            raise HTTPException(
+                                status_code=429,
+                                detail="注册请求过于频繁，请稍后再试",
+                                headers={"Retry-After": str(retry_after)},
+                            )
                         if record is None:
                             await LoginThrottle.create(
                                 key=key,
-                                failures=count,
+                                failures=count + 1,
                                 window_started=started,
                                 using_db=connection,
                             )
                         else:
                             await LoginThrottle.filter(key=key).using_db(
                                 connection
-                            ).update(failures=count, window_started=started)
+                            ).update(failures=count + 1, window_started=started)
                     return
                 except (IntegrityError, OperationalError):
                     if attempt == 2:
                         raise
                     await asyncio.sleep(0)
+
+    async def record_registration(self, client_ip: str) -> None:
+        """兼容原内部调用；额度必须在注册尝试前占用。"""
+        await self.consume(client_ip)
 
 
 registration_rate_limiter = RegistrationRateLimiter()

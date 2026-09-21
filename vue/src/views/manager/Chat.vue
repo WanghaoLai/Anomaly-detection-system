@@ -31,6 +31,11 @@
             <el-icon :size="28" color="#d6dce6"><ChatDotRound /></el-icon>
             <span>暂无对话</span>
           </div>
+          <div v-if="data.hasMoreConversations" class="history-loader">
+            <el-button link type="primary" :loading="data.loadingConversations" @click="loadMoreConversations">
+              加载更多对话
+            </el-button>
+          </div>
         </div>
       </div>
 
@@ -124,6 +129,10 @@ const messagesContainer = ref(null)
 const data = reactive({
   user: JSON.parse(localStorage.getItem('system-user') || '{}'),
   conversations: [],
+  hasMoreConversations: false,
+  nextConversationAt: null,
+  nextConversationId: null,
+  loadingConversations: false,
   currentConversation: null,
   messages: [],
   hasMoreMessages: false,
@@ -164,27 +173,55 @@ const handleCitationClick = (event, msg) => {
 
 const loadConversations = async () => {
   try {
-    const res = await request.get('/chat/conversations')
+    const res = await request.get('/chat/conversations', { params: { pageSize: 50 } })
     if (res.code === '200') {
-      data.conversations = res.data || []
+      data.conversations = res.data?.items || []
+      data.hasMoreConversations = res.data?.hasMore === true
+      data.nextConversationAt = res.data?.nextBeforeAt || null
+      data.nextConversationId = res.data?.nextBeforeId || null
     }
   } catch (error) {
     console.error('加载会话列表失败:', error)
   }
 }
 
+const loadMoreConversations = async () => {
+  if (!data.hasMoreConversations || data.loadingConversations) return
+  data.loadingConversations = true
+  try {
+    const res = await request.get('/chat/conversations', {
+      params: {
+        beforeAt: data.nextConversationAt,
+        beforeId: data.nextConversationId,
+        pageSize: 50
+      }
+    })
+    if (res.code === '200') {
+      data.conversations.push(...(res.data?.items || []))
+      data.hasMoreConversations = res.data?.hasMore === true
+      data.nextConversationAt = res.data?.nextBeforeAt || null
+      data.nextConversationId = res.data?.nextBeforeId || null
+    }
+  } catch {
+    ElMessage.error('加载更多对话失败')
+  } finally {
+    data.loadingConversations = false
+  }
+}
+
 const createConversation = async () => {
   try {
     const res = await request.post('/chat/conversation', { title: '新对话' })
-    if (res.code === '200') {
-      await loadConversations()
-      data.currentConversation = res.data.id
-      data.messages = []
-      data.hasMoreMessages = false
-      data.nextBeforeId = null
-    }
+    if (res.code !== '200' || !res.data?.id) throw new Error('创建会话失败')
+    await loadConversations()
+    data.currentConversation = res.data.id
+    data.messages = []
+    data.hasMoreMessages = false
+    data.nextBeforeId = null
+    return res.data.id
   } catch (error) {
     ElMessage.error('创建会话失败')
+    return null
   }
 }
 
@@ -247,7 +284,7 @@ const deleteConversation = async (conversationId) => {
 
 const sendMessage = async () => {
   if (!data.inputMessage.trim() || data.loading) return
-  if (!data.currentConversation) await createConversation()
+  if (!data.currentConversation && !await createConversation()) return
 
   const userMessage = data.inputMessage.trim()
   data.inputMessage = ''

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from datetime import UTC, datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -10,7 +11,7 @@ from pydantic import BaseModel, Field
 from common.auth import get_current_user
 from common.resource_limits import llm_capacity_limiter
 from common.result import Result
-from common.chat_history import message_page, recent_messages
+from common.chat_history import conversation_page, message_page, recent_messages
 from models import Conversation, Message
 from services import LLMService, ChatService
 from services.knowledge_service import knowledge_service
@@ -20,6 +21,7 @@ from services.rag.operations import (
     iter_until_disconnected,
 )
 from settings import AI_CONFIG
+from tortoise.transactions import in_transaction
 
 
 async def get_current_chat_user(
@@ -80,18 +82,30 @@ async def create_conversation(
 
 @router.get("/conversations")
 async def get_conversations(
+    before_at: datetime | None = Query(default=None, alias="beforeAt"),
+    before_id: int | None = Query(default=None, alias="beforeId", gt=0),
+    page_size: int | None = Query(default=None, alias="pageSize", ge=1, le=100),
     current_user: dict = Depends(get_current_chat_user),
 ):
-    conversations = await Conversation.filter(user_id=current_user["user_id"]).order_by("-updated_at")
-    result = []
-    for conv in conversations:
-        result.append({
+    if (before_at is None) != (before_id is None):
+        raise HTTPException(status_code=422, detail="会话分页游标不完整")
+    page = await conversation_page(
+        Conversation.filter(user_id=current_user["user_id"]),
+        before_at=before_at,
+        before_id=before_id,
+        page_size=page_size or 50,
+    )
+    page["items"] = [
+        {
             "id": conv.id,
             "title": conv.title,
             "created_at": conv.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             "updated_at": conv.updated_at.strftime("%Y-%m-%d %H:%M:%S")
-        })
-    return Result.success(result)
+        }
+        for conv in page["items"]
+    ]
+    # 未传分页参数的旧客户端仍收到数组；服务器对其读取量也限制为 50。
+    return Result.success(page if page_size is not None or before_at is not None else page["items"])
 
 
 @router.get("/messages/{conversation_id}")
@@ -136,11 +150,17 @@ async def send_message(
 
     await llm_capacity_limiter.acquire()
     try:
-        user_message = await Message.create(
-            conversation_id=conversation.id,
-            role="user",
-            content=data.message
-        )
+        async with in_transaction() as connection:
+            user_message = await Message.create(
+                using_db=connection,
+                conversation_id=conversation.id,
+                role="user",
+                content=data.message
+            )
+            await Conversation.filter(
+                id=conversation.id,
+                user_id=current_user["user_id"],
+            ).using_db(connection).update(updated_at=datetime.now(UTC))
 
         history = await recent_messages(
             Message,

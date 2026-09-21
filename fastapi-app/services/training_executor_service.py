@@ -541,24 +541,31 @@ class TrainingExecutorService:
                     total_epochs=adapter.total_epochs(validated),
                     timeout_seconds=self.config["max_runtime_seconds"],
                 )
-        await self._event(
-            job.id,
-            "JOB_CREATED",
-            "训练任务已进入队列",
-            {"retry_of_job_id": retry_of_job_id, "attempt": attempt},
-        )
-        await self.audit(
-            job.id,
-            "JOB_CREATE",
-            owner,
-            "创建训练任务",
-            {
-                "server_id": algorithm.algorithm_info.server_id,
-                "algorithm_id": algorithm.id,
-                "dataset_id": dataset.id,
-                "requested_gpu": requested_gpu,
-            },
-        )
+                # 任务、首条事件和创建审计必须一起提交：任一写入失败时
+                # 请求失败且任务不存在，避免用户收到失败后重试产生重复任务。
+                await TrainingEvent.create(
+                    using_db=connection,
+                    job_id=job.id,
+                    sequence=1,
+                    event_type="JOB_CREATED",
+                    message="训练任务已进入队列",
+                    payload_json={"retry_of_job_id": retry_of_job_id, "attempt": attempt},
+                )
+                await TrainingAudit.create(
+                    using_db=connection,
+                    job_id=job.id,
+                    actor_id=owner["user_id"],
+                    actor_role=owner["role"],
+                    action="JOB_CREATE",
+                    result="SUCCESS",
+                    message="创建训练任务",
+                    payload_json={
+                        "server_id": algorithm.algorithm_info.server_id,
+                        "algorithm_id": algorithm.id,
+                        "dataset_id": dataset.id,
+                        "requested_gpu": requested_gpu,
+                    },
+                )
         return job
 
     async def dispatch_job(self, job_id: int) -> TrainingJob:

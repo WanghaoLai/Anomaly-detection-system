@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from typing import Any
 from urllib.parse import quote
 
@@ -33,6 +34,7 @@ router = APIRouter(
     prefix="/training",
     dependencies=[Depends(get_current_user)],
 )
+logger = logging.getLogger(__name__)
 
 
 class TrainingJobCreate(BaseModel):
@@ -221,12 +223,17 @@ async def create_job(
             requested_gpu=request.requested_gpu,
             server_id=request.server_id,
         )
-        # 立即触发一次调度；资源不足时保持 QUEUED。
-        await training_executor_service.dispatch_queued_jobs()
-        job = await TrainingJob.get(id=job.id)
-        return Result.success(_job_data(job))
     except (TrainingExecutorError, GpuServerError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # QUEUED 已经提交，调度只是后续动作；调度或状态刷新短暂失败时
+    # 仍返回任务编号，用户可以追踪它，而不必冒着重复创建的风险重试。
+    try:
+        await training_executor_service.dispatch_queued_jobs()
+        job = await TrainingJob.get(id=job.id)
+    except Exception:
+        logger.exception("训练任务 %s 已提交，但即时调度或状态刷新失败", job.id)
+    return Result.success(_job_data(job))
 
 
 @router.get("/jobs")
