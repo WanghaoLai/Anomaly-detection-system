@@ -7,7 +7,11 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).parents[1] / "fastapi-app"
 sys.path.insert(0, str(BACKEND_DIR))
 
-from services.gpu_server_service import GpuServerError, GpuServerRegistry  # noqa: E402
+from services.gpu_server_service import (  # noqa: E402
+    GpuServerError,
+    GpuServerRegistry,
+    build_gpu_server_registry,
+)
 from settings import GPU_SERVER_CONFIG  # noqa: E402
 
 
@@ -105,6 +109,18 @@ class GpuServerRegistryTests(unittest.TestCase):
                 GPU_SERVER_CONFIG,
                 missing_credentials,
             )
+
+    def test_invalid_additional_configuration_reports_visible_fallback(self):
+        registry, status = build_gpu_server_registry(
+            GPU_SERVER_CONFIG,
+            '[{"id":"gpu-2","name":"GPU 2","url":"ssh://bad"}]',
+        )
+
+        self.assertFalse(status["healthy"])
+        self.assertTrue(status["fallbackToPrimary"])
+        self.assertEqual(status["activeServerCount"], 1)
+        self.assertIn("未支持字段", status["error"])
+        self.assertEqual([item["id"] for item in registry.public_options()], ["primary"])
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from api import api_router
 from api.admin_chat import _llm_service
 from api.chat import llm_service
 from api.knowledge import recover_pending_knowledge_releases
+from common.auth import validate_password_storage
 from common.exception_handler import setup_exceptions
 from common.migrations import check_schema_current
 
@@ -59,6 +60,13 @@ async def lifespan(app: FastAPI):
     if DB_SCHEMA_CHECK_ENABLED:
         # 在任何后台任务启动前 fail closed，禁止新代码运行在旧表结构上。
         await check_schema_current()
+    legacy_password_count = await validate_password_storage()
+    if legacy_password_count:
+        logger.warning(
+            "检测到 %s 个遗留明文密码账号；当前兼容窗口仍开启，"
+            "请尽快运行 migrate_passwords.py --apply 后关闭兼容",
+            legacy_password_count,
+        )
     # 元数据事务已提交但指针尚未切换的 release 必须先恢复，避免用户看到
     # MySQL 与实际检索版本不一致的知识库。
     await recover_pending_knowledge_releases()

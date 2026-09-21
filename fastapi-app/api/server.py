@@ -1,7 +1,11 @@
 from common.auth import get_current_admin, get_current_user
 from common.result import Result
 from fastapi import APIRouter, Depends, HTTPException, Query
-from services.gpu_server_service import GpuServerError, gpu_server_registry
+from services.gpu_server_service import (
+    GpuServerError,
+    gpu_server_configuration_status,
+    gpu_server_registry,
+)
 
 router = APIRouter(prefix="/server", dependencies=[Depends(get_current_user)])
 
@@ -17,6 +21,15 @@ def _selected_service(server_id: str):
 async def get_servers():
     """返回可选服务器的非敏感信息，不暴露 SSH 凭据或本地密钥路径。"""
     return Result.success(gpu_server_registry.public_options())
+
+
+@router.get(
+    "/configuration-health",
+    dependencies=[Depends(get_current_admin)],
+)
+async def get_configuration_health():
+    """供管理员和部署探针识别追加服务器配置降级。"""
+    return Result.success(gpu_server_configuration_status)
 
 
 @router.get("/summary")

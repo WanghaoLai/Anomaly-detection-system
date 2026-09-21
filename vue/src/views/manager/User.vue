@@ -18,6 +18,16 @@
           @keyup.enter="load"
         />
         <div class="toolbar-actions">
+          <div class="registration-control">
+            <span>允许用户自主注册</span>
+            <el-switch
+              :model-value="registrationEnabled"
+              :loading="registrationPolicyLoading"
+              :disabled="registrationPolicyLoading || registrationPolicyError"
+              aria-label="允许用户自主注册"
+              @change="changeRegistrationPolicy"
+            />
+          </div>
           <el-button type="primary" @click="load">查询</el-button>
           <el-button @click="reset">重置</el-button>
           <el-button type="primary" @click="handleAdd"><el-icon><Plus /></el-icon>新增</el-button>
@@ -146,6 +156,9 @@ import { API_BASE_URL, getCsrfToken } from "@/utils/auth"
 import { handleUploadError } from "@/utils/upload"
 
 const formRef = ref()
+const registrationEnabled = ref(false)
+const registrationPolicyLoading = ref(true)
+const registrationPolicyError = ref(false)
 const uploadUrl = API_BASE_URL + '/files/upload'
 const uploadHeaders = { 'X-CSRF-Token': getCsrfToken() }
 const validateInitialPassword = (rule, value, callback) => {
@@ -184,6 +197,9 @@ const tableHeight = computed(() =>
   PAGE_HEADER_H + TOOLBAR_H + PAGE_PADDING + TABLE_HEADER_H + TABLE_BODY_H.value + PAGINATION_H + 2
 )
 
+const backendError = (error, fallback) =>
+  error?.response?.data?.msg || error?.message || fallback
+
 const load = () => {
   request.get('/user/selectPage', {
     params: { pageNum: data.pageNum, pageSize: data.pageSize, name: data.name }
@@ -198,6 +214,35 @@ const load = () => {
 }
 load()
 
+const loadRegistrationPolicy = async () => {
+  registrationPolicyLoading.value = true
+  try {
+    const res = await request.get('/admin/registration-policy')
+    registrationEnabled.value = res.data.enabled === true
+    registrationPolicyError.value = false
+  } catch (error) {
+    registrationPolicyError.value = true
+    ElMessage.error(backendError(error, '读取注册设置失败，请刷新页面重试'))
+  } finally {
+    registrationPolicyLoading.value = false
+  }
+}
+
+const changeRegistrationPolicy = async enabled => {
+  registrationPolicyLoading.value = true
+  try {
+    const res = await request.put('/admin/registration-policy', { enabled })
+    registrationEnabled.value = res.data.enabled === true
+    ElMessage.success(registrationEnabled.value ? '已允许用户自主注册' : '已关闭用户自主注册')
+  } catch (error) {
+    ElMessage.error(backendError(error, '修改注册设置失败'))
+  } finally {
+    registrationPolicyLoading.value = false
+  }
+}
+
+loadRegistrationPolicy()
+
 const handleAdd = () => {
   data.form = {}
   data.formVisible = true
@@ -207,9 +252,6 @@ const handleEdit = (row) => {
   data.form = JSON.parse(JSON.stringify(row))
   data.formVisible = true
 }
-
-const backendError = (error, fallback) =>
-  error?.response?.data?.msg || error?.message || fallback
 
 const handleDelete = async (id) => {
   try {
@@ -371,6 +413,18 @@ const handleImgSuccess = (res) => {
   display: flex;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.registration-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 12px;
+  margin-right: 4px;
+  border-right: 1px solid #e5e9f0;
+  color: #606b7d;
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .table-area {

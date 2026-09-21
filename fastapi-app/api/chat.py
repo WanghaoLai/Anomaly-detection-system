@@ -1,14 +1,17 @@
 import asyncio
 import logging
 import uuid
+from datetime import UTC, datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from common.auth import get_current_user
+from common.resource_limits import llm_capacity_limiter
 from common.result import Result
+from common.chat_history import conversation_page, message_page, recent_messages
 from models import Conversation, Message
 from services import LLMService, ChatService
 from services.knowledge_service import knowledge_service
@@ -18,6 +21,7 @@ from services.rag.operations import (
     iter_until_disconnected,
 )
 from settings import AI_CONFIG
+from tortoise.transactions import in_transaction
 
 
 async def get_current_chat_user(
@@ -78,41 +82,59 @@ async def create_conversation(
 
 @router.get("/conversations")
 async def get_conversations(
+    before_at: datetime | None = Query(default=None, alias="beforeAt"),
+    before_id: int | None = Query(default=None, alias="beforeId", gt=0),
+    page_size: int | None = Query(default=None, alias="pageSize", ge=1, le=100),
     current_user: dict = Depends(get_current_chat_user),
 ):
-    conversations = await Conversation.filter(user_id=current_user["user_id"]).order_by("-updated_at")
-    result = []
-    for conv in conversations:
-        result.append({
+    if (before_at is None) != (before_id is None):
+        raise HTTPException(status_code=422, detail="会话分页游标不完整")
+    page = await conversation_page(
+        Conversation.filter(user_id=current_user["user_id"]),
+        before_at=before_at,
+        before_id=before_id,
+        page_size=page_size or 50,
+    )
+    page["items"] = [
+        {
             "id": conv.id,
             "title": conv.title,
             "created_at": conv.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             "updated_at": conv.updated_at.strftime("%Y-%m-%d %H:%M:%S")
-        })
-    return Result.success(result)
+        }
+        for conv in page["items"]
+    ]
+    # 未传分页参数的旧客户端仍收到数组；服务器对其读取量也限制为 50。
+    return Result.success(page if page_size is not None or before_at is not None else page["items"])
 
 
 @router.get("/messages/{conversation_id}")
 async def get_messages(
     conversation_id: int,
+    before_id: int | None = Query(default=None, alias="beforeId", gt=0),
+    page_size: int = Query(default=50, alias="pageSize", ge=1, le=100),
     current_user: dict = Depends(get_current_chat_user),
 ):
     conversation = await _get_owned_conversation(
         conversation_id,
         current_user["user_id"],
     )
-    messages = await Message.filter(
-        conversation_id=conversation.id
-    ).order_by("created_at")
-    result = []
-    for msg in messages:
-        result.append({
+    page = await message_page(
+        Message,
+        conversation_id=conversation.id,
+        before_id=before_id,
+        page_size=page_size,
+    )
+    page["items"] = [
+        {
             "id": msg.id,
             "role": msg.role,
             "content": msg.content,
             "created_at": msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
-        })
-    return Result.success(result)
+        }
+        for msg in page["items"]
+    ]
+    return Result.success(page)
 
 
 @router.post("/send")
@@ -126,16 +148,29 @@ async def send_message(
         current_user["user_id"],
     )
 
-    user_message = await Message.create(
-        conversation_id=conversation.id,
-        role="user",
-        content=data.message
-    )
+    await llm_capacity_limiter.acquire()
+    try:
+        async with in_transaction() as connection:
+            user_message = await Message.create(
+                using_db=connection,
+                conversation_id=conversation.id,
+                role="user",
+                content=data.message
+            )
+            await Conversation.filter(
+                id=conversation.id,
+                user_id=current_user["user_id"],
+            ).using_db(connection).update(updated_at=datetime.now(UTC))
 
-    history = await Message.filter(
-        conversation_id=conversation.id
-    ).order_by("created_at")
-    history_list = [{"role": msg.role, "content": msg.content} for msg in history]
+        history = await recent_messages(
+            Message,
+            conversation_id=conversation.id,
+            history_limit=int(AI_CONFIG["max_history"]),
+        )
+        history_list = [{"role": msg.role, "content": msg.content} for msg in history]
+    except BaseException:
+        llm_capacity_limiter.release()
+        raise
     request_id = str(uuid.uuid4())
 
     async def generate():
@@ -221,6 +256,7 @@ async def send_message(
                 "done": True,
             }, event="done")
         finally:
+            llm_capacity_limiter.release()
             if not terminal:
                 logger.info(
                     "SSE 流非正常终止: conversation=%s status=disconnected",

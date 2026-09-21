@@ -126,6 +126,7 @@ AI_CONFIG = {
     "qdrant_prefer_grpc": _env_bool("AI_QDRANT_PREFER_GRPC", False),
     "qdrant_batch_size": _env_int("AI_QDRANT_BATCH_SIZE", 100),
     "max_history": _env_int("AI_MAX_HISTORY", 20),
+    "max_concurrent_requests": _env_int("AI_MAX_CONCURRENT_REQUESTS", 8),
     "top_k": _env_int("AI_TOP_K", 3),
     "rag_candidate_k": _env_int("AI_RAG_CANDIDATE_K", 8),
     "rag_dense_candidate_k": _env_int("AI_RAG_DENSE_CANDIDATE_K", 50),
@@ -283,6 +284,9 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_ACCESS_EXPIRE_MINUTES = _env_int("JWT_ACCESS_EXPIRE_MINUTES", 15)
 JWT_REFRESH_EXPIRE_DAYS = _env_int("JWT_REFRESH_EXPIRE_DAYS", 7)
 JWT_COOKIE_SECURE = _env_bool("JWT_COOKIE_SECURE", False)
+ALLOW_LEGACY_PLAINTEXT_PASSWORDS = _env_bool(
+    "ALLOW_LEGACY_PLAINTEXT_PASSWORDS", True
+)
 JWT_COOKIE_SAMESITE = os.getenv("JWT_COOKIE_SAMESITE", "lax").lower()
 if JWT_COOKIE_SAMESITE not in {"lax", "strict", "none"}:
     raise RuntimeError("JWT_COOKIE_SAMESITE 必须为 lax、strict 或 none")
@@ -297,6 +301,13 @@ CSRF_COOKIE_NAME = "csrf_token"
 LOGIN_RATE_LIMIT_ATTEMPTS = _env_int("LOGIN_RATE_LIMIT_ATTEMPTS", 5)
 LOGIN_RATE_LIMIT_WINDOW_SECONDS = _env_int("LOGIN_RATE_LIMIT_WINDOW_SECONDS", 300)
 LOGIN_RATE_LIMIT_LOCK_SECONDS = _env_int("LOGIN_RATE_LIMIT_LOCK_SECONDS", 900)
+SELF_REGISTRATION_ENABLED = _env_bool("SELF_REGISTRATION_ENABLED", False)
+REGISTRATION_RATE_LIMIT_ATTEMPTS = _env_int(
+    "REGISTRATION_RATE_LIMIT_ATTEMPTS", 3
+)
+REGISTRATION_RATE_LIMIT_WINDOW_SECONDS = _env_int(
+    "REGISTRATION_RATE_LIMIT_WINDOW_SECONDS", 3600
+)
 
 # 带凭据的 CORS 不能使用 "*"，生产环境应显式配置真实前端域名。
 CORS_ALLOWED_ORIGINS = _env_list(
@@ -362,6 +373,10 @@ TRAINING_EXECUTOR_CONFIG = {
         "TRAINING_MAX_PENDING_JOBS_PER_USER",
         3,
     ),
+    "max_pending_jobs_total": _env_int(
+        "TRAINING_MAX_PENDING_JOBS_TOTAL",
+        100,
+    ),
     "max_concurrent_jobs": _env_int(
         "TRAINING_MAX_CONCURRENT_JOBS",
         4,
@@ -413,5 +428,6 @@ INFERENCE_EXECUTOR_CONFIG = {
     ),
     "max_concurrent_jobs": _env_int("INFERENCE_MAX_CONCURRENT_JOBS", 2),
     "max_pending_jobs_per_user": _env_int("INFERENCE_MAX_PENDING_JOBS_PER_USER", 3),
+    "max_pending_jobs_total": _env_int("INFERENCE_MAX_PENDING_JOBS_TOTAL", 100),
     "max_runtime_seconds": _env_int("INFERENCE_MAX_RUNTIME_SECONDS", 1800),
 }

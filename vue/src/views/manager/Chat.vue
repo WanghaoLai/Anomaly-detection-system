@@ -31,18 +31,28 @@
             <el-icon :size="28" color="#d6dce6"><ChatDotRound /></el-icon>
             <span>暂无对话</span>
           </div>
+          <div v-if="data.hasMoreConversations" class="history-loader">
+            <el-button link type="primary" :loading="data.loadingConversations" @click="loadMoreConversations">
+              加载更多对话
+            </el-button>
+          </div>
         </div>
       </div>
 
       <div class="chat-main">
         <div class="messages-container" ref="messagesContainer">
+          <div v-if="data.hasMoreMessages" class="history-loader">
+            <el-button link type="primary" :loading="data.loadingHistory" @click="loadOlderMessages">
+              加载更早消息
+            </el-button>
+          </div>
           <div v-if="data.messages.length === 0" class="empty-state">
             <div class="empty-icon"><el-icon :size="40"><ChatDotRound /></el-icon></div>
             <div class="empty-title">智能助手</div>
             <div class="empty-desc">输入您的问题，我将为您提供帮助</div>
           </div>
 
-          <div v-for="(msg, index) in data.messages" :key="index" :class="['message', msg.role]">
+          <div v-for="(msg, index) in data.messages" :key="msg.id || index" :class="['message', msg.role]">
             <div class="message-avatar">
               <img v-if="msg.role === 'user'" :src="data.user.avatar || 'https://cube.elemecdn.com/3/7c/3ea6beec64369c2642b92c6726f1epng.png'" class="avatar-img" />
               <div v-else class="avatar-ai"><el-icon><Monitor /></el-icon></div>
@@ -119,8 +129,15 @@ const messagesContainer = ref(null)
 const data = reactive({
   user: JSON.parse(localStorage.getItem('system-user') || '{}'),
   conversations: [],
+  hasMoreConversations: false,
+  nextConversationAt: null,
+  nextConversationId: null,
+  loadingConversations: false,
   currentConversation: null,
   messages: [],
+  hasMoreMessages: false,
+  nextBeforeId: null,
+  loadingHistory: false,
   inputMessage: '',
   loading: false
 })
@@ -156,25 +173,55 @@ const handleCitationClick = (event, msg) => {
 
 const loadConversations = async () => {
   try {
-    const res = await request.get('/chat/conversations')
+    const res = await request.get('/chat/conversations', { params: { pageSize: 50 } })
     if (res.code === '200') {
-      data.conversations = res.data || []
+      data.conversations = res.data?.items || []
+      data.hasMoreConversations = res.data?.hasMore === true
+      data.nextConversationAt = res.data?.nextBeforeAt || null
+      data.nextConversationId = res.data?.nextBeforeId || null
     }
   } catch (error) {
     console.error('加载会话列表失败:', error)
   }
 }
 
+const loadMoreConversations = async () => {
+  if (!data.hasMoreConversations || data.loadingConversations) return
+  data.loadingConversations = true
+  try {
+    const res = await request.get('/chat/conversations', {
+      params: {
+        beforeAt: data.nextConversationAt,
+        beforeId: data.nextConversationId,
+        pageSize: 50
+      }
+    })
+    if (res.code === '200') {
+      data.conversations.push(...(res.data?.items || []))
+      data.hasMoreConversations = res.data?.hasMore === true
+      data.nextConversationAt = res.data?.nextBeforeAt || null
+      data.nextConversationId = res.data?.nextBeforeId || null
+    }
+  } catch {
+    ElMessage.error('加载更多对话失败')
+  } finally {
+    data.loadingConversations = false
+  }
+}
+
 const createConversation = async () => {
   try {
     const res = await request.post('/chat/conversation', { title: '新对话' })
-    if (res.code === '200') {
-      await loadConversations()
-      data.currentConversation = res.data.id
-      data.messages = []
-    }
+    if (res.code !== '200' || !res.data?.id) throw new Error('创建会话失败')
+    await loadConversations()
+    data.currentConversation = res.data.id
+    data.messages = []
+    data.hasMoreMessages = false
+    data.nextBeforeId = null
+    return res.data.id
   } catch (error) {
     ElMessage.error('创建会话失败')
+    return null
   }
 }
 
@@ -183,11 +230,36 @@ const switchConversation = async (conversationId) => {
   try {
     const res = await request.get(`/chat/messages/${conversationId}`)
     if (res.code === '200') {
-      data.messages = res.data || []
+      data.messages = res.data?.items || []
+      data.hasMoreMessages = res.data?.hasMore === true
+      data.nextBeforeId = res.data?.nextBeforeId || null
       scrollToBottom()
     }
   } catch (error) {
     ElMessage.error('加载消息失败')
+  }
+}
+
+const loadOlderMessages = async () => {
+  if (!data.currentConversation || !data.hasMoreMessages || data.loadingHistory) return
+  data.loadingHistory = true
+  const container = messagesContainer.value
+  const previousHeight = container?.scrollHeight || 0
+  try {
+    const res = await request.get(`/chat/messages/${data.currentConversation}`, {
+      params: { beforeId: data.nextBeforeId, pageSize: 50 }
+    })
+    if (res.code === '200') {
+      data.messages = [...(res.data?.items || []), ...data.messages]
+      data.hasMoreMessages = res.data?.hasMore === true
+      data.nextBeforeId = res.data?.nextBeforeId || null
+      await nextTick()
+      if (container) container.scrollTop += container.scrollHeight - previousHeight
+    }
+  } catch {
+    ElMessage.error('加载更早消息失败')
+  } finally {
+    data.loadingHistory = false
   }
 }
 
@@ -200,6 +272,8 @@ const deleteConversation = async (conversationId) => {
       if (data.currentConversation === conversationId) {
         data.currentConversation = null
         data.messages = []
+        data.hasMoreMessages = false
+        data.nextBeforeId = null
       }
       await loadConversations()
     }
@@ -210,7 +284,7 @@ const deleteConversation = async (conversationId) => {
 
 const sendMessage = async () => {
   if (!data.inputMessage.trim() || data.loading) return
-  if (!data.currentConversation) await createConversation()
+  if (!data.currentConversation && !await createConversation()) return
 
   const userMessage = data.inputMessage.trim()
   data.inputMessage = ''

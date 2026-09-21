@@ -4,7 +4,7 @@
       <div style="flex: 1">
         <div style="padding-left: 20px; display: flex; align-items: center">
           <img src="@/assets/imgs/logo.jpg" alt="" style="width: 38px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.3)">
-          <div class="header-title">机器人与智能系统实验室 · 异常检测系统</div>
+          <div class="header-title">机器人与智能系统实验室 · 异常检测科研平台</div>
         </div>
       </div>
       <div class="time-display">
@@ -128,6 +128,7 @@
           </el-menu-item>
         </el-menu>
         <div class="sidebar-copyright">
+          <div class="sidebar-version">{{ APP_VERSION }}</div>
           <div>Copyright &copy; 2026</div>
           <div>机器人与智能系统实验室</div>
           <div>All Rights Reserved</div>
@@ -153,6 +154,7 @@ import {
 } from "@element-plus/icons-vue";
 import request from "@/utils/request";
 import { clearAuthState } from "@/utils/auth";
+import { APP_VERSION } from "@/utils/version";
 
 const currentTime = ref('')
 let timer = null
@@ -325,6 +327,13 @@ const logout = async () => {
   line-height: 1.6;
   color: rgba(255, 255, 255, 0.25);
   border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-version {
+  margin-bottom: 4px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  color: rgba(144, 202, 249, 0.75);
 }
 
 .manager-main {

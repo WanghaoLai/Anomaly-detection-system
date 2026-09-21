@@ -13,6 +13,7 @@ from common.exception_handler import CustomException
 from models import Admin, AuthSession, User
 from settings import (
     ACCESS_COOKIE_NAME,
+    ALLOW_LEGACY_PLAINTEXT_PASSWORDS,
     CSRF_COOKIE_NAME,
     JWT_ACCESS_EXPIRE_MINUTES,
     JWT_ALGORITHM,
@@ -66,10 +67,39 @@ def verify_password(plaintext: str, stored: str) -> tuple:
     if is_bcrypt_hash(stored):
         return False, False
 
-    # 仅用于自动迁移遗留明文密码；数据迁移完成后应移除。
-    if plaintext == stored:
+    # 只在管理员显式保留迁移窗口时兼容遗留明文。
+    if ALLOW_LEGACY_PLAINTEXT_PASSWORDS and plaintext == stored:
         return True, True
     return False, False
+
+
+async def legacy_password_accounts() -> list[dict[str, object]]:
+    """返回仍未使用 bcrypt 的账号标识，不返回密码内容。"""
+    legacy: list[dict[str, object]] = []
+    for model, role in ((Admin, "管理员"), (User, "用户")):
+        rows = await model.all().values("id", "username", "password")
+        legacy.extend(
+            {
+                "id": row["id"],
+                "username": row["username"],
+                "role": role,
+            }
+            for row in rows
+            if isinstance(row.get("password"), str)
+            and not is_bcrypt_hash(row["password"])
+        )
+    return legacy
+
+
+async def validate_password_storage() -> int:
+    """关闭兼容后 fail closed，避免遗留明文账号静默留在生产库。"""
+    legacy = await legacy_password_accounts()
+    if legacy and not ALLOW_LEGACY_PLAINTEXT_PASSWORDS:
+        raise RuntimeError(
+            f"检测到 {len(legacy)} 个遗留明文密码账号；"
+            "请先运行 migrate_passwords.py --apply"
+        )
+    return len(legacy)
 
 
 def account_model_for_role(role: str):

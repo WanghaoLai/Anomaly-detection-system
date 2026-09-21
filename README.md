@@ -104,6 +104,8 @@ cd ..
 
 需要演示数据（默认管理员账号、PBAS 与 MVTec AD 登记信息）时，改为导入根目录的 `ad_system.sql`。增量结构变更见 `fastapi-app/migrations/`（编号 SQL，按序执行；部分迁移的文件头注释包含存量数据预检要求——例如 `011_user_username_unique.sql` 加唯一索引前需先确认无重复用户名，请先读注释再执行）。
 
+已有数据库升级后，在启动新版后端前执行 `cd fastapi-app && python3 manage_migrations.py apply`。自主注册开关需要 `019_registration_policy.sql` 创建的表；后端启动时会检查迁移版本。
+
 ### 5. 启动
 
 **方式一：一键脚本（推荐）**
@@ -129,7 +131,7 @@ cd vue && VITE_BASE_URL=http://127.0.0.1:9090 npm run dev
 
 打开 `http://127.0.0.1:5173`：
 
-- 普通用户在登录页自助**注册**；
+- 自助注册默认关闭。管理员可在“用户管理 → 用户信息”页面开启或关闭；开启后普通用户在登录页自助**注册**。未在页面保存过设置时，使用 `.env` 中的 `SELF_REGISTRATION_ENABLED` 作为初始值；保存后以数据库设置为准；
 - 导入了 `ad_system.sql` 的环境可用默认管理员 `admin / admin` 登录（首次登录后密码自动升级为 bcrypt 哈希，请尽快修改）。
 
 ### 首个 API 调用（可选验证）

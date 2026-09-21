@@ -3,7 +3,7 @@
     <div class="welcome-banner">
       <div class="welcome-left">
         <div class="welcome-text">欢迎您，{{ data.user.name }}</div>
-        <div class="welcome-sub">欢迎使用机器人与智能系统实验室 · 异常检测系统，祝您今天工作顺利！</div>
+        <div class="welcome-sub">欢迎使用机器人与智能系统实验室 · 异常检测科研平台，祝您今天工作顺利！</div>
       </div>
     </div>
 

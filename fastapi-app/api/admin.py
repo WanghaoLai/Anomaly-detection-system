@@ -6,6 +6,7 @@ from common.auth import (
     validate_password_policy,
 )
 from common.exception_handler import CustomException
+from common.registration_policy import is_registration_enabled, set_registration_enabled
 from common.result import PageInfo, Result
 from fastapi import APIRouter, Depends, Query
 from models import (
@@ -16,7 +17,7 @@ from models import (
     InferenceJob,
     TrainingJob,
 )
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 from tortoise.contrib.pydantic import pydantic_model_creator
 from tortoise.exceptions import IntegrityError
 from tortoise.transactions import in_transaction
@@ -55,6 +56,27 @@ class AdminUpdatePydantic(_StrictModel):
 
 class AdminPasswordResetRequest(_StrictModel):
     newPassword: str = Field(min_length=1, max_length=255)
+
+
+class RegistrationPolicyUpdate(_StrictModel):
+    enabled: StrictBool
+
+
+@router.get("/registration-policy")
+async def get_registration_policy():
+    return Result.success({"enabled": await is_registration_enabled()})
+
+
+@router.put("/registration-policy")
+async def update_registration_policy(
+    policy: RegistrationPolicyUpdate,
+    current_admin: dict = Depends(get_current_admin),
+):
+    enabled = await set_registration_enabled(
+        policy.enabled,
+        admin_id=current_admin["user_id"],
+    )
+    return Result.success({"enabled": enabled})
 
 
 @router.post("/add")
